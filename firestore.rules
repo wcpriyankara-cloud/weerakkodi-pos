@@ -1,0 +1,264 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidCustomerCatalogOrder(shopId) {
+      return (
+        request.resource.data.shopId == shopId &&
+        request.resource.data.uid == shopId &&
+        request.resource.data.source == "customer-catalog" &&
+        request.resource.data.status == "pending" &&
+        request.resource.data.customerName != null &&
+        request.resource.data.customerPhone != null &&
+        request.resource.data.items != null &&
+        request.resource.data.grandTotal != null &&
+        request.resource.data.total != null
+      );
+    }
+
+    function isValidCustomerCatalogBackupOrder() {
+      return (
+        request.resource.data.shopId != null &&
+        request.resource.data.uid != null &&
+        request.resource.data.shopId == request.resource.data.uid &&
+        request.resource.data.source == "customer-catalog" &&
+        request.resource.data.status == "pending" &&
+        request.resource.data.customerName != null &&
+        request.resource.data.customerPhone != null &&
+        request.resource.data.items != null &&
+        request.resource.data.grandTotal != null &&
+        request.resource.data.total != null
+      );
+    }
+
+    match /customerLinks/{linkId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update, delete: if isSignedIn();
+    }
+
+    match /businesses/{businessId} {
+      allow read: if true;
+      allow write: if isSignedIn() && request.auth.uid == businessId;
+      match /customers/{customerId} {
+        allow read: if true;
+        allow write: if isSignedIn() && request.auth.uid == businessId;
+      }
+      match /settings/{settingId} {
+        allow read: if true;
+        allow write: if isSignedIn() && request.auth.uid == businessId;
+      }
+      match /invoices/{invoiceId} {
+        allow read: if true;
+        allow write: if isSignedIn() && request.auth.uid == businessId;
+      }
+      match /customerTransactions/{txnId} {
+        allow read: if true;
+        allow create: if true;
+        allow update, delete: if isSignedIn() && request.auth.uid == businessId;
+      }
+      match /vehicleTrips/{tripId} {
+        allow read: if true;
+        allow write: if isSignedIn() && request.auth.uid == businessId;
+      }
+      match /serviceEntries/{entryId} {
+        allow read: if true;
+        allow write: if isSignedIn() && request.auth.uid == businessId;
+      }
+      match /items/{itemId} {
+        allow read: if true;
+        allow write: if isSignedIn() && request.auth.uid == businessId;
+      }
+      match /customerOrders/{orderId} {
+        allow read: if true;
+        allow create: if true;
+        allow update, delete: if isSignedIn() && request.auth.uid == businessId;
+      }
+      match /{subcollection}/{document=**} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && request.auth.uid == businessId;
+      }
+    }
+
+    match /shops/{shopId}/pfis/{orderId} {
+      allow create: if isValidCustomerCatalogOrder(shopId);
+      allow read, update, delete: if isOwner(shopId);
+    }
+
+    match /orders/{orderId} {
+      allow create: if isValidCustomerCatalogBackupOrder();
+      allow read, update, delete: if isSignedIn();
+    }
+
+    match /shopDirectory/{shopId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /shopDirectory/{shopId}/catalogItems/{itemId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /shopDirectory/{shopId}/orders/{orderId} {
+      allow read, create: if true;
+      allow update, delete: if isSignedIn();
+    }
+    match /shopDirectory/{shopId}/settings/{settingId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    match /customers/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /salesInvoices/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /invoices/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /returns/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /customerTransactions/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /transactionApprovals/{document=**} {
+      allow read, create: if true;
+      allow update, delete: if isSignedIn();
+    }
+    match /invoice_settings/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /generalSettings/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /items/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /products/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /brands/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /categories/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /subCategories/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /units/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /uoms/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /packSizes/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /colors/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /racks/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /customerOrders/{document=**} {
+      allow read, create: if true;
+      allow update, delete: if isSignedIn();
+    }
+    match /suppliers/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /supplierReports/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /productionEntries/{document=**} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if isSignedIn() && request.auth.uid == userId;
+      match /items/{itemId} {
+        allow read: if true;
+        allow write: if isSignedIn();
+      }
+      match /customerOrders/{orderId} {
+        allow read, create: if true;
+        allow update, delete: if isSignedIn();
+      }
+      match /vehicleTrips/{tripId} {
+        allow read: if true;
+        allow write: if isSignedIn();
+      }
+      match /settings/{settingId} {
+        allow read: if true;
+        allow write: if isSignedIn();
+      }
+      match /cashTransactions/{transactionId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && request.auth.uid == userId;
+      }
+      match /purchases/{purchaseId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && request.auth.uid == userId;
+      }
+      match /purchaseInvoices/{invoiceId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && request.auth.uid == userId;
+      }
+      match /supplierPayments/{paymentId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && request.auth.uid == userId;
+      }
+      match /sales/{saleId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && request.auth.uid == userId;
+      }
+      match /{subcollection}/{document=**} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    match /payments/{document=**} { allow read, write: if isSignedIn(); }
+    match /purchase_payments/{document=**} { allow read, write: if isSignedIn(); }
+    match /cashPayments/{document=**} { allow read, write: if isSignedIn(); }
+    match /purchases/{document=**} { allow read, write: if isSignedIn(); }
+    match /purchaseInvoices/{document=**} { allow read, write: if isSignedIn(); }
+    match /other_purchases/{document=**} { allow read, write: if isSignedIn(); }
+    match /supplier_invoices/{document=**} { allow read, write: if isSignedIn(); }
+    match /grn/{document=**} { allow read, write: if isSignedIn(); }
+
+    match /{document=**} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}

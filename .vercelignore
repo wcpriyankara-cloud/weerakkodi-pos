@@ -1,0 +1,12 @@
+﻿node_modules
+.next
+src
+build
+catalog
+public_old_react
+src_old_react
+*.backup.json
+*.md
+.firebase
+functions
+dataconnect
