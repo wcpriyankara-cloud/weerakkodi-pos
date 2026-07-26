@@ -1,8 +1,8 @@
 'use client';
 
 // components/InvoiceOutputManager.jsx
-// ✅ Next.js — same-origin portal links
-// ✅ Customer-specific portal key resolution (id → phone → name → invoice key)
+// ✅ Next.js — strict customer portal key (customerId only)
+// ✅ Production domain via NEXT_PUBLIC_APP_URL
 // ✅ WhatsApp/Share default showPortalLink: true
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
@@ -13,11 +13,24 @@ import {
   doc, getDoc, setDoc, serverTimestamp,
 } from 'firebase/firestore';
 
-// ★ Same-origin portal link base
-const POS_BASE =
-  process.env.NEXT_PUBLIC_APP_URL ||
-  process.env.NEXT_PUBLIC_POS_URL ||
-  (typeof window !== 'undefined' ? window.location.origin : '');
+/* ══════════════════════════════════════════════════════════
+   ★ PRODUCTION BASE URL — always use NEXT_PUBLIC_APP_URL
+   ══════════════════════════════════════════════════════════ */
+const POS_BASE = (() => {
+  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, '');
+  if (process.env.NEXT_PUBLIC_POS_URL) return process.env.NEXT_PUBLIC_POS_URL.replace(/\/$/, '');
+  if (typeof window !== 'undefined') return window.location.origin;
+  return '';
+})();
+
+/* ══════════════════════════════════════════════════════════
+   ★ PORTAL LINK — strict: resolved customer only
+   ══════════════════════════════════════════════════════════ */
+const getPortalLink = (customer) => {
+  const key = customer?.portalAccessKey || '';
+  if (!key || !POS_BASE) return '';
+  return `${POS_BASE}/portal/${key}`;
+};
 
 /* ══════════════════════════════════════════════════════════
    HELPERS
@@ -72,22 +85,6 @@ const getSMSCount = (msg) => {
   const perSMS = hasUnicode ? 70 : 160;
   const parts = Math.ceil(msg.length / perSMS);
   return { chars: msg.length, perSMS, parts };
-};
-
-/* ══════════════════════════════════════════════════════════
-   ★ PORTAL LINK — customer-specific resolution
-   ══════════════════════════════════════════════════════════ */
-const getPortalKeyFromAny = (invoice, customer) =>
-  customer?.portalAccessKey ||
-  invoice?.customerPortalKey ||
-  invoice?.portalAccessKey ||
-  invoice?._customer?.portalAccessKey ||
-  '';
-
-const getPortalLink = (invoice, customer) => {
-  const key = getPortalKeyFromAny(invoice, customer);
-  if (!key) return '';
-  return `${POS_BASE.replace(/\/$/, '')}/portal/${key}`;
 };
 
 /* ══════════════════════════════════════════════════════════
@@ -193,8 +190,8 @@ const getCreditDueFromInvoice = (invoice) => {
 const getOutstandingInfo = (invoice, customer) => {
   if (isReturnDoc(invoice))
     return { creditDue: 0, isCreditSale: false, previousBalance: 0, newBalance: 0 };
-  const dbBal       = R2(customer?.currentBalance ?? invoice?.customerCurrentBalance ?? 0);
-  const creditDue   = getCreditDueFromInvoice(invoice);
+  const dbBal        = R2(customer?.currentBalance ?? invoice?.customerCurrentBalance ?? 0);
+  const creditDue    = getCreditDueFromInvoice(invoice);
   const isCreditSale = creditDue > 0.009;
   const previousBalance = invoice?.previousOutstanding != null
     ? R2(invoice.previousOutstanding)
@@ -222,7 +219,7 @@ const DEFAULT_VISIBILITY = {
 };
 
 /* ══════════════════════════════════════════════════════════
-   ★ DEFAULT MODE SETTINGS
+   DEFAULT MODE SETTINGS
    ══════════════════════════════════════════════════════════ */
 const buildDefaultModeSettings = () => ({
   print: {
@@ -388,9 +385,9 @@ function LanguageSelector({ lang, onChange, modeLabel }) {
 function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en') {
   const v   = visibility || DEFAULT_VISIBILITY;
   const biz = settings  || {};
-  const items     = invoice?.items || [];
-  const isReturn  = isReturnDoc(invoice);
-  const L         = getLang(langKey);
+  const items    = invoice?.items || [];
+  const isReturn = isReturnDoc(invoice);
+  const L        = getLang(langKey);
 
   const grossTotal    = R2(invoice?.grossTotal);
   const billDiscount  = R2(invoice?.billDiscount);
@@ -401,16 +398,13 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
   const balance       = R2(invoice?.balance);
   const remarks       = invoice?.remarks || invoice?.invoiceRemark || '';
   const payMethod     = isReturn ? (invoice?.refundMethod || 'cash') : (invoice?.paymentMethod || 'cash');
-
-  const { previousBalance, newBalance, creditDue, isCreditSale } =
-    getOutstandingInfo(invoice, customer);
-
+  const { previousBalance, newBalance, creditDue, isCreditSale } = getOutstandingInfo(invoice, customer);
   const invoiceNo     = invoice?.invoiceNo || invoice?.id?.slice(0, 8)?.toUpperCase() || '';
   const originalInvNo = invoice?.originalInvoiceNo || '';
   const invDate       = fmtDate(invoice?.createdAt);
 
-  // ★ Customer-specific portal link
-  const portalLink = getPortalLink(invoice, customer);
+  // ★ Strict: only from resolved customer
+  const portalLink = getPortalLink(customer);
 
   const row = (l, r, fs = 14) =>
     `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:${fs}px;font-weight:900;color:#000;line-height:1.3">` +
@@ -423,7 +417,6 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
   const div3 = `<div style="border-top:3px solid #000;margin:5px 0"></div>`;
 
   let html = '';
-
   if (v.showBusinessLogo && biz.logo)
     html += `<div style="text-align:center;margin-bottom:4px"><img src="${esc(biz.logo)}" crossorigin="anonymous" style="max-height:50px;max-width:80%;object-fit:contain" /></div>`;
   if (v.showBusinessName)
@@ -433,7 +426,6 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
   if (v.showBusinessAddress && biz.address) html += center(biz.address, 11);
   if (v.showBusinessPhone   && biz.phone)   html += center(`Tel: ${biz.phone}`, 11);
   html += div1;
-
   if (v.showInvoiceNo) {
     html += row(isReturn ? L.returnNo : L.no, invoiceNo, 15);
     if (isReturn && originalInvNo) html += row(L.originalInvoice, originalInvNo, 12);
@@ -453,11 +445,9 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
     const uom     = item.uom && item.uom !== 'unit' ? ` ${item.uom}` : '';
     const discPct = hasDisc && sp > 0 ? R2(((sp - yp) / sp) * 100) : 0;
     const border  = i < items.length - 1 ? 'border-bottom:1px dotted #000;' : '';
-
     let primary = item.name || '', secondary = '';
-    if (langKey === 'si' && item.nameSi)     { primary = item.nameSi; secondary = item.name || ''; }
-    else if (item.nameSi && v.showItemSinhala) secondary = item.nameSi;
-
+    if (langKey === 'si' && item.nameSi)       { primary = item.nameSi; secondary = item.name || ''; }
+    else if (item.nameSi && v.showItemSinhala)   secondary = item.nameSi;
     html += `<div style="margin-bottom:4px;padding-bottom:3px;${border}">`;
     html += `<div style="font-weight:900;font-size:14px;color:#000;word-break:break-word;line-height:1.2">${i + 1}. ${esc(primary)}</div>`;
     if (secondary) html += `<div style="font-size:12px;font-weight:900;color:#000;padding-left:14px">(${esc(secondary)})</div>`;
@@ -511,16 +501,13 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
   }
   if (v.showRemarks && remarks)
     html += div2 + `<div style="font-size:12px;font-weight:900;color:#000;padding:2px 0;word-break:break-word">${esc(L.note)} ${esc(remarks)}</div>`;
-
-  // ★ Customer-specific portal link
   if (!isReturn && v.showPortalLink && portalLink) {
     html += div2;
     html += `<div style="text-align:center;background:#eff6ff;border-radius:8px;padding:6px;margin-top:4px">`;
-    html += `<div style="font-size:10px;font-weight:900;color:#1e40af;margin-bottom:2px">👤 ඔබේ ගිණුම බලන්න</div>`;
-    html += `<div style="font-size:10px;font-weight:900;color:#000;word-break:break-all">${esc(portalLink)}</div>`;
+    html += `<div style="font-size:11px;font-weight:900;color:#1e40af;margin-bottom:3px">👤 ඔබේ ගිණුම බලන්න</div>`;
+    html += `<div style="font-size:10px;font-weight:900;color:#1e293b;word-break:break-all">${esc(portalLink)}</div>`;
     html += `</div>`;
   }
-
   html += div3;
   if (v.showFooterMessage)
     html += center(biz.footerMessage || (isReturn ? 'Return Processed!' : 'Thank You!'), 14);
@@ -543,8 +530,8 @@ function printViaIframe(receiptHTML) {
 
     if (isMobileSafari) {
       const blob = new Blob([fullHTML], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      const w = window.open(url, '_blank');
+      const url  = URL.createObjectURL(blob);
+      const w    = window.open(url, '_blank');
       if (w) { setTimeout(() => { try { w.print(); } catch {} setTimeout(() => URL.revokeObjectURL(url), 5000); }, 800); }
       else { URL.revokeObjectURL(url); }
       resolve(); return;
@@ -596,14 +583,13 @@ function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en')
   const payMethod = isReturn ? (invoice?.refundMethod || 'cash') : (invoice?.paymentMethod || 'cash');
   const { previousBalance, newBalance, creditDue, isCreditSale } = getOutstandingInfo(invoice, customer);
 
-  // ★ Customer-specific portal link
-  const portalLink = getPortalLink(invoice, customer);
+  // ★ Strict: only from resolved customer
+  const portalLink = getPortalLink(customer);
 
   let msg = '';
   if (v.showBusinessName) msg += `${isReturn ? '↩️' : '🧾'} *${biz.businessName || (isReturn ? L.returnTitle : L.invoiceTitle)}*\n`;
   if (isReturn) msg += `*${L.returnBadge}*\n`;
   msg += `━━━━━━━━━━━━━━\n`;
-
   if (v.showInvoiceNo) {
     msg += `📋 *${isReturn ? L.returnNo : L.no}* ${invoiceNo}\n`;
     if (isReturn && invoice?.originalInvoiceNo) msg += `🧾 *${L.originalInvoice}* ${invoice.originalInvoiceNo}\n`;
@@ -638,11 +624,11 @@ function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en')
     if (v.showGrossTotal     && R2(invoice?.grossTotal)    > 0) msg += `💰 *${L.gross}* Rs.${fmt(R2(invoice.grossTotal))}\n`;
     if (v.showTotalDiscount  && R2(invoice?.totalDiscount) > 0) msg += `🏷️ *${L.discount}* -Rs.${fmt(R2(invoice.totalDiscount))}\n`;
     if (v.showBillDiscount   && R2(invoice?.billDiscount)  > 0) msg += `📋 *${L.billDisc}* -Rs.${fmt(R2(invoice.billDiscount))}\n`;
-    if (v.showExchangeAmount && R2(invoice?.exchangeAmount) > 0) msg += `🔄 *${L.exchange}* -Rs.${fmt(R2(invoice.exchangeAmount))}\n`;
+    if (v.showExchangeAmount && R2(invoice?.exchangeAmount)> 0) msg += `🔄 *${L.exchange}* -Rs.${fmt(R2(invoice.exchangeAmount))}\n`;
   }
-  if (v.showNetAmount)    msg += `\n💰 *${isReturn ? L.refundTotal : L.netTotal}:* Rs.${fmt(netAmount)}\n`;
+  if (v.showNetAmount)     msg += `\n💰 *${isReturn ? L.refundTotal : L.netTotal}:* Rs.${fmt(netAmount)}\n`;
   if (v.showPaymentMethod) msg += isReturn ? `${getRefundLabel(payMethod, L, true)}\n` : `${getPaymentLabel(payMethod, L, true)}\n`;
-  if (v.showPaidAmount)   msg += `${isReturn ? '💸' : '💵'} *${isReturn ? L.refundAmt : L.paid}* Rs.${fmt(payAmount)}\n`;
+  if (v.showPaidAmount)    msg += `${isReturn ? '💸' : '💵'} *${isReturn ? L.refundAmt : L.paid}* Rs.${fmt(payAmount)}\n`;
   if (!isReturn) {
     if (v.showBalance       && balance    >= 0.01)              msg += `🔄 *${L.change}:* Rs.${fmt(balance)}\n`;
     if (v.showCreditDue     && isCreditSale && creditDue > 0)   msg += `📝 *${L.creditDue}:* Rs.${fmt(creditDue)}\n`;
@@ -653,8 +639,7 @@ function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en')
   msg += `\n━━━━━━━━━━━━━━\n`;
   if (v.showFooterMessage)
     msg += `✅ *${biz.footerMessage || (isReturn ? 'Return Processed! ස්තුතියි!' : 'Thank You! ස්තුතියි!')}*\n`;
-
-  // ★ Customer-specific portal link
+  // ★ Strict: only from resolved customer
   if (!isReturn && v.showPortalLink && portalLink)
     msg += `\n👤 *ඔබේ ගිණුම බලන්න:*\n${portalLink}\n`;
 
@@ -676,8 +661,8 @@ function buildSMSMessage(invoice, customer, settings, visibility, langKey = 'en'
   const payMethod = isReturn ? (invoice?.refundMethod || 'cash') : (invoice?.paymentMethod || 'cash');
   const { creditDue, isCreditSale, previousBalance, newBalance } = getOutstandingInfo(invoice, customer);
 
-  // ★ Customer-specific portal link
-  const portalLink = getPortalLink(invoice, customer);
+  // ★ Strict: only from resolved customer
+  const portalLink = getPortalLink(customer);
 
   let msg = '';
   if (v.showBusinessName) msg += `${biz.businessName || (isReturn ? L.returnTitle : L.invoiceTitle)}\n`;
@@ -719,7 +704,7 @@ function buildSMSMessage(invoice, customer, settings, visibility, langKey = 'en'
     if (v.showGrossTotal     && R2(invoice?.grossTotal)    > 0) msg += `${L.smsGross}:Rs.${fmt(R2(invoice.grossTotal))}\n`;
     if (v.showTotalDiscount  && R2(invoice?.totalDiscount) > 0) msg += `${L.smsDisc}:-Rs.${fmt(R2(invoice.totalDiscount))}\n`;
     if (v.showBillDiscount   && R2(invoice?.billDiscount)  > 0) msg += `${L.smsBillDisc}:-Rs.${fmt(R2(invoice.billDiscount))}\n`;
-    if (v.showExchangeAmount && R2(invoice?.exchangeAmount) > 0) msg += `${L.smsExchange}:-Rs.${fmt(R2(invoice.exchangeAmount))}\n`;
+    if (v.showExchangeAmount && R2(invoice?.exchangeAmount)> 0) msg += `${L.smsExchange}:-Rs.${fmt(R2(invoice.exchangeAmount))}\n`;
   }
   if (v.showNetAmount)     msg += `${isReturn ? L.smsRefund : L.smsTotal}:Rs.${fmt(netAmount)}\n`;
   if (v.showPaymentMethod) msg += `${L.smsPay}:${isReturn ? getRefundLabel(payMethod, L) : getPaymentLabel(payMethod, L)}\n`;
@@ -740,14 +725,13 @@ function buildSMSMessage(invoice, customer, settings, visibility, langKey = 'en'
 }
 
 /* ══════════════════════════════════════════════════════════
-   LANG BADGE
+   LANG BADGE + MODES CONFIG
    ══════════════════════════════════════════════════════════ */
 const LANG_BADGE = {
   en:    { color: '#2563eb', label: 'EN'  },
   si:    { color: '#16a34a', label: 'සිං' },
   mixed: { color: '#7c3aed', label: 'Mix' },
 };
-
 function LangBadge({ lang }) {
   const b = LANG_BADGE[lang] || { color: '#64748b', label: lang };
   return (
@@ -757,9 +741,6 @@ function LangBadge({ lang }) {
   );
 }
 
-/* ══════════════════════════════════════════════════════════
-   MODES CONFIG
-   ══════════════════════════════════════════════════════════ */
 const MODES = [
   { key: 'print',    icon: '🖨️', label: 'Print',    color: '#2563eb' },
   { key: 'whatsapp', icon: '📲', label: 'WhatsApp', color: '#25D366' },
@@ -768,10 +749,10 @@ const MODES = [
 ];
 
 // ═══════════════════════════════════
-// Part 1 END — Part 2 continues
+// Part 1 END
 // ═══════════════════════════════════// ═══════════════════════════════════
 // Part 2 — Main Component
-// (continues from Part 1)
+// (paste below Part 1)
 // ═══════════════════════════════════
 
 /* ══════════════════════════════════════════════════════════
@@ -814,7 +795,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
   const editingVisibility = getModeSettings(settingsMode).visibility;
 
   /* ══════════════════════════════════════════════════════════
-     ★ LOAD SETTINGS + CUSTOMER (robust resolution)
+     ★ STRICT CUSTOMER LOAD — customerId only, no fallbacks
      ══════════════════════════════════════════════════════════ */
   useEffect(() => {
     if (!user?.uid || !invoice) return;
@@ -828,58 +809,25 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
           getDoc(doc(db, `users/${user.uid}/settings`, 'invoiceOutputModes')),
         ]);
 
-        // ★ Robust customer resolution: id → phone → name → invoice key
+        // ★ STRICT: only by customerId — no phone/name fallback
         const cid = invoice.customerId;
         let resolvedCustomer = null;
 
-        // 1) By customerId
         if (cid && cid !== 'CASH_CUSTOMER') {
           try {
             const cSnap = await getDoc(doc(db, 'customers', cid));
             if (cSnap.exists()) {
               resolvedCustomer = { id: cSnap.id, ...cSnap.data() };
             }
-          } catch {}
-        }
-
-        // 2) Fallback by phone
-        if (!resolvedCustomer && invoice?.customerPhone) {
-          try {
-            const phoneSnap = await getDocs(
-              query(collection(db, 'customers'), where('phone', '==', invoice.customerPhone))
-            );
-            const phoneDoc = phoneSnap.docs.find(d => d.data().uid === user.uid);
-            if (phoneDoc) {
-              resolvedCustomer = { id: phoneDoc.id, ...phoneDoc.data() };
-            }
-          } catch {}
-        }
-
-        // 3) Fallback by name
-        if (!resolvedCustomer && invoice?.customerName && invoice.customerName !== 'Cash') {
-          try {
-            const nameSnap = await getDocs(
-              query(collection(db, 'customers'), where('name', '==', invoice.customerName), where('uid', '==', user.uid))
-            );
-            if (!nameSnap.empty) {
-              resolvedCustomer = { id: nameSnap.docs[0].id, ...nameSnap.docs[0].data() };
-            }
-          } catch {}
-        }
-
-        // 4) Fallback: use portal key from invoice itself
-        if (!resolvedCustomer && (invoice?.customerPortalKey || invoice?.portalAccessKey)) {
-          resolvedCustomer = {
-            portalAccessKey: invoice.customerPortalKey || invoice.portalAccessKey,
-            name: invoice.customerName || '',
-            phone: invoice.customerPhone || '',
-          };
+          } catch (e) {
+            console.warn('Customer fetch failed:', e.message);
+          }
         }
 
         if (!active) return;
 
         if (!ssSnap.empty) setSettings(ssSnap.docs[0].data());
-        if (resolvedCustomer) setCustomer(resolvedCustomer);
+        setCustomer(resolvedCustomer);
 
         if (prefSnap.exists()) {
           const saved = prefSnap.data();
@@ -908,7 +856,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
     return () => { active = false; };
   }, [user?.uid, invoice, showToast]);
 
-  /* ── ESC key close ── */
+  /* ── ESC key ── */
   useEffect(() => {
     const fn = (e) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', fn);
@@ -937,6 +885,9 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
   );
 
   const smsInfo = useMemo(() => getSMSCount(smsMessage), [smsMessage]);
+
+  // ★ Resolved portal link for display
+  const resolvedPortalLink = useMemo(() => getPortalLink(customer), [customer]);
 
   /* ── Settings actions ── */
   const saveAllModeSettings = useCallback(async () => {
@@ -1077,7 +1028,6 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
   ════════════════════════════════════════ */
   return (
     <>
-      {/* Toast */}
       {toastMsg && (
         <div style={{
           position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
@@ -1089,7 +1039,6 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
         </div>
       )}
 
-      {/* Overlay */}
       <div
         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
         style={{
@@ -1142,10 +1091,15 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
             </div>
           )}
 
-          {/* ── Portal link debug info ── */}
-          {customer?.portalAccessKey && (
-            <div style={{ background: '#f0fdf4', borderBottom: '1px solid #bbf7d0', padding: '4px 16px', fontSize: 10, color: '#16a34a', fontWeight: 700 }}>
-              🔗 Portal: {getPortalLink(invoice, customer)}
+          {/* ── Portal link status ── */}
+          {resolvedPortalLink ? (
+            <div style={{ background: '#f0fdf4', borderBottom: '1px solid #bbf7d0', padding: '6px 16px', fontSize: 11, color: '#16a34a', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>✅ Portal:</span>
+              <span style={{ color: '#1e293b', fontFamily: 'monospace', wordBreak: 'break-all' }}>{resolvedPortalLink}</span>
+            </div>
+          ) : (
+            <div style={{ background: '#fef3c7', borderBottom: '1px solid #fde68a', padding: '6px 16px', fontSize: 11, color: '#92400e', fontWeight: 700 }}>
+              ⚠️ Portal link නැත — customer ID: {invoice?.customerId || 'none'} | portalAccessKey: {customer?.portalAccessKey || 'none'}
             </div>
           )}
 
@@ -1192,7 +1146,6 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                 <div style={{ fontSize: 13, color: '#64748b', marginTop: 8 }}>Loading…</div>
               </div>
             ) : activeTab === 'preview' ? (
-              /* ═══ PREVIEW ═══ */
               <div>
                 <div style={{ textAlign: 'center', marginBottom: 10, fontSize: 11, color: '#64748b' }}>
                   🌐 {currentLang === 'si' ? 'සිංහල' : currentLang === 'mixed' ? 'Mixed' : 'English'}
@@ -1201,10 +1154,8 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
 
                 {outputMode === 'print' && (
                   <div style={{ maxWidth: 380, margin: '0 auto', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.08)' }}>
-                    <div
-                      style={{ fontFamily: "'Courier New', monospace", fontSize: 14, padding: '8px 6px', lineHeight: 1.4, color: '#000', fontWeight: 900, background: '#fff' }}
-                      dangerouslySetInnerHTML={{ __html: receiptHTML }}
-                    />
+                    <div style={{ fontFamily: "'Courier New', monospace", fontSize: 14, padding: '8px 6px', lineHeight: 1.4, color: '#000', fontWeight: 900, background: '#fff' }}
+                      dangerouslySetInnerHTML={{ __html: receiptHTML }} />
                   </div>
                 )}
 
@@ -1243,9 +1194,8 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                 )}
               </div>
             ) : (
-              /* ═══ SETTINGS ═══ */
+              /* ═══ SETTINGS TAB ═══ */
               <div>
-                {/* Mode selector */}
                 <div style={{ background: '#f0f9ff', borderRadius: 12, padding: 12, marginBottom: 16, border: '1px solid #bae6fd' }}>
                   <div style={{ fontSize: 13, fontWeight: 800, color: '#0369a1', marginBottom: 8 }}>🎯 සැකසීමට mode</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -1268,7 +1218,6 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   </div>
                 </div>
 
-                {/* Active mode header */}
                 <div style={{
                   background: MODES.find(m => m.key === settingsMode)?.color || '#2563eb',
                   color: '#fff', borderRadius: 10, padding: '10px 14px', marginBottom: 14,
@@ -1285,13 +1234,8 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   </div>
                 </div>
 
-                <LanguageSelector
-                  lang={editingLang}
-                  onChange={setEditingLang}
-                  modeLabel={MODES.find(m => m.key === settingsMode)?.label || ''}
-                />
+                <LanguageSelector lang={editingLang} onChange={setEditingLang} modeLabel={MODES.find(m => m.key === settingsMode)?.label || ''} />
 
-                {/* Copy from */}
                 <div style={{ background: '#fffbeb', borderRadius: 10, padding: 10, marginBottom: 14, border: '1px solid #fde68a' }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: '#b45309', marginBottom: 6 }}>📋 Copy from:</div>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -1299,20 +1243,15 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                       <button key={m.key} onClick={() => copySettingsFrom(m.key)} style={{
                         padding: '5px 10px', borderRadius: 6, border: '1px solid #e2e8f0',
                         background: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer', color: '#374151',
-                      }}>
-                        {m.icon} {m.label}
-                      </button>
+                      }}>{m.icon} {m.label}</button>
                     ))}
                     <button onClick={copyToAllModes} style={{
                       padding: '5px 10px', borderRadius: 6, border: '1px solid #bbf7d0',
                       background: '#f0fdf4', fontWeight: 700, fontSize: 11, cursor: 'pointer', color: '#16a34a',
-                    }}>
-                      🔄 → සියලු
-                    </button>
+                    }}>🔄 → සියලු</button>
                   </div>
                 </div>
 
-                {/* Presets */}
                 <div style={{ marginBottom: 14 }}>
                   <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>⚡ Presets</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -1320,20 +1259,16 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                       <button key={k} onClick={() => applyPreset(k)} style={{
                         padding: '7px 14px', borderRadius: 8, border: '1px solid #e2e8f0',
                         background: '#f8fafc', fontWeight: 700, fontSize: 12, cursor: 'pointer', color: '#374151',
-                      }}>
-                        {p.name}
-                      </button>
+                      }}>{p.name}</button>
                     ))}
                   </div>
                 </div>
 
-                {/* All ON/OFF */}
                 <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
                   <button onClick={() => setAllFields(true)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #bbf7d0', background: '#f0fdf4', color: '#16a34a', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>✅ All ON</button>
                   <button onClick={() => setAllFields(false)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>❌ All OFF</button>
                 </div>
 
-                {/* Visibility sections */}
                 {VISIBILITY_SECTIONS.map((sec) => {
                   const expandKey = `${settingsMode}_${sec.title}`;
                   const isOpen = settingsExpanded[expandKey] !== false;
@@ -1360,10 +1295,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                                 <div style={{ fontWeight: 600, fontSize: 13 }}>{f.label}</div>
                                 <div style={{ fontSize: 11, color: '#94a3b8' }}>{f.labelEn}</div>
                               </div>
-                              <ToggleSwitch
-                                checked={!!editingVisibility[f.key]}
-                                onChange={() => toggleEditingField(f.key)}
-                              />
+                              <ToggleSwitch checked={!!editingVisibility[f.key]} onChange={() => toggleEditingField(f.key)} />
                             </div>
                           ))}
                         </div>
@@ -1372,7 +1304,6 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   );
                 })}
 
-                {/* Save */}
                 <div style={{ marginTop: 20, textAlign: 'center' }}>
                   <button onClick={saveAllModeSettings} style={{
                     padding: '14px 40px', background: '#16a34a', color: '#fff', border: 'none',
