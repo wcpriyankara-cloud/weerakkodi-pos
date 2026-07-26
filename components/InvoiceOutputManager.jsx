@@ -2,6 +2,7 @@
 
 // components/InvoiceOutputManager.jsx
 // ✅ Next.js — same-origin portal links
+// ✅ Customer-specific portal key resolution (id → phone → name → invoice key)
 // ✅ WhatsApp/Share default showPortalLink: true
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
@@ -11,9 +12,6 @@ import {
   collection, query, where, getDocs,
   doc, getDoc, setDoc, serverTimestamp,
 } from 'firebase/firestore';
-
-const CATALOG_BASE =
-  process.env.NEXT_PUBLIC_CATALOG_URL || 'https://pos-catalog-gold.vercel.app';
 
 // ★ Same-origin portal link base
 const POS_BASE =
@@ -74,6 +72,22 @@ const getSMSCount = (msg) => {
   const perSMS = hasUnicode ? 70 : 160;
   const parts = Math.ceil(msg.length / perSMS);
   return { chars: msg.length, perSMS, parts };
+};
+
+/* ══════════════════════════════════════════════════════════
+   ★ PORTAL LINK — customer-specific resolution
+   ══════════════════════════════════════════════════════════ */
+const getPortalKeyFromAny = (invoice, customer) =>
+  customer?.portalAccessKey ||
+  invoice?.customerPortalKey ||
+  invoice?.portalAccessKey ||
+  invoice?._customer?.portalAccessKey ||
+  '';
+
+const getPortalLink = (invoice, customer) => {
+  const key = getPortalKeyFromAny(invoice, customer);
+  if (!key) return '';
+  return `${POS_BASE.replace(/\/$/, '')}/portal/${key}`;
 };
 
 /* ══════════════════════════════════════════════════════════
@@ -168,9 +182,9 @@ const isReturnDoc = (invoice) => invoice?._docType === 'return';
 
 const getCreditDueFromInvoice = (invoice) => {
   if (isReturnDoc(invoice)) return 0;
-  const net = R2(invoice?.netAmount);
-  const paid = R2(invoice?.payAmount);
-  const bal = R2(invoice?.balance);
+  const net    = R2(invoice?.netAmount);
+  const paid   = R2(invoice?.payAmount);
+  const bal    = R2(invoice?.balance);
   const method = invoice?.paymentMethod || 'cash';
   const isCreditSale = method === 'credit' || bal < -0.01;
   return isCreditSale ? Math.max(0, R2(net - paid)) : 0;
@@ -179,8 +193,8 @@ const getCreditDueFromInvoice = (invoice) => {
 const getOutstandingInfo = (invoice, customer) => {
   if (isReturnDoc(invoice))
     return { creditDue: 0, isCreditSale: false, previousBalance: 0, newBalance: 0 };
-  const dbBal = R2(customer?.currentBalance ?? invoice?.customerCurrentBalance ?? 0);
-  const creditDue = getCreditDueFromInvoice(invoice);
+  const dbBal       = R2(customer?.currentBalance ?? invoice?.customerCurrentBalance ?? 0);
+  const creditDue   = getCreditDueFromInvoice(invoice);
   const isCreditSale = creditDue > 0.009;
   const previousBalance = invoice?.previousOutstanding != null
     ? R2(invoice.previousOutstanding)
@@ -192,32 +206,23 @@ const getOutstandingInfo = (invoice, customer) => {
 };
 
 /* ══════════════════════════════════════════════════════════
-   ★ PORTAL LINK — same origin
-   ══════════════════════════════════════════════════════════ */
-const getPortalLink = (customer) => {
-  const key = customer?.portalAccessKey;
-  if (!key) return '';
-  return `${POS_BASE.replace(/\/$/, '')}/portal/${key}`;
-};
-
-/* ══════════════════════════════════════════════════════════
    DEFAULT VISIBILITY
    ══════════════════════════════════════════════════════════ */
 const DEFAULT_VISIBILITY = {
-  showCustomerName: true, showCustomerPhone: false, showCustomerAddress: false,
-  showItemPrices: true, showItemDiscount: true, showDiscountPercent: true,
-  showGrossTotal: true, showTotalDiscount: true, showBillDiscount: true,
-  showExchangeAmount: true, showNetAmount: true, showPaymentMethod: true,
-  showPaidAmount: true, showBalance: true, showPreviousBalance: false,
-  showNewBalance: false, showCreditDue: true, showRemarks: false,
-  showWarranty: true, showUOM: true, showItemSinhala: true,
-  showInvoiceNo: true, showDate: true, showPortalLink: false,
-  showBusinessLogo: true, showBusinessName: true, showBusinessAddress: true,
+  showCustomerName: true,  showCustomerPhone: false, showCustomerAddress: false,
+  showItemPrices: true,    showItemDiscount: true,   showDiscountPercent: true,
+  showGrossTotal: true,    showTotalDiscount: true,  showBillDiscount: true,
+  showExchangeAmount: true, showNetAmount: true,     showPaymentMethod: true,
+  showPaidAmount: true,    showBalance: true,        showPreviousBalance: false,
+  showNewBalance: false,   showCreditDue: true,      showRemarks: false,
+  showWarranty: true,      showUOM: true,            showItemSinhala: true,
+  showInvoiceNo: true,     showDate: true,           showPortalLink: false,
+  showBusinessLogo: true,  showBusinessName: true,   showBusinessAddress: true,
   showBusinessPhone: true, showFooterMessage: true,
 };
 
 /* ══════════════════════════════════════════════════════════
-   ★ DEFAULT MODE SETTINGS — portal link ON for whatsapp/share
+   ★ DEFAULT MODE SETTINGS
    ══════════════════════════════════════════════════════════ */
 const buildDefaultModeSettings = () => ({
   print: {
@@ -233,12 +238,13 @@ const buildDefaultModeSettings = () => ({
     visibility: {
       ...DEFAULT_VISIBILITY,
       showCustomerAddress: false, showItemSinhala: false,
-      showWarranty: false, showBillDiscount: false,
-      showExchangeAmount: false, showPreviousBalance: false,
-      showPortalLink: false, showBusinessLogo: false,
+      showWarranty: false,        showBillDiscount: false,
+      showExchangeAmount: false,  showPreviousBalance: false,
+      showPortalLink: false,      showBusinessLogo: false,
       showBusinessAddress: false, showBusinessPhone: false,
       showDiscountPercent: false, showUOM: false,
-      showRemarks: false, showGrossTotal: false, showTotalDiscount: false,
+      showRemarks: false,         showGrossTotal: false,
+      showTotalDiscount: false,
     },
   },
   share: {
@@ -278,20 +284,20 @@ const VISIBILITY_SECTIONS = [
   {
     title: '📊 ණය', icon: '📊',
     fields: [
-      { key: 'showPreviousBalance', label: 'පෙර ණය',    labelEn: 'Previous Balance' },
-      { key: 'showNewBalance',      label: 'නව ණය',     labelEn: 'New Balance' },
-      { key: 'showCreditDue',       label: 'ණය මුදල',   labelEn: 'Credit Due' },
+      { key: 'showPreviousBalance', label: 'පෙර ණය',  labelEn: 'Previous Balance' },
+      { key: 'showNewBalance',      label: 'නව ණය',   labelEn: 'New Balance' },
+      { key: 'showCreditDue',       label: 'ණය මුදල', labelEn: 'Credit Due' },
     ],
   },
   {
     title: '📝 අමතර', icon: '📝',
     fields: [
-      { key: 'showRemarks',     label: 'සටහන්',         labelEn: 'Remarks' },
-      { key: 'showWarranty',    label: 'වගකීම',         labelEn: 'Warranty' },
-      { key: 'showUOM',         label: 'ඒකක',           labelEn: 'UOM' },
-      { key: 'showItemSinhala', label: 'සිංහල නම',      labelEn: 'Sinhala Name' },
+      { key: 'showRemarks',     label: 'සටහන්',          labelEn: 'Remarks' },
+      { key: 'showWarranty',    label: 'වගකීම',          labelEn: 'Warranty' },
+      { key: 'showUOM',         label: 'ඒකක',            labelEn: 'UOM' },
+      { key: 'showItemSinhala', label: 'සිංහල නම',       labelEn: 'Sinhala Name' },
       { key: 'showInvoiceNo',   label: 'ඉන්වොයිස් අංකය', labelEn: 'Invoice No' },
-      { key: 'showDate',        label: 'දිනය',          labelEn: 'Date & Time' },
+      { key: 'showDate',        label: 'දිනය',           labelEn: 'Date & Time' },
     ],
   },
   {
@@ -303,11 +309,11 @@ const VISIBILITY_SECTIONS = [
   {
     title: '🏢 ව්‍යාපාර', icon: '🏢',
     fields: [
-      { key: 'showBusinessLogo',    label: 'Logo',          labelEn: 'Logo' },
-      { key: 'showBusinessName',    label: 'ව්‍යාපාර නම',  labelEn: 'Business Name' },
-      { key: 'showBusinessAddress', label: 'ලිපිනය',        labelEn: 'Address' },
-      { key: 'showBusinessPhone',   label: 'දුරකථන',        labelEn: 'Phone' },
-      { key: 'showFooterMessage',   label: 'Footer',        labelEn: 'Footer' },
+      { key: 'showBusinessLogo',    label: 'Logo',         labelEn: 'Logo' },
+      { key: 'showBusinessName',    label: 'ව්‍යාපාර නම', labelEn: 'Business Name' },
+      { key: 'showBusinessAddress', label: 'ලිපිනය',       labelEn: 'Address' },
+      { key: 'showBusinessPhone',   label: 'දුරකථන',       labelEn: 'Phone' },
+      { key: 'showFooterMessage',   label: 'Footer',       labelEn: 'Footer' },
     ],
   },
 ];
@@ -317,8 +323,8 @@ const VISIBILITY_SECTIONS = [
    ══════════════════════════════════════════════════════════ */
 const PRESETS = {
   full:     { name: '📋 සම්පූර්ණ', config: Object.fromEntries(Object.keys(DEFAULT_VISIBILITY).map(k => [k, true])) },
-  minimal:  { name: '📄 සරල', config: { ...Object.fromEntries(Object.keys(DEFAULT_VISIBILITY).map(k => [k, false])), showCustomerName: true, showItemPrices: true, showNetAmount: true, showInvoiceNo: true, showDate: true, showBusinessName: true } },
-  standard: { name: '📊 සම්මත', config: { ...DEFAULT_VISIBILITY } },
+  minimal:  { name: '📄 සරල',      config: { ...Object.fromEntries(Object.keys(DEFAULT_VISIBILITY).map(k => [k, false])), showCustomerName: true, showItemPrices: true, showNetAmount: true, showInvoiceNo: true, showDate: true, showBusinessName: true } },
+  standard: { name: '📊 සම්මත',    config: { ...DEFAULT_VISIBILITY } },
   privacy:  { name: '🔒 පෞද්ගලිකත්වය', config: { ...DEFAULT_VISIBILITY, showCustomerPhone: false, showCustomerAddress: false, showPreviousBalance: false, showNewBalance: false, showPortalLink: false, showRemarks: false } },
 };
 
@@ -380,29 +386,36 @@ function LanguageSelector({ lang, onChange, modeLabel }) {
    BUILD RECEIPT HTML
    ══════════════════════════════════════════════════════════ */
 function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en') {
-  const v = visibility || DEFAULT_VISIBILITY;
-  const biz = settings || {};
-  const items = invoice?.items || [];
-  const isReturn = isReturnDoc(invoice);
-  const L = getLang(langKey);
+  const v   = visibility || DEFAULT_VISIBILITY;
+  const biz = settings  || {};
+  const items     = invoice?.items || [];
+  const isReturn  = isReturnDoc(invoice);
+  const L         = getLang(langKey);
 
-  const grossTotal   = R2(invoice?.grossTotal);
-  const billDiscount = R2(invoice?.billDiscount);
+  const grossTotal    = R2(invoice?.grossTotal);
+  const billDiscount  = R2(invoice?.billDiscount);
   const totalDiscount = R2(invoice?.totalDiscount);
-  const exchangeAmt  = R2(invoice?.exchangeAmount);
-  const netAmount    = R2(invoice?.netAmount);
-  const payAmount    = R2(invoice?.payAmount);
-  const balance      = R2(invoice?.balance);
-  const remarks      = invoice?.remarks || invoice?.invoiceRemark || '';
-  const payMethod    = isReturn ? (invoice?.refundMethod || 'cash') : (invoice?.paymentMethod || 'cash');
-  const { previousBalance, newBalance, creditDue, isCreditSale } = getOutstandingInfo(invoice, customer);
+  const exchangeAmt   = R2(invoice?.exchangeAmount);
+  const netAmount     = R2(invoice?.netAmount);
+  const payAmount     = R2(invoice?.payAmount);
+  const balance       = R2(invoice?.balance);
+  const remarks       = invoice?.remarks || invoice?.invoiceRemark || '';
+  const payMethod     = isReturn ? (invoice?.refundMethod || 'cash') : (invoice?.paymentMethod || 'cash');
+
+  const { previousBalance, newBalance, creditDue, isCreditSale } =
+    getOutstandingInfo(invoice, customer);
+
   const invoiceNo     = invoice?.invoiceNo || invoice?.id?.slice(0, 8)?.toUpperCase() || '';
   const originalInvNo = invoice?.originalInvoiceNo || '';
   const invDate       = fmtDate(invoice?.createdAt);
-  const portalLink    = getPortalLink(customer);
+
+  // ★ Customer-specific portal link
+  const portalLink = getPortalLink(invoice, customer);
 
   const row = (l, r, fs = 14) =>
-    `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:${fs}px;font-weight:900;color:#000;line-height:1.3"><span>${esc(l)}</span><span style="text-align:right;max-width:58%;word-break:break-word;margin-left:4px">${esc(r)}</span></div>`;
+    `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:${fs}px;font-weight:900;color:#000;line-height:1.3">` +
+    `<span>${esc(l)}</span>` +
+    `<span style="text-align:right;max-width:58%;word-break:break-word;margin-left:4px">${esc(r)}</span></div>`;
   const center = (txt, fs = 12) =>
     `<div style="text-align:center;font-weight:900;color:#000;font-size:${fs}px">${esc(txt)}</div>`;
   const div1 = `<div style="border-top:2px dashed #000;margin:5px 0"></div>`;
@@ -410,17 +423,25 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
   const div3 = `<div style="border-top:3px solid #000;margin:5px 0"></div>`;
 
   let html = '';
-  if (v.showBusinessLogo && biz.logo) html += `<div style="text-align:center;margin-bottom:4px"><img src="${esc(biz.logo)}" crossorigin="anonymous" style="max-height:50px;max-width:80%;object-fit:contain" /></div>`;
-  if (v.showBusinessName) html += center(biz.businessName || (isReturn ? L.returnTitle : L.invoiceTitle), 20);
-  if (isReturn) html += `<div style="text-align:center;margin:4px 0"><span style="background:#fef2f2;color:#dc2626;font-size:13px;font-weight:900;padding:3px 14px;border-radius:20px;border:2px solid #fecaca">${esc(L.returnBadge)}</span></div>`;
+
+  if (v.showBusinessLogo && biz.logo)
+    html += `<div style="text-align:center;margin-bottom:4px"><img src="${esc(biz.logo)}" crossorigin="anonymous" style="max-height:50px;max-width:80%;object-fit:contain" /></div>`;
+  if (v.showBusinessName)
+    html += center(biz.businessName || (isReturn ? L.returnTitle : L.invoiceTitle), 20);
+  if (isReturn)
+    html += `<div style="text-align:center;margin:4px 0"><span style="background:#fef2f2;color:#dc2626;font-size:13px;font-weight:900;padding:3px 14px;border-radius:20px;border:2px solid #fecaca">${esc(L.returnBadge)}</span></div>`;
   if (v.showBusinessAddress && biz.address) html += center(biz.address, 11);
-  if (v.showBusinessPhone && biz.phone) html += center(`Tel: ${biz.phone}`, 11);
+  if (v.showBusinessPhone   && biz.phone)   html += center(`Tel: ${biz.phone}`, 11);
   html += div1;
-  if (v.showInvoiceNo) { html += row(isReturn ? L.returnNo : L.no, invoiceNo, 15); if (isReturn && originalInvNo) html += row(L.originalInvoice, originalInvNo, 12); }
+
+  if (v.showInvoiceNo) {
+    html += row(isReturn ? L.returnNo : L.no, invoiceNo, 15);
+    if (isReturn && originalInvNo) html += row(L.originalInvoice, originalInvNo, 12);
+  }
   if (v.showDate) html += row(L.date, invDate, 13);
   if (v.showCustomerName || v.showCustomerPhone || v.showCustomerAddress) html += div2;
-  if (v.showCustomerName) html += row(L.customer, invoice?.customerName || 'Cash', 15);
-  if (v.showCustomerPhone && invoice?.customerPhone) html += row(L.phone, invoice.customerPhone, 13);
+  if (v.showCustomerName)    html += row(L.customer, invoice?.customerName || 'Cash', 15);
+  if (v.showCustomerPhone  && invoice?.customerPhone)   html += row(L.phone, invoice.customerPhone, 13);
   if (v.showCustomerAddress && invoice?.customerAddress) html += row(L.address, invoice.customerAddress, 12);
   html += div1;
   html += center(isReturn ? `— ${L.returnedItems} (${items.length}) —` : `— ${L.items} (${items.length}) —`, 12);
@@ -428,13 +449,15 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
   items.forEach((item, i) => {
     const sp = R2(item.sellingPrice), yp = R2(item.yourPrice), qty = R2(item.qty);
     const hasDisc = sp > yp && sp > 0;
-    const lt = R2(item.lineTotal ?? yp * qty);
-    const uom = item.uom && item.uom !== 'unit' ? ` ${item.uom}` : '';
+    const lt      = R2(item.lineTotal ?? yp * qty);
+    const uom     = item.uom && item.uom !== 'unit' ? ` ${item.uom}` : '';
     const discPct = hasDisc && sp > 0 ? R2(((sp - yp) / sp) * 100) : 0;
-    const border = i < items.length - 1 ? 'border-bottom:1px dotted #000;' : '';
+    const border  = i < items.length - 1 ? 'border-bottom:1px dotted #000;' : '';
+
     let primary = item.name || '', secondary = '';
-    if (langKey === 'si' && item.nameSi) { primary = item.nameSi; secondary = item.name || ''; }
+    if (langKey === 'si' && item.nameSi)     { primary = item.nameSi; secondary = item.name || ''; }
     else if (item.nameSi && v.showItemSinhala) secondary = item.nameSi;
+
     html += `<div style="margin-bottom:4px;padding-bottom:3px;${border}">`;
     html += `<div style="font-weight:900;font-size:14px;color:#000;word-break:break-word;line-height:1.2">${i + 1}. ${esc(primary)}</div>`;
     if (secondary) html += `<div style="font-size:12px;font-weight:900;color:#000;padding-left:14px">(${esc(secondary)})</div>`;
@@ -444,36 +467,63 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
         priceStr = `<span style="text-decoration:line-through">${fmt(sp)}</span> ${fmt(yp)}`;
         if (v.showDiscountPercent) priceStr += ` <span style="font-size:11px">(-${discPct}%)</span>`;
       } else { priceStr = fmt(sp); }
-      html += `<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:900;color:#000;padding-left:14px;margin-top:1px"><span>${priceStr} x${qty}${v.showUOM ? esc(uom) : ''}</span><span style="font-size:14px;font-weight:900">Rs.${fmt(lt)}</span></div>`;
+      html += `<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:900;color:#000;padding-left:14px;margin-top:1px">` +
+        `<span>${priceStr} x${qty}${v.showUOM ? esc(uom) : ''}</span>` +
+        `<span style="font-size:14px;font-weight:900">Rs.${fmt(lt)}</span></div>`;
     }
-    if (v.showWarranty && item.warrantyCode) html += `<div style="font-size:11px;font-weight:900;color:#000;padding-left:14px">${esc(L.warranty)} ${esc(item.warrantyCode)}${item.warrantyPeriod ? ' | ' + esc(item.warrantyPeriod) : ''}</div>`;
+    if (v.showWarranty && item.warrantyCode)
+      html += `<div style="font-size:11px;font-weight:900;color:#000;padding-left:14px">${esc(L.warranty)} ${esc(item.warrantyCode)}${item.warrantyPeriod ? ' | ' + esc(item.warrantyPeriod) : ''}</div>`;
     html += `</div>`;
   });
 
   html += div1;
   if (!isReturn) {
-    if (v.showGrossTotal) html += row(L.gross, `Rs.${fmt(grossTotal)}`);
-    if (v.showTotalDiscount && totalDiscount > 0) html += row(L.discount, `-Rs.${fmt(totalDiscount)}`);
-    if (v.showBillDiscount && billDiscount > 0) html += row(L.billDisc, `-Rs.${fmt(billDiscount)}`);
-    if (v.showExchangeAmount && exchangeAmt > 0) html += row(L.exchange, `-Rs.${fmt(exchangeAmt)}`);
+    if (v.showGrossTotal)                           html += row(L.gross,    `Rs.${fmt(grossTotal)}`);
+    if (v.showTotalDiscount && totalDiscount > 0)   html += row(L.discount, `-Rs.${fmt(totalDiscount)}`);
+    if (v.showBillDiscount  && billDiscount  > 0)   html += row(L.billDisc, `-Rs.${fmt(billDiscount)}`);
+    if (v.showExchangeAmount && exchangeAmt  > 0)   html += row(L.exchange, `-Rs.${fmt(exchangeAmt)}`);
   }
   if (v.showNetAmount) {
     html += div3;
-    html += `<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:20px;font-weight:900;color:#000"><span>${esc(isReturn ? L.refundTotal : L.netTotal)}</span><span>Rs.${fmt(netAmount)}</span></div>`;
+    html += `<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:20px;font-weight:900;color:#000">` +
+      `<span>${esc(isReturn ? L.refundTotal : L.netTotal)}</span><span>Rs.${fmt(netAmount)}</span></div>`;
     html += div3;
   }
-  if (v.showPaymentMethod) html += row(isReturn ? L.refundVia : L.pay, isReturn ? getRefundLabel(payMethod, L) : getPaymentLabel(payMethod, L), 15);
-  if (v.showPaidAmount) html += row(isReturn ? L.refundAmt : L.paid, `Rs.${fmt(payAmount)}`, 15);
+  if (v.showPaymentMethod)
+    html += row(isReturn ? L.refundVia : L.pay,
+      isReturn ? getRefundLabel(payMethod, L) : getPaymentLabel(payMethod, L), 15);
+  if (v.showPaidAmount)
+    html += row(isReturn ? L.refundAmt : L.paid, `Rs.${fmt(payAmount)}`, 15);
   if (!isReturn) {
-    if (v.showBalance && balance >= 0.01) { html += div2; html += `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:17px;font-weight:900;color:#000"><span>${esc(L.change)}</span><span>Rs.${fmt(balance)}</span></div>`; }
-    if (v.showCreditDue && isCreditSale && creditDue > 0) { html += div2; html += `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:17px;font-weight:900;color:#000"><span>${esc(L.creditDue)}</span><span>Rs.${fmt(creditDue)}</span></div>`; }
+    if (v.showBalance && balance >= 0.01) {
+      html += div2;
+      html += `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:17px;font-weight:900;color:#000"><span>${esc(L.change)}</span><span>Rs.${fmt(balance)}</span></div>`;
+    }
+    if (v.showCreditDue && isCreditSale && creditDue > 0) {
+      html += div2;
+      html += `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:17px;font-weight:900;color:#000"><span>${esc(L.creditDue)}</span><span>Rs.${fmt(creditDue)}</span></div>`;
+    }
     if (v.showPreviousBalance) { html += div1; html += row(L.prevDue, `Rs.${fmt(previousBalance)}`, 15); }
-    if (v.showNewBalance) { html += `<div style="border-top:2px solid #000;margin:3px 0"></div>`; html += `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:17px;font-weight:900;color:#000"><span>${esc(L.totalDue)}</span><span>Rs.${fmt(newBalance)}</span></div>`; }
+    if (v.showNewBalance) {
+      html += `<div style="border-top:2px solid #000;margin:3px 0"></div>`;
+      html += `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:17px;font-weight:900;color:#000"><span>${esc(L.totalDue)}</span><span>Rs.${fmt(newBalance)}</span></div>`;
+    }
   }
-  if (v.showRemarks && remarks) html += div2 + `<div style="font-size:12px;font-weight:900;color:#000;padding:2px 0;word-break:break-word">${esc(L.note)} ${esc(remarks)}</div>`;
-  if (!isReturn && v.showPortalLink && portalLink) { html += div2; html += `<div style="text-align:center;font-size:10px;font-weight:900;color:#000;word-break:break-all;padding:2px 0">${esc(portalLink)}</div>`; }
+  if (v.showRemarks && remarks)
+    html += div2 + `<div style="font-size:12px;font-weight:900;color:#000;padding:2px 0;word-break:break-word">${esc(L.note)} ${esc(remarks)}</div>`;
+
+  // ★ Customer-specific portal link
+  if (!isReturn && v.showPortalLink && portalLink) {
+    html += div2;
+    html += `<div style="text-align:center;background:#eff6ff;border-radius:8px;padding:6px;margin-top:4px">`;
+    html += `<div style="font-size:10px;font-weight:900;color:#1e40af;margin-bottom:2px">👤 ඔබේ ගිණුම බලන්න</div>`;
+    html += `<div style="font-size:10px;font-weight:900;color:#000;word-break:break-all">${esc(portalLink)}</div>`;
+    html += `</div>`;
+  }
+
   html += div3;
-  if (v.showFooterMessage) html += center(biz.footerMessage || (isReturn ? 'Return Processed!' : 'Thank You!'), 14);
+  if (v.showFooterMessage)
+    html += center(biz.footerMessage || (isReturn ? 'Return Processed!' : 'Thank You!'), 14);
   html += center(L.computerGenerated, 9);
   return html;
 }
@@ -485,7 +535,12 @@ function printViaIframe(receiptHTML) {
   const fullHTML = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Receipt</title><style>*{margin:0;padding:0;box-sizing:border-box}html,body{width:80mm;max-width:80mm;font-family:'Courier New',Courier,monospace;font-size:14px;font-weight:900;color:#000;background:#fff;line-height:1.4}body{padding:2mm 3mm}div,span,p{color:#000!important;font-weight:900!important}img{max-width:80%!important}@page{size:80mm auto;margin:0}@media print{html,body{width:80mm!important;max-width:80mm!important;margin:0!important;padding:2mm 3mm!important}}</style></head><body>${receiptHTML}</body></html>`;
 
   return new Promise((resolve) => {
-    const isMobileSafari = typeof navigator !== 'undefined' && /iP(ad|hone|od)/.test(navigator.userAgent) && /WebKit/.test(navigator.userAgent) && !/CriOS/.test(navigator.userAgent);
+    const isMobileSafari =
+      typeof navigator !== 'undefined' &&
+      /iP(ad|hone|od)/.test(navigator.userAgent) &&
+      /WebKit/.test(navigator.userAgent) &&
+      !/CriOS/.test(navigator.userAgent);
+
     if (isMobileSafari) {
       const blob = new Blob([fullHTML], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
@@ -494,6 +549,7 @@ function printViaIframe(receiptHTML) {
       else { URL.revokeObjectURL(url); }
       resolve(); return;
     }
+
     const iframe = document.createElement('iframe');
     iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;';
     document.body.appendChild(iframe);
@@ -501,7 +557,10 @@ function printViaIframe(receiptHTML) {
     if (!iframeDoc) { document.body.removeChild(iframe); resolve(); return; }
     iframeDoc.open(); iframeDoc.write(fullHTML); iframeDoc.close();
     let resolved = false;
-    const cleanup = () => { if (resolved) return; resolved = true; setTimeout(() => { if (document.body.contains(iframe)) document.body.removeChild(iframe); resolve(); }, 300); };
+    const cleanup = () => {
+      if (resolved) return; resolved = true;
+      setTimeout(() => { if (document.body.contains(iframe)) document.body.removeChild(iframe); resolve(); }, 300);
+    };
     let printed = false;
     const doPrint = async () => {
       if (printed) return; printed = true;
@@ -523,11 +582,12 @@ function printViaIframe(receiptHTML) {
    BUILD WHATSAPP MESSAGE
    ══════════════════════════════════════════════════════════ */
 function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en') {
-  const v = visibility || DEFAULT_VISIBILITY;
-  const biz = settings || {};
-  const items = invoice?.items || [];
+  const v   = visibility || DEFAULT_VISIBILITY;
+  const biz = settings  || {};
+  const items    = invoice?.items || [];
   const isReturn = isReturnDoc(invoice);
-  const L = getLang(langKey);
+  const L        = getLang(langKey);
+
   const invoiceNo = invoice?.invoiceNo || invoice?.id?.slice(0, 8)?.toUpperCase() || '';
   const netAmount = R2(invoice?.netAmount);
   const payAmount = R2(invoice?.payAmount);
@@ -535,14 +595,20 @@ function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en')
   const remarks   = invoice?.remarks || invoice?.invoiceRemark || '';
   const payMethod = isReturn ? (invoice?.refundMethod || 'cash') : (invoice?.paymentMethod || 'cash');
   const { previousBalance, newBalance, creditDue, isCreditSale } = getOutstandingInfo(invoice, customer);
-  const portalLink = getPortalLink(customer);
+
+  // ★ Customer-specific portal link
+  const portalLink = getPortalLink(invoice, customer);
 
   let msg = '';
   if (v.showBusinessName) msg += `${isReturn ? '↩️' : '🧾'} *${biz.businessName || (isReturn ? L.returnTitle : L.invoiceTitle)}*\n`;
   if (isReturn) msg += `*${L.returnBadge}*\n`;
   msg += `━━━━━━━━━━━━━━\n`;
-  if (v.showInvoiceNo) { msg += `📋 *${isReturn ? L.returnNo : L.no}* ${invoiceNo}\n`; if (isReturn && invoice?.originalInvoiceNo) msg += `🧾 *${L.originalInvoice}* ${invoice.originalInvoiceNo}\n`; }
-  if (v.showDate) msg += `📅 *${L.date}* ${fmtDate(invoice?.createdAt)}\n`;
+
+  if (v.showInvoiceNo) {
+    msg += `📋 *${isReturn ? L.returnNo : L.no}* ${invoiceNo}\n`;
+    if (isReturn && invoice?.originalInvoiceNo) msg += `🧾 *${L.originalInvoice}* ${invoice.originalInvoiceNo}\n`;
+  }
+  if (v.showDate)         msg += `📅 *${L.date}* ${fmtDate(invoice?.createdAt)}\n`;
   if (v.showCustomerName) msg += `👤 *${L.customer}* ${invoice?.customerName || 'Cash'}\n`;
   if (v.showCustomerPhone && invoice?.customerPhone) msg += `📞 ${invoice.customerPhone}\n`;
   msg += `━━━━━━━━━━━━━━\n\n`;
@@ -553,8 +619,8 @@ function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en')
     const hasDisc = sp > yp && sp > 0;
     const uom = v.showUOM && it.uom && it.uom !== 'unit' ? ` ${it.uom}` : '';
     let name = it.name || '', siNote = '';
-    if (langKey === 'si' && it.nameSi) { name = it.nameSi; siNote = it.name ? ` (${it.name})` : ''; }
-    else if (it.nameSi && v.showItemSinhala) siNote = ` (${it.nameSi})`;
+    if (langKey === 'si' && it.nameSi)       { name = it.nameSi; siNote = it.name ? ` (${it.name})` : ''; }
+    else if (it.nameSi && v.showItemSinhala)   siNote = ` (${it.nameSi})`;
     msg += `${i + 1}. *${name}*${siNote}\n`;
     if (v.showItemPrices) {
       if (hasDisc && v.showItemDiscount) {
@@ -563,29 +629,35 @@ function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en')
         msg += `\n   *Rs.${fmt(yp)}* × ${qty}${uom} = *Rs.${fmt(lt)}*\n`;
       } else { msg += `   Rs.${fmt(sp)} × ${qty}${uom} = *Rs.${fmt(lt)}*\n`; }
     }
-    if (v.showWarranty && it.warrantyCode) msg += `   🛡️ ${it.warrantyCode}${it.warrantyPeriod ? ` · ${it.warrantyPeriod}` : ''}\n`;
+    if (v.showWarranty && it.warrantyCode)
+      msg += `   🛡️ ${it.warrantyCode}${it.warrantyPeriod ? ` · ${it.warrantyPeriod}` : ''}\n`;
   });
 
   msg += `\n━━━━━━━━━━━━━━\n`;
   if (!isReturn) {
-    if (v.showGrossTotal && R2(invoice?.grossTotal) > 0) msg += `💰 *${L.gross}* Rs.${fmt(R2(invoice.grossTotal))}\n`;
-    if (v.showTotalDiscount && R2(invoice?.totalDiscount) > 0) msg += `🏷️ *${L.discount}* -Rs.${fmt(R2(invoice.totalDiscount))}\n`;
-    if (v.showBillDiscount && R2(invoice?.billDiscount) > 0) msg += `📋 *${L.billDisc}* -Rs.${fmt(R2(invoice.billDiscount))}\n`;
+    if (v.showGrossTotal     && R2(invoice?.grossTotal)    > 0) msg += `💰 *${L.gross}* Rs.${fmt(R2(invoice.grossTotal))}\n`;
+    if (v.showTotalDiscount  && R2(invoice?.totalDiscount) > 0) msg += `🏷️ *${L.discount}* -Rs.${fmt(R2(invoice.totalDiscount))}\n`;
+    if (v.showBillDiscount   && R2(invoice?.billDiscount)  > 0) msg += `📋 *${L.billDisc}* -Rs.${fmt(R2(invoice.billDiscount))}\n`;
     if (v.showExchangeAmount && R2(invoice?.exchangeAmount) > 0) msg += `🔄 *${L.exchange}* -Rs.${fmt(R2(invoice.exchangeAmount))}\n`;
   }
-  if (v.showNetAmount) msg += `\n💰 *${isReturn ? L.refundTotal : L.netTotal}:* Rs.${fmt(netAmount)}\n`;
+  if (v.showNetAmount)    msg += `\n💰 *${isReturn ? L.refundTotal : L.netTotal}:* Rs.${fmt(netAmount)}\n`;
   if (v.showPaymentMethod) msg += isReturn ? `${getRefundLabel(payMethod, L, true)}\n` : `${getPaymentLabel(payMethod, L, true)}\n`;
-  if (v.showPaidAmount) msg += `${isReturn ? '💸' : '💵'} *${isReturn ? L.refundAmt : L.paid}* Rs.${fmt(payAmount)}\n`;
+  if (v.showPaidAmount)   msg += `${isReturn ? '💸' : '💵'} *${isReturn ? L.refundAmt : L.paid}* Rs.${fmt(payAmount)}\n`;
   if (!isReturn) {
-    if (v.showBalance && balance >= 0.01) msg += `🔄 *${L.change}:* Rs.${fmt(balance)}\n`;
-    if (v.showCreditDue && isCreditSale && creditDue > 0) msg += `📝 *${L.creditDue}:* Rs.${fmt(creditDue)}\n`;
+    if (v.showBalance       && balance    >= 0.01)              msg += `🔄 *${L.change}:* Rs.${fmt(balance)}\n`;
+    if (v.showCreditDue     && isCreditSale && creditDue > 0)   msg += `📝 *${L.creditDue}:* Rs.${fmt(creditDue)}\n`;
     if (v.showPreviousBalance) { msg += `\n━━━━━━━━━━━━━━\n`; msg += `🔴 *${L.prevDue}* Rs.${fmt(previousBalance)}\n`; }
-    if (v.showNewBalance) msg += `🔴 *${L.totalDue}:* Rs.${fmt(newBalance)}\n`;
+    if (v.showNewBalance)   msg += `🔴 *${L.totalDue}:* Rs.${fmt(newBalance)}\n`;
   }
   if (v.showRemarks && remarks) msg += `\n📝 ${remarks}\n`;
   msg += `\n━━━━━━━━━━━━━━\n`;
-  if (v.showFooterMessage) msg += `✅ *${biz.footerMessage || (isReturn ? 'Return Processed! ස්තුතියි!' : 'Thank You! ස්තුතියි!')}*\n`;
-  if (!isReturn && v.showPortalLink && portalLink) msg += `\n🛒 *ඔබේ ගිණුම:*\n${portalLink}\n`;
+  if (v.showFooterMessage)
+    msg += `✅ *${biz.footerMessage || (isReturn ? 'Return Processed! ස්තුතියි!' : 'Thank You! ස්තුතියි!')}*\n`;
+
+  // ★ Customer-specific portal link
+  if (!isReturn && v.showPortalLink && portalLink)
+    msg += `\n👤 *ඔබේ ගිණුම බලන්න:*\n${portalLink}\n`;
+
   return msg;
 }
 
@@ -593,24 +665,29 @@ function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en')
    BUILD SMS MESSAGE
    ══════════════════════════════════════════════════════════ */
 function buildSMSMessage(invoice, customer, settings, visibility, langKey = 'en') {
-  const v = visibility || DEFAULT_VISIBILITY;
-  const biz = settings || {};
-  const isReturn = isReturnDoc(invoice);
-  const L = getLang(langKey);
-  const items = invoice?.items || [];
+  const v   = visibility || DEFAULT_VISIBILITY;
+  const biz = settings  || {};
+  const isReturn  = isReturnDoc(invoice);
+  const L         = getLang(langKey);
+  const items     = invoice?.items || [];
   const netAmount = R2(invoice?.netAmount);
   const payAmount = R2(invoice?.payAmount);
   const balance   = R2(invoice?.balance);
   const payMethod = isReturn ? (invoice?.refundMethod || 'cash') : (invoice?.paymentMethod || 'cash');
   const { creditDue, isCreditSale, previousBalance, newBalance } = getOutstandingInfo(invoice, customer);
-  const portalLink = getPortalLink(customer);
+
+  // ★ Customer-specific portal link
+  const portalLink = getPortalLink(invoice, customer);
 
   let msg = '';
   if (v.showBusinessName) msg += `${biz.businessName || (isReturn ? L.returnTitle : L.invoiceTitle)}\n`;
   if (isReturn) msg += `${L.smsReturn}\n`;
-  if (v.showInvoiceNo) { msg += `${isReturn ? L.smsRet : L.smsNo}:${invoice?.invoiceNo || ''}\n`; if (isReturn && invoice?.originalInvoiceNo) msg += `${L.smsOrig}:${invoice.originalInvoiceNo}\n`; }
-  if (v.showDate) msg += `${L.smsDate}:${fmtDate(invoice?.createdAt)}\n`;
-  if (v.showCustomerName) msg += `${L.smsCust}:${invoice?.customerName || 'Cash'}\n`;
+  if (v.showInvoiceNo) {
+    msg += `${isReturn ? L.smsRet : L.smsNo}:${invoice?.invoiceNo || ''}\n`;
+    if (isReturn && invoice?.originalInvoiceNo) msg += `${L.smsOrig}:${invoice.originalInvoiceNo}\n`;
+  }
+  if (v.showDate)          msg += `${L.smsDate}:${fmtDate(invoice?.createdAt)}\n`;
+  if (v.showCustomerName)  msg += `${L.smsCust}:${invoice?.customerName || 'Cash'}\n`;
   if (v.showCustomerPhone && invoice?.customerPhone) msg += `Ph:${invoice.customerPhone}\n`;
 
   if (v.showItemPrices && items.length > 0) {
@@ -618,8 +695,8 @@ function buildSMSMessage(invoice, customer, settings, visibility, langKey = 'en'
     items.forEach((item, i) => {
       const sp = R2(item.sellingPrice), yp = R2(item.yourPrice), qty = R2(item.qty);
       const hasDisc = sp > yp && sp > 0;
-      const lt = R2(item.lineTotal ?? yp * qty);
-      const uom = v.showUOM && item.uom && item.uom !== 'unit' ? item.uom : '';
+      const lt      = R2(item.lineTotal ?? yp * qty);
+      const uom     = v.showUOM && item.uom && item.uom !== 'unit' ? item.uom : '';
       let name = item.name || '';
       if (langKey === 'si' && item.nameSi) name = item.nameSi;
       else if (langKey === 'mixed' && item.nameSi && v.showItemSinhala) name = `${item.name}(${item.nameSi})`;
@@ -629,39 +706,55 @@ function buildSMSMessage(invoice, customer, settings, visibility, langKey = 'en'
         if (v.showDiscountPercent && sp > 0) pl += `(-${R2(((sp - yp) / sp) * 100)}%)`;
         msg += `${pl}x${qty}${uom}=Rs.${fmt(lt)}\n`;
       } else { msg += `  ${fmt(sp)}x${qty}${uom}=Rs.${fmt(lt)}\n`; }
-      if (v.showWarranty && item.warrantyCode) { msg += `  ${L.smsWarranty}:${item.warrantyCode}`; if (item.warrantyPeriod) msg += `|${item.warrantyPeriod}`; msg += `\n`; }
+      if (v.showWarranty && item.warrantyCode) {
+        msg += `  ${L.smsWarranty}:${item.warrantyCode}`;
+        if (item.warrantyPeriod) msg += `|${item.warrantyPeriod}`;
+        msg += `\n`;
+      }
     });
     msg += `---\n`;
   }
 
   if (!isReturn) {
-    if (v.showGrossTotal && R2(invoice?.grossTotal) > 0) msg += `${L.smsGross}:Rs.${fmt(R2(invoice.grossTotal))}\n`;
-    if (v.showTotalDiscount && R2(invoice?.totalDiscount) > 0) msg += `${L.smsDisc}:-Rs.${fmt(R2(invoice.totalDiscount))}\n`;
-    if (v.showBillDiscount && R2(invoice?.billDiscount) > 0) msg += `${L.smsBillDisc}:-Rs.${fmt(R2(invoice.billDiscount))}\n`;
+    if (v.showGrossTotal     && R2(invoice?.grossTotal)    > 0) msg += `${L.smsGross}:Rs.${fmt(R2(invoice.grossTotal))}\n`;
+    if (v.showTotalDiscount  && R2(invoice?.totalDiscount) > 0) msg += `${L.smsDisc}:-Rs.${fmt(R2(invoice.totalDiscount))}\n`;
+    if (v.showBillDiscount   && R2(invoice?.billDiscount)  > 0) msg += `${L.smsBillDisc}:-Rs.${fmt(R2(invoice.billDiscount))}\n`;
     if (v.showExchangeAmount && R2(invoice?.exchangeAmount) > 0) msg += `${L.smsExchange}:-Rs.${fmt(R2(invoice.exchangeAmount))}\n`;
   }
-  if (v.showNetAmount) msg += `${isReturn ? L.smsRefund : L.smsTotal}:Rs.${fmt(netAmount)}\n`;
+  if (v.showNetAmount)     msg += `${isReturn ? L.smsRefund : L.smsTotal}:Rs.${fmt(netAmount)}\n`;
   if (v.showPaymentMethod) msg += `${L.smsPay}:${isReturn ? getRefundLabel(payMethod, L) : getPaymentLabel(payMethod, L)}\n`;
-  if (v.showPaidAmount) msg += `${isReturn ? L.smsRefunded : L.smsPaid}:Rs.${fmt(payAmount)}\n`;
+  if (v.showPaidAmount)    msg += `${isReturn ? L.smsRefunded : L.smsPaid}:Rs.${fmt(payAmount)}\n`;
   if (!isReturn) {
-    if (v.showBalance && balance >= 0.01) msg += `${L.smsChange}:Rs.${fmt(balance)}\n`;
-    if (v.showCreditDue && isCreditSale && creditDue > 0) msg += `${L.smsDue}:Rs.${fmt(creditDue)}\n`;
-    if (v.showPreviousBalance) msg += `${L.smsPrevDue}:Rs.${fmt(previousBalance)}\n`;
-    if (v.showNewBalance) msg += `${L.smsOutstanding}:Rs.${fmt(newBalance)}\n`;
-    if (v.showPortalLink && portalLink) msg += `${L.smsAccount}:${portalLink}\n`;
+    if (v.showBalance        && balance    >= 0.01)              msg += `${L.smsChange}:Rs.${fmt(balance)}\n`;
+    if (v.showCreditDue      && isCreditSale && creditDue > 0)   msg += `${L.smsDue}:Rs.${fmt(creditDue)}\n`;
+    if (v.showPreviousBalance)                                   msg += `${L.smsPrevDue}:Rs.${fmt(previousBalance)}\n`;
+    if (v.showNewBalance)                                        msg += `${L.smsOutstanding}:Rs.${fmt(newBalance)}\n`;
+    if (v.showPortalLink && portalLink)                          msg += `${L.smsAccount}:${portalLink}\n`;
   }
-  if (v.showRemarks && (invoice?.remarks || invoice?.invoiceRemark)) msg += `${L.smsNote}:${invoice.remarks || invoice.invoiceRemark}\n`;
-  if (v.showFooterMessage) msg += biz.footerMessage || (isReturn ? 'Return Processed!' : 'Thank You!');
+  if (v.showRemarks && (invoice?.remarks || invoice?.invoiceRemark))
+    msg += `${L.smsNote}:${invoice.remarks || invoice.invoiceRemark}\n`;
+  if (v.showFooterMessage)
+    msg += biz.footerMessage || (isReturn ? 'Return Processed!' : 'Thank You!');
+
   return msg;
 }
 
 /* ══════════════════════════════════════════════════════════
    LANG BADGE
    ══════════════════════════════════════════════════════════ */
-const LANG_BADGE = { en: { color: '#2563eb', label: 'EN' }, si: { color: '#16a34a', label: 'සිං' }, mixed: { color: '#7c3aed', label: 'Mix' } };
+const LANG_BADGE = {
+  en:    { color: '#2563eb', label: 'EN'  },
+  si:    { color: '#16a34a', label: 'සිං' },
+  mixed: { color: '#7c3aed', label: 'Mix' },
+};
+
 function LangBadge({ lang }) {
   const b = LANG_BADGE[lang] || { color: '#64748b', label: lang };
-  return <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: b.color, color: '#fff', marginLeft: 4, verticalAlign: 'middle' }}>{b.label}</span>;
+  return (
+    <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: b.color, color: '#fff', marginLeft: 4, verticalAlign: 'middle' }}>
+      {b.label}
+    </span>
+  );
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -675,10 +768,10 @@ const MODES = [
 ];
 
 // ═══════════════════════════════════
-// Part 1 END — Part 2 continues with Main Component
+// Part 1 END — Part 2 continues
 // ═══════════════════════════════════// ═══════════════════════════════════
 // Part 2 — Main Component
-// (continues from Part 1 — paste below Part 1 code)
+// (continues from Part 1)
 // ═══════════════════════════════════
 
 /* ══════════════════════════════════════════════════════════
@@ -720,7 +813,9 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
   const editingLang       = getModeSettings(settingsMode).lang;
   const editingVisibility = getModeSettings(settingsMode).visibility;
 
-  /* ── Load settings + customer ── */
+  /* ══════════════════════════════════════════════════════════
+     ★ LOAD SETTINGS + CUSTOMER (robust resolution)
+     ══════════════════════════════════════════════════════════ */
   useEffect(() => {
     if (!user?.uid || !invoice) return;
     let active = true;
@@ -732,17 +827,64 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
           getDocs(query(collection(db, 'invoice_settings'), where('uid', '==', user.uid))),
           getDoc(doc(db, `users/${user.uid}/settings`, 'invoiceOutputModes')),
         ]);
+
+        // ★ Robust customer resolution: id → phone → name → invoice key
         const cid = invoice.customerId;
-        const cSnap = cid && cid !== 'CASH_CUSTOMER'
-          ? await getDoc(doc(db, 'customers', cid))
-          : null;
+        let resolvedCustomer = null;
+
+        // 1) By customerId
+        if (cid && cid !== 'CASH_CUSTOMER') {
+          try {
+            const cSnap = await getDoc(doc(db, 'customers', cid));
+            if (cSnap.exists()) {
+              resolvedCustomer = { id: cSnap.id, ...cSnap.data() };
+            }
+          } catch {}
+        }
+
+        // 2) Fallback by phone
+        if (!resolvedCustomer && invoice?.customerPhone) {
+          try {
+            const phoneSnap = await getDocs(
+              query(collection(db, 'customers'), where('phone', '==', invoice.customerPhone))
+            );
+            const phoneDoc = phoneSnap.docs.find(d => d.data().uid === user.uid);
+            if (phoneDoc) {
+              resolvedCustomer = { id: phoneDoc.id, ...phoneDoc.data() };
+            }
+          } catch {}
+        }
+
+        // 3) Fallback by name
+        if (!resolvedCustomer && invoice?.customerName && invoice.customerName !== 'Cash') {
+          try {
+            const nameSnap = await getDocs(
+              query(collection(db, 'customers'), where('name', '==', invoice.customerName), where('uid', '==', user.uid))
+            );
+            if (!nameSnap.empty) {
+              resolvedCustomer = { id: nameSnap.docs[0].id, ...nameSnap.docs[0].data() };
+            }
+          } catch {}
+        }
+
+        // 4) Fallback: use portal key from invoice itself
+        if (!resolvedCustomer && (invoice?.customerPortalKey || invoice?.portalAccessKey)) {
+          resolvedCustomer = {
+            portalAccessKey: invoice.customerPortalKey || invoice.portalAccessKey,
+            name: invoice.customerName || '',
+            phone: invoice.customerPhone || '',
+          };
+        }
+
         if (!active) return;
+
         if (!ssSnap.empty) setSettings(ssSnap.docs[0].data());
-        if (cSnap?.exists()) setCustomer({ id: cSnap.id, ...cSnap.data() });
+        if (resolvedCustomer) setCustomer(resolvedCustomer);
+
         if (prefSnap.exists()) {
           const saved = prefSnap.data();
           setModeSettings(prev => {
-            const merged = { ...prev };
+            const merged   = { ...prev };
             const defaults = buildDefaultModeSettings();
             MODES.forEach(({ key: m }) => {
               const s = saved[m];
@@ -1000,6 +1142,13 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
             </div>
           )}
 
+          {/* ── Portal link debug info ── */}
+          {customer?.portalAccessKey && (
+            <div style={{ background: '#f0fdf4', borderBottom: '1px solid #bbf7d0', padding: '4px 16px', fontSize: 10, color: '#16a34a', fontWeight: 700 }}>
+              🔗 Portal: {getPortalLink(invoice, customer)}
+            </div>
+          )}
+
           {/* ── Mode tabs ── */}
           <div style={{ display: 'flex', borderBottom: '2px solid #e2e8f0', flexShrink: 0, overflowX: 'auto' }}>
             {MODES.map((m) => {
@@ -1035,7 +1184,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
             ))}
           </div>
 
-          {/* ── Content area ── */}
+          {/* ── Content ── */}
           <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
             {loading ? (
               <div style={{ textAlign: 'center', padding: 60 }}>
@@ -1043,7 +1192,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                 <div style={{ fontSize: 13, color: '#64748b', marginTop: 8 }}>Loading…</div>
               </div>
             ) : activeTab === 'preview' ? (
-              /* ═══ PREVIEW TAB ═══ */
+              /* ═══ PREVIEW ═══ */
               <div>
                 <div style={{ textAlign: 'center', marginBottom: 10, fontSize: 11, color: '#64748b' }}>
                   🌐 {currentLang === 'si' ? 'සිංහල' : currentLang === 'mixed' ? 'Mixed' : 'English'}
@@ -1094,7 +1243,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                 )}
               </div>
             ) : (
-              /* ═══ SETTINGS TAB ═══ */
+              /* ═══ SETTINGS ═══ */
               <div>
                 {/* Mode selector */}
                 <div style={{ background: '#f0f9ff', borderRadius: 12, padding: 12, marginBottom: 16, border: '1px solid #bae6fd' }}>
@@ -1136,7 +1285,6 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   </div>
                 </div>
 
-                {/* Language selector */}
                 <LanguageSelector
                   lang={editingLang}
                   onChange={setEditingLang}
@@ -1224,7 +1372,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   );
                 })}
 
-                {/* Save button */}
+                {/* Save */}
                 <div style={{ marginTop: 20, textAlign: 'center' }}>
                   <button onClick={saveAllModeSettings} style={{
                     padding: '14px 40px', background: '#16a34a', color: '#fff', border: 'none',
@@ -1241,7 +1389,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
             )}
           </div>
 
-          {/* ── Footer action buttons ── */}
+          {/* ── Footer buttons ── */}
           <div style={{
             padding: '12px 16px', borderTop: '2px solid #e2e8f0', background: '#f8fafc',
             flexShrink: 0, display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center',
