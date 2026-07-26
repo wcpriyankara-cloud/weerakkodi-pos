@@ -1,7 +1,8 @@
 'use client';
 
-// src/components/InvoiceOutputManager.jsx
-// ✅ Next.js version
+// components/InvoiceOutputManager.jsx
+// ✅ Next.js — same-origin portal links
+// ✅ WhatsApp/Share default showPortalLink: true
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { db } from '@/shared/firebase-config';
@@ -14,7 +15,9 @@ import {
 const CATALOG_BASE =
   process.env.NEXT_PUBLIC_CATALOG_URL || 'https://pos-catalog-gold.vercel.app';
 
+// ★ Same-origin portal link base
 const POS_BASE =
+  process.env.NEXT_PUBLIC_APP_URL ||
   process.env.NEXT_PUBLIC_POS_URL ||
   (typeof window !== 'undefined' ? window.location.origin : '');
 
@@ -66,7 +69,6 @@ const esc = (v) =>
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-/* ── SMS char count (Unicode aware) ── */
 const getSMSCount = (msg) => {
   const hasUnicode = /[^\u0000-\u007F]/.test(msg);
   const perSMS = hasUnicode ? 70 : 160;
@@ -190,12 +192,13 @@ const getOutstandingInfo = (invoice, customer) => {
 };
 
 /* ══════════════════════════════════════════════════════════
-   PORTAL LINK
+   ★ PORTAL LINK — same origin
    ══════════════════════════════════════════════════════════ */
-const getPortalLink = (customer) =>
-  customer?.portalAccessKey
-    ? `${POS_BASE}/portal/${customer.portalAccessKey}`
-    : '';
+const getPortalLink = (customer) => {
+  const key = customer?.portalAccessKey;
+  if (!key) return '';
+  return `${POS_BASE.replace(/\/$/, '')}/portal/${key}`;
+};
 
 /* ══════════════════════════════════════════════════════════
    DEFAULT VISIBILITY
@@ -213,9 +216,18 @@ const DEFAULT_VISIBILITY = {
   showBusinessPhone: true, showFooterMessage: true,
 };
 
+/* ══════════════════════════════════════════════════════════
+   ★ DEFAULT MODE SETTINGS — portal link ON for whatsapp/share
+   ══════════════════════════════════════════════════════════ */
 const buildDefaultModeSettings = () => ({
-  print: { lang: 'en', visibility: { ...DEFAULT_VISIBILITY } },
-  whatsapp: { lang: 'en', visibility: { ...DEFAULT_VISIBILITY } },
+  print: {
+    lang: 'en',
+    visibility: { ...DEFAULT_VISIBILITY, showPortalLink: false },
+  },
+  whatsapp: {
+    lang: 'en',
+    visibility: { ...DEFAULT_VISIBILITY, showPortalLink: true },
+  },
   sms: {
     lang: 'en',
     visibility: {
@@ -229,7 +241,10 @@ const buildDefaultModeSettings = () => ({
       showRemarks: false, showGrossTotal: false, showTotalDiscount: false,
     },
   },
-  share: { lang: 'en', visibility: { ...DEFAULT_VISIBILITY } },
+  share: {
+    lang: 'en',
+    visibility: { ...DEFAULT_VISIBILITY, showPortalLink: true },
+  },
 });
 
 /* ══════════════════════════════════════════════════════════
@@ -312,15 +327,11 @@ const PRESETS = {
    ══════════════════════════════════════════════════════════ */
 function ToggleSwitch({ checked, onChange }) {
   return (
-    <button
-      type="button"
-      onClick={() => onChange(!checked)}
-      style={{
-        width: 44, height: 24, borderRadius: 12, border: 'none',
-        cursor: 'pointer', background: checked ? '#16a34a' : '#d1d5db',
-        position: 'relative', transition: 'background 0.2s', flexShrink: 0, padding: 0,
-      }}
-    >
+    <button type="button" onClick={() => onChange(!checked)} style={{
+      width: 44, height: 24, borderRadius: 12, border: 'none',
+      cursor: 'pointer', background: checked ? '#16a34a' : '#d1d5db',
+      position: 'relative', transition: 'background 0.2s', flexShrink: 0, padding: 0,
+    }}>
       <span style={{
         position: 'absolute', top: 2, left: checked ? 22 : 2,
         width: 20, height: 20, borderRadius: '50%', background: 'white',
@@ -375,30 +386,23 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
   const isReturn = isReturnDoc(invoice);
   const L = getLang(langKey);
 
-  const grossTotal  = R2(invoice?.grossTotal);
+  const grossTotal   = R2(invoice?.grossTotal);
   const billDiscount = R2(invoice?.billDiscount);
   const totalDiscount = R2(invoice?.totalDiscount);
-  const exchangeAmt = R2(invoice?.exchangeAmount);
-  const netAmount   = R2(invoice?.netAmount);
-  const payAmount   = R2(invoice?.payAmount);
-  const balance     = R2(invoice?.balance);
-  const remarks     = invoice?.remarks || invoice?.invoiceRemark || '';
-  const payMethod   = isReturn
-    ? (invoice?.refundMethod || 'cash')
-    : (invoice?.paymentMethod || 'cash');
-
-  const { previousBalance, newBalance, creditDue, isCreditSale } =
-    getOutstandingInfo(invoice, customer);
-
-  const invoiceNo    = invoice?.invoiceNo || invoice?.id?.slice(0, 8)?.toUpperCase() || '';
+  const exchangeAmt  = R2(invoice?.exchangeAmount);
+  const netAmount    = R2(invoice?.netAmount);
+  const payAmount    = R2(invoice?.payAmount);
+  const balance      = R2(invoice?.balance);
+  const remarks      = invoice?.remarks || invoice?.invoiceRemark || '';
+  const payMethod    = isReturn ? (invoice?.refundMethod || 'cash') : (invoice?.paymentMethod || 'cash');
+  const { previousBalance, newBalance, creditDue, isCreditSale } = getOutstandingInfo(invoice, customer);
+  const invoiceNo     = invoice?.invoiceNo || invoice?.id?.slice(0, 8)?.toUpperCase() || '';
   const originalInvNo = invoice?.originalInvoiceNo || '';
-  const invDate      = fmtDate(invoice?.createdAt);
-  const portalLink   = getPortalLink(customer);
+  const invDate       = fmtDate(invoice?.createdAt);
+  const portalLink    = getPortalLink(customer);
 
   const row = (l, r, fs = 14) =>
-    `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:${fs}px;font-weight:900;color:#000;line-height:1.3">` +
-    `<span>${esc(l)}</span>` +
-    `<span style="text-align:right;max-width:58%;word-break:break-word;margin-left:4px">${esc(r)}</span></div>`;
+    `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:${fs}px;font-weight:900;color:#000;line-height:1.3"><span>${esc(l)}</span><span style="text-align:right;max-width:58%;word-break:break-word;margin-left:4px">${esc(r)}</span></div>`;
   const center = (txt, fs = 12) =>
     `<div style="text-align:center;font-weight:900;color:#000;font-size:${fs}px">${esc(txt)}</div>`;
   const div1 = `<div style="border-top:2px dashed #000;margin:5px 0"></div>`;
@@ -406,33 +410,20 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
   const div3 = `<div style="border-top:3px solid #000;margin:5px 0"></div>`;
 
   let html = '';
-
-  if (v.showBusinessLogo && biz.logo)
-    html += `<div style="text-align:center;margin-bottom:4px"><img src="${esc(biz.logo)}" crossorigin="anonymous" style="max-height:50px;max-width:80%;object-fit:contain" /></div>`;
-  if (v.showBusinessName)
-    html += center(biz.businessName || (isReturn ? L.returnTitle : L.invoiceTitle), 20);
-  if (isReturn)
-    html += `<div style="text-align:center;margin:4px 0"><span style="background:#fef2f2;color:#dc2626;font-size:13px;font-weight:900;padding:3px 14px;border-radius:20px;border:2px solid #fecaca">${esc(L.returnBadge)}</span></div>`;
+  if (v.showBusinessLogo && biz.logo) html += `<div style="text-align:center;margin-bottom:4px"><img src="${esc(biz.logo)}" crossorigin="anonymous" style="max-height:50px;max-width:80%;object-fit:contain" /></div>`;
+  if (v.showBusinessName) html += center(biz.businessName || (isReturn ? L.returnTitle : L.invoiceTitle), 20);
+  if (isReturn) html += `<div style="text-align:center;margin:4px 0"><span style="background:#fef2f2;color:#dc2626;font-size:13px;font-weight:900;padding:3px 14px;border-radius:20px;border:2px solid #fecaca">${esc(L.returnBadge)}</span></div>`;
   if (v.showBusinessAddress && biz.address) html += center(biz.address, 11);
-  if (v.showBusinessPhone   && biz.phone)   html += center(`Tel: ${biz.phone}`, 11);
-
+  if (v.showBusinessPhone && biz.phone) html += center(`Tel: ${biz.phone}`, 11);
   html += div1;
-
-  if (v.showInvoiceNo) {
-    html += row(isReturn ? L.returnNo : L.no, invoiceNo, 15);
-    if (isReturn && originalInvNo) html += row(L.originalInvoice, originalInvNo, 12);
-  }
+  if (v.showInvoiceNo) { html += row(isReturn ? L.returnNo : L.no, invoiceNo, 15); if (isReturn && originalInvNo) html += row(L.originalInvoice, originalInvNo, 12); }
   if (v.showDate) html += row(L.date, invDate, 13);
-
   if (v.showCustomerName || v.showCustomerPhone || v.showCustomerAddress) html += div2;
-  if (v.showCustomerName)  html += row(L.customer, invoice?.customerName || 'Cash', 15);
-  if (v.showCustomerPhone  && invoice?.customerPhone)   html += row(L.phone, invoice.customerPhone, 13);
+  if (v.showCustomerName) html += row(L.customer, invoice?.customerName || 'Cash', 15);
+  if (v.showCustomerPhone && invoice?.customerPhone) html += row(L.phone, invoice.customerPhone, 13);
   if (v.showCustomerAddress && invoice?.customerAddress) html += row(L.address, invoice.customerAddress, 12);
-
   html += div1;
-  html += center(isReturn
-    ? `— ${L.returnedItems} (${items.length}) —`
-    : `— ${L.items} (${items.length}) —`, 12);
+  html += center(isReturn ? `— ${L.returnedItems} (${items.length}) —` : `— ${L.items} (${items.length}) —`, 12);
 
   items.forEach((item, i) => {
     const sp = R2(item.sellingPrice), yp = R2(item.yourPrice), qty = R2(item.qty);
@@ -441,11 +432,9 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
     const uom = item.uom && item.uom !== 'unit' ? ` ${item.uom}` : '';
     const discPct = hasDisc && sp > 0 ? R2(((sp - yp) / sp) * 100) : 0;
     const border = i < items.length - 1 ? 'border-bottom:1px dotted #000;' : '';
-
     let primary = item.name || '', secondary = '';
     if (langKey === 'si' && item.nameSi) { primary = item.nameSi; secondary = item.name || ''; }
     else if (item.nameSi && v.showItemSinhala) secondary = item.nameSi;
-
     html += `<div style="margin-bottom:4px;padding-bottom:3px;${border}">`;
     html += `<div style="font-weight:900;font-size:14px;color:#000;word-break:break-word;line-height:1.2">${i + 1}. ${esc(primary)}</div>`;
     if (secondary) html += `<div style="font-size:12px;font-weight:900;color:#000;padding-left:14px">(${esc(secondary)})</div>`;
@@ -455,69 +444,37 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
         priceStr = `<span style="text-decoration:line-through">${fmt(sp)}</span> ${fmt(yp)}`;
         if (v.showDiscountPercent) priceStr += ` <span style="font-size:11px">(-${discPct}%)</span>`;
       } else { priceStr = fmt(sp); }
-      html += `<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:900;color:#000;padding-left:14px;margin-top:1px">` +
-        `<span>${priceStr} x${qty}${v.showUOM ? esc(uom) : ''}</span>` +
-        `<span style="font-size:14px;font-weight:900">Rs.${fmt(lt)}</span></div>`;
+      html += `<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:900;color:#000;padding-left:14px;margin-top:1px"><span>${priceStr} x${qty}${v.showUOM ? esc(uom) : ''}</span><span style="font-size:14px;font-weight:900">Rs.${fmt(lt)}</span></div>`;
     }
-    if (v.showWarranty && item.warrantyCode)
-      html += `<div style="font-size:11px;font-weight:900;color:#000;padding-left:14px">${esc(L.warranty)} ${esc(item.warrantyCode)}${item.warrantyPeriod ? ' | ' + esc(item.warrantyPeriod) : ''}</div>`;
+    if (v.showWarranty && item.warrantyCode) html += `<div style="font-size:11px;font-weight:900;color:#000;padding-left:14px">${esc(L.warranty)} ${esc(item.warrantyCode)}${item.warrantyPeriod ? ' | ' + esc(item.warrantyPeriod) : ''}</div>`;
     html += `</div>`;
   });
 
   html += div1;
-
   if (!isReturn) {
-    if (v.showGrossTotal)                            html += row(L.gross,    `Rs.${fmt(grossTotal)}`);
-    if (v.showTotalDiscount  && totalDiscount > 0)   html += row(L.discount, `-Rs.${fmt(totalDiscount)}`);
-    if (v.showBillDiscount   && billDiscount  > 0)   html += row(L.billDisc, `-Rs.${fmt(billDiscount)}`);
-    if (v.showExchangeAmount && exchangeAmt   > 0)   html += row(L.exchange, `-Rs.${fmt(exchangeAmt)}`);
+    if (v.showGrossTotal) html += row(L.gross, `Rs.${fmt(grossTotal)}`);
+    if (v.showTotalDiscount && totalDiscount > 0) html += row(L.discount, `-Rs.${fmt(totalDiscount)}`);
+    if (v.showBillDiscount && billDiscount > 0) html += row(L.billDisc, `-Rs.${fmt(billDiscount)}`);
+    if (v.showExchangeAmount && exchangeAmt > 0) html += row(L.exchange, `-Rs.${fmt(exchangeAmt)}`);
   }
-
   if (v.showNetAmount) {
     html += div3;
-    html += `<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:20px;font-weight:900;color:#000">` +
-      `<span>${esc(isReturn ? L.refundTotal : L.netTotal)}</span><span>Rs.${fmt(netAmount)}</span></div>`;
+    html += `<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:20px;font-weight:900;color:#000"><span>${esc(isReturn ? L.refundTotal : L.netTotal)}</span><span>Rs.${fmt(netAmount)}</span></div>`;
     html += div3;
   }
-
-  if (v.showPaymentMethod)
-    html += row(isReturn ? L.refundVia : L.pay,
-      isReturn ? getRefundLabel(payMethod, L) : getPaymentLabel(payMethod, L), 15);
-  if (v.showPaidAmount)
-    html += row(isReturn ? L.refundAmt : L.paid, `Rs.${fmt(payAmount)}`, 15);
-
+  if (v.showPaymentMethod) html += row(isReturn ? L.refundVia : L.pay, isReturn ? getRefundLabel(payMethod, L) : getPaymentLabel(payMethod, L), 15);
+  if (v.showPaidAmount) html += row(isReturn ? L.refundAmt : L.paid, `Rs.${fmt(payAmount)}`, 15);
   if (!isReturn) {
-    if (v.showBalance && balance >= 0.01) {
-      html += div2;
-      html += `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:17px;font-weight:900;color:#000">` +
-        `<span>${esc(L.change)}</span><span>Rs.${fmt(balance)}</span></div>`;
-    }
-    if (v.showCreditDue && isCreditSale && creditDue > 0) {
-      html += div2;
-      html += `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:17px;font-weight:900;color:#000">` +
-        `<span>${esc(L.creditDue)}</span><span>Rs.${fmt(creditDue)}</span></div>`;
-    }
+    if (v.showBalance && balance >= 0.01) { html += div2; html += `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:17px;font-weight:900;color:#000"><span>${esc(L.change)}</span><span>Rs.${fmt(balance)}</span></div>`; }
+    if (v.showCreditDue && isCreditSale && creditDue > 0) { html += div2; html += `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:17px;font-weight:900;color:#000"><span>${esc(L.creditDue)}</span><span>Rs.${fmt(creditDue)}</span></div>`; }
     if (v.showPreviousBalance) { html += div1; html += row(L.prevDue, `Rs.${fmt(previousBalance)}`, 15); }
-    if (v.showNewBalance) {
-      html += `<div style="border-top:2px solid #000;margin:3px 0"></div>`;
-      html += `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:17px;font-weight:900;color:#000">` +
-        `<span>${esc(L.totalDue)}</span><span>Rs.${fmt(newBalance)}</span></div>`;
-    }
+    if (v.showNewBalance) { html += `<div style="border-top:2px solid #000;margin:3px 0"></div>`; html += `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:17px;font-weight:900;color:#000"><span>${esc(L.totalDue)}</span><span>Rs.${fmt(newBalance)}</span></div>`; }
   }
-
-  if (v.showRemarks && remarks)
-    html += div2 + `<div style="font-size:12px;font-weight:900;color:#000;padding:2px 0;word-break:break-word">${esc(L.note)} ${esc(remarks)}</div>`;
-
-  if (!isReturn && v.showPortalLink && portalLink) {
-    html += div2;
-    html += `<div style="text-align:center;font-size:10px;font-weight:900;color:#000;word-break:break-all;padding:2px 0">${esc(portalLink)}</div>`;
-  }
-
+  if (v.showRemarks && remarks) html += div2 + `<div style="font-size:12px;font-weight:900;color:#000;padding:2px 0;word-break:break-word">${esc(L.note)} ${esc(remarks)}</div>`;
+  if (!isReturn && v.showPortalLink && portalLink) { html += div2; html += `<div style="text-align:center;font-size:10px;font-weight:900;color:#000;word-break:break-all;padding:2px 0">${esc(portalLink)}</div>`; }
   html += div3;
-  if (v.showFooterMessage)
-    html += center(biz.footerMessage || (isReturn ? 'Return Processed!' : 'Thank You!'), 14);
+  if (v.showFooterMessage) html += center(biz.footerMessage || (isReturn ? 'Return Processed!' : 'Thank You!'), 14);
   html += center(L.computerGenerated, 9);
-
   return html;
 }
 
@@ -525,91 +482,38 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey = 'en
    IFRAME PRINT
    ══════════════════════════════════════════════════════════ */
 function printViaIframe(receiptHTML) {
-  const fullHTML = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Receipt</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  html,body{
-    width:80mm;max-width:80mm;
-    font-family:'Courier New',Courier,monospace;
-    font-size:14px;font-weight:900;color:#000;
-    background:#fff;line-height:1.4
-  }
-  body{padding:2mm 3mm}
-  div,span,p{color:#000!important;font-weight:900!important}
-  img{max-width:80%!important}
-  @page{size:80mm auto;margin:0}
-  @media print{
-    html,body{width:80mm!important;max-width:80mm!important;
-      margin:0!important;padding:2mm 3mm!important}
-  }
-</style>
-</head>
-<body>${receiptHTML}</body>
-</html>`;
+  const fullHTML = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Receipt</title><style>*{margin:0;padding:0;box-sizing:border-box}html,body{width:80mm;max-width:80mm;font-family:'Courier New',Courier,monospace;font-size:14px;font-weight:900;color:#000;background:#fff;line-height:1.4}body{padding:2mm 3mm}div,span,p{color:#000!important;font-weight:900!important}img{max-width:80%!important}@page{size:80mm auto;margin:0}@media print{html,body{width:80mm!important;max-width:80mm!important;margin:0!important;padding:2mm 3mm!important}}</style></head><body>${receiptHTML}</body></html>`;
 
   return new Promise((resolve) => {
-    const isMobileSafari =
-      typeof navigator !== 'undefined' &&
-      /iP(ad|hone|od)/.test(navigator.userAgent) &&
-      /WebKit/.test(navigator.userAgent) &&
-      !/CriOS/.test(navigator.userAgent);
-
+    const isMobileSafari = typeof navigator !== 'undefined' && /iP(ad|hone|od)/.test(navigator.userAgent) && /WebKit/.test(navigator.userAgent) && !/CriOS/.test(navigator.userAgent);
     if (isMobileSafari) {
       const blob = new Blob([fullHTML], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       const w = window.open(url, '_blank');
-      if (w) {
-        setTimeout(() => {
-          try { w.print(); } catch {}
-          setTimeout(() => URL.revokeObjectURL(url), 5000);
-        }, 800);
-      } else {
-        URL.revokeObjectURL(url);
-      }
-      resolve();
-      return;
+      if (w) { setTimeout(() => { try { w.print(); } catch {} setTimeout(() => URL.revokeObjectURL(url), 5000); }, 800); }
+      else { URL.revokeObjectURL(url); }
+      resolve(); return;
     }
-
     const iframe = document.createElement('iframe');
-    iframe.style.cssText =
-      'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;';
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;';
     document.body.appendChild(iframe);
-
     const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
     if (!iframeDoc) { document.body.removeChild(iframe); resolve(); return; }
-
     iframeDoc.open(); iframeDoc.write(fullHTML); iframeDoc.close();
-
     let resolved = false;
-    const cleanup = () => {
-      if (resolved) return; resolved = true;
-      setTimeout(() => {
-        if (document.body.contains(iframe)) document.body.removeChild(iframe);
-        resolve();
-      }, 300);
-    };
-
+    const cleanup = () => { if (resolved) return; resolved = true; setTimeout(() => { if (document.body.contains(iframe)) document.body.removeChild(iframe); resolve(); }, 300); };
     let printed = false;
     const doPrint = async () => {
       if (printed) return; printed = true;
       try {
         const imgs = Array.from(iframeDoc.images || []);
-        await Promise.all(imgs.map(img =>
-          img.complete ? Promise.resolve() :
-          new Promise(res => { img.onload = res; img.onerror = res; })
-        ));
+        await Promise.all(imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = res; img.onerror = res; })));
         iframe.contentWindow?.addEventListener('afterprint', cleanup);
         iframe.contentWindow?.focus();
         iframe.contentWindow?.print();
       } catch (e) { console.warn('Print error:', e); cleanup(); }
       setTimeout(cleanup, 30000);
     };
-
     iframe.onload = () => setTimeout(doPrint, 300);
     setTimeout(doPrint, 1500);
   });
@@ -624,13 +528,12 @@ function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en')
   const items = invoice?.items || [];
   const isReturn = isReturnDoc(invoice);
   const L = getLang(langKey);
-
-  const invoiceNo  = invoice?.invoiceNo || invoice?.id?.slice(0, 8)?.toUpperCase() || '';
-  const netAmount  = R2(invoice?.netAmount);
-  const payAmount  = R2(invoice?.payAmount);
-  const balance    = R2(invoice?.balance);
-  const remarks    = invoice?.remarks || invoice?.invoiceRemark || '';
-  const payMethod  = isReturn ? (invoice?.refundMethod || 'cash') : (invoice?.paymentMethod || 'cash');
+  const invoiceNo = invoice?.invoiceNo || invoice?.id?.slice(0, 8)?.toUpperCase() || '';
+  const netAmount = R2(invoice?.netAmount);
+  const payAmount = R2(invoice?.payAmount);
+  const balance   = R2(invoice?.balance);
+  const remarks   = invoice?.remarks || invoice?.invoiceRemark || '';
+  const payMethod = isReturn ? (invoice?.refundMethod || 'cash') : (invoice?.paymentMethod || 'cash');
   const { previousBalance, newBalance, creditDue, isCreditSale } = getOutstandingInfo(invoice, customer);
   const portalLink = getPortalLink(customer);
 
@@ -638,12 +541,8 @@ function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en')
   if (v.showBusinessName) msg += `${isReturn ? '↩️' : '🧾'} *${biz.businessName || (isReturn ? L.returnTitle : L.invoiceTitle)}*\n`;
   if (isReturn) msg += `*${L.returnBadge}*\n`;
   msg += `━━━━━━━━━━━━━━\n`;
-
-  if (v.showInvoiceNo) {
-    msg += `📋 *${isReturn ? L.returnNo : L.no}* ${invoiceNo}\n`;
-    if (isReturn && invoice?.originalInvoiceNo) msg += `🧾 *${L.originalInvoice}* ${invoice.originalInvoiceNo}\n`;
-  }
-  if (v.showDate)         msg += `📅 *${L.date}* ${fmtDate(invoice?.createdAt)}\n`;
+  if (v.showInvoiceNo) { msg += `📋 *${isReturn ? L.returnNo : L.no}* ${invoiceNo}\n`; if (isReturn && invoice?.originalInvoiceNo) msg += `🧾 *${L.originalInvoice}* ${invoice.originalInvoiceNo}\n`; }
+  if (v.showDate) msg += `📅 *${L.date}* ${fmtDate(invoice?.createdAt)}\n`;
   if (v.showCustomerName) msg += `👤 *${L.customer}* ${invoice?.customerName || 'Cash'}\n`;
   if (v.showCustomerPhone && invoice?.customerPhone) msg += `📞 ${invoice.customerPhone}\n`;
   msg += `━━━━━━━━━━━━━━\n\n`;
@@ -653,51 +552,40 @@ function buildWAMessage(invoice, customer, settings, visibility, langKey = 'en')
     const lt = R2(it.lineTotal ?? yp * qty);
     const hasDisc = sp > yp && sp > 0;
     const uom = v.showUOM && it.uom && it.uom !== 'unit' ? ` ${it.uom}` : '';
-
     let name = it.name || '', siNote = '';
     if (langKey === 'si' && it.nameSi) { name = it.nameSi; siNote = it.name ? ` (${it.name})` : ''; }
     else if (it.nameSi && v.showItemSinhala) siNote = ` (${it.nameSi})`;
-
     msg += `${i + 1}. *${name}*${siNote}\n`;
     if (v.showItemPrices) {
       if (hasDisc && v.showItemDiscount) {
         msg += `   ~Rs.${fmt(sp)}~`;
         if (v.showDiscountPercent && sp > 0) msg += ` (-${R2(((sp - yp) / sp) * 100)}%)`;
         msg += `\n   *Rs.${fmt(yp)}* × ${qty}${uom} = *Rs.${fmt(lt)}*\n`;
-      } else {
-        msg += `   Rs.${fmt(sp)} × ${qty}${uom} = *Rs.${fmt(lt)}*\n`;
-      }
+      } else { msg += `   Rs.${fmt(sp)} × ${qty}${uom} = *Rs.${fmt(lt)}*\n`; }
     }
-    if (v.showWarranty && it.warrantyCode)
-      msg += `   🛡️ ${it.warrantyCode}${it.warrantyPeriod ? ` · ${it.warrantyPeriod}` : ''}\n`;
+    if (v.showWarranty && it.warrantyCode) msg += `   🛡️ ${it.warrantyCode}${it.warrantyPeriod ? ` · ${it.warrantyPeriod}` : ''}\n`;
   });
 
   msg += `\n━━━━━━━━━━━━━━\n`;
   if (!isReturn) {
-    if (v.showGrossTotal && R2(invoice?.grossTotal) > 0)           msg += `💰 *${L.gross}* Rs.${fmt(R2(invoice.grossTotal))}\n`;
-    if (v.showTotalDiscount && R2(invoice?.totalDiscount) > 0)     msg += `🏷️ *${L.discount}* -Rs.${fmt(R2(invoice.totalDiscount))}\n`;
-    if (v.showBillDiscount  && R2(invoice?.billDiscount)  > 0)     msg += `📋 *${L.billDisc}* -Rs.${fmt(R2(invoice.billDiscount))}\n`;
-    if (v.showExchangeAmount && R2(invoice?.exchangeAmount) > 0)   msg += `🔄 *${L.exchange}* -Rs.${fmt(R2(invoice.exchangeAmount))}\n`;
+    if (v.showGrossTotal && R2(invoice?.grossTotal) > 0) msg += `💰 *${L.gross}* Rs.${fmt(R2(invoice.grossTotal))}\n`;
+    if (v.showTotalDiscount && R2(invoice?.totalDiscount) > 0) msg += `🏷️ *${L.discount}* -Rs.${fmt(R2(invoice.totalDiscount))}\n`;
+    if (v.showBillDiscount && R2(invoice?.billDiscount) > 0) msg += `📋 *${L.billDisc}* -Rs.${fmt(R2(invoice.billDiscount))}\n`;
+    if (v.showExchangeAmount && R2(invoice?.exchangeAmount) > 0) msg += `🔄 *${L.exchange}* -Rs.${fmt(R2(invoice.exchangeAmount))}\n`;
   }
-
   if (v.showNetAmount) msg += `\n💰 *${isReturn ? L.refundTotal : L.netTotal}:* Rs.${fmt(netAmount)}\n`;
   if (v.showPaymentMethod) msg += isReturn ? `${getRefundLabel(payMethod, L, true)}\n` : `${getPaymentLabel(payMethod, L, true)}\n`;
   if (v.showPaidAmount) msg += `${isReturn ? '💸' : '💵'} *${isReturn ? L.refundAmt : L.paid}* Rs.${fmt(payAmount)}\n`;
-
   if (!isReturn) {
-    if (v.showBalance    && balance >= 0.01)         msg += `🔄 *${L.change}:* Rs.${fmt(balance)}\n`;
-    if (v.showCreditDue  && isCreditSale && creditDue > 0) msg += `📝 *${L.creditDue}:* Rs.${fmt(creditDue)}\n`;
+    if (v.showBalance && balance >= 0.01) msg += `🔄 *${L.change}:* Rs.${fmt(balance)}\n`;
+    if (v.showCreditDue && isCreditSale && creditDue > 0) msg += `📝 *${L.creditDue}:* Rs.${fmt(creditDue)}\n`;
     if (v.showPreviousBalance) { msg += `\n━━━━━━━━━━━━━━\n`; msg += `🔴 *${L.prevDue}* Rs.${fmt(previousBalance)}\n`; }
-    if (v.showNewBalance)  msg += `🔴 *${L.totalDue}:* Rs.${fmt(newBalance)}\n`;
+    if (v.showNewBalance) msg += `🔴 *${L.totalDue}:* Rs.${fmt(newBalance)}\n`;
   }
-
   if (v.showRemarks && remarks) msg += `\n📝 ${remarks}\n`;
   msg += `\n━━━━━━━━━━━━━━\n`;
-  if (v.showFooterMessage)
-    msg += `✅ *${biz.footerMessage || (isReturn ? 'Return Processed! ස්තුතියි!' : 'Thank You! ස්තුතියි!')}*\n`;
-  if (!isReturn && v.showPortalLink && portalLink)
-    msg += `\n🛒 *ඔබේ ගිණුම:*\n${portalLink}\n`;
-
+  if (v.showFooterMessage) msg += `✅ *${biz.footerMessage || (isReturn ? 'Return Processed! ස්තුතියි!' : 'Thank You! ස්තුතියි!')}*\n`;
+  if (!isReturn && v.showPortalLink && portalLink) msg += `\n🛒 *ඔබේ ගිණුම:*\n${portalLink}\n`;
   return msg;
 }
 
@@ -720,70 +608,50 @@ function buildSMSMessage(invoice, customer, settings, visibility, langKey = 'en'
   let msg = '';
   if (v.showBusinessName) msg += `${biz.businessName || (isReturn ? L.returnTitle : L.invoiceTitle)}\n`;
   if (isReturn) msg += `${L.smsReturn}\n`;
-  if (v.showInvoiceNo) {
-    msg += `${isReturn ? L.smsRet : L.smsNo}:${invoice?.invoiceNo || ''}\n`;
-    if (isReturn && invoice?.originalInvoiceNo) msg += `${L.smsOrig}:${invoice.originalInvoiceNo}\n`;
-  }
-  if (v.showDate)         msg += `${L.smsDate}:${fmtDate(invoice?.createdAt)}\n`;
+  if (v.showInvoiceNo) { msg += `${isReturn ? L.smsRet : L.smsNo}:${invoice?.invoiceNo || ''}\n`; if (isReturn && invoice?.originalInvoiceNo) msg += `${L.smsOrig}:${invoice.originalInvoiceNo}\n`; }
+  if (v.showDate) msg += `${L.smsDate}:${fmtDate(invoice?.createdAt)}\n`;
   if (v.showCustomerName) msg += `${L.smsCust}:${invoice?.customerName || 'Cash'}\n`;
   if (v.showCustomerPhone && invoice?.customerPhone) msg += `Ph:${invoice.customerPhone}\n`;
 
   if (v.showItemPrices && items.length > 0) {
-    msg += `---\n`;
-    msg += `${isReturn ? L.smsReturnedItems : L.smsItems}(${items.length})\n`;
+    msg += `---\n${isReturn ? L.smsReturnedItems : L.smsItems}(${items.length})\n`;
     items.forEach((item, i) => {
       const sp = R2(item.sellingPrice), yp = R2(item.yourPrice), qty = R2(item.qty);
       const hasDisc = sp > yp && sp > 0;
       const lt = R2(item.lineTotal ?? yp * qty);
       const uom = v.showUOM && item.uom && item.uom !== 'unit' ? item.uom : '';
-
       let name = item.name || '';
       if (langKey === 'si' && item.nameSi) name = item.nameSi;
-      else if (langKey === 'mixed' && item.nameSi && v.showItemSinhala)
-        name = `${item.name}(${item.nameSi})`;
-
+      else if (langKey === 'mixed' && item.nameSi && v.showItemSinhala) name = `${item.name}(${item.nameSi})`;
       msg += `${i + 1}.${name}\n`;
       if (hasDisc && v.showItemDiscount) {
         let pl = `  ~${fmt(sp)}~>${fmt(yp)}`;
         if (v.showDiscountPercent && sp > 0) pl += `(-${R2(((sp - yp) / sp) * 100)}%)`;
-        pl += `x${qty}${uom}=Rs.${fmt(lt)}`;
-        msg += `${pl}\n`;
-      } else {
-        msg += `  ${fmt(sp)}x${qty}${uom}=Rs.${fmt(lt)}\n`;
-      }
-      if (v.showWarranty && item.warrantyCode) {
-        msg += `  ${L.smsWarranty}:${item.warrantyCode}`;
-        if (item.warrantyPeriod) msg += `|${item.warrantyPeriod}`;
-        msg += `\n`;
-      }
+        msg += `${pl}x${qty}${uom}=Rs.${fmt(lt)}\n`;
+      } else { msg += `  ${fmt(sp)}x${qty}${uom}=Rs.${fmt(lt)}\n`; }
+      if (v.showWarranty && item.warrantyCode) { msg += `  ${L.smsWarranty}:${item.warrantyCode}`; if (item.warrantyPeriod) msg += `|${item.warrantyPeriod}`; msg += `\n`; }
     });
     msg += `---\n`;
   }
 
   if (!isReturn) {
-    if (v.showGrossTotal    && R2(invoice?.grossTotal)    > 0) msg += `${L.smsGross}:Rs.${fmt(R2(invoice.grossTotal))}\n`;
+    if (v.showGrossTotal && R2(invoice?.grossTotal) > 0) msg += `${L.smsGross}:Rs.${fmt(R2(invoice.grossTotal))}\n`;
     if (v.showTotalDiscount && R2(invoice?.totalDiscount) > 0) msg += `${L.smsDisc}:-Rs.${fmt(R2(invoice.totalDiscount))}\n`;
-    if (v.showBillDiscount  && R2(invoice?.billDiscount)  > 0) msg += `${L.smsBillDisc}:-Rs.${fmt(R2(invoice.billDiscount))}\n`;
+    if (v.showBillDiscount && R2(invoice?.billDiscount) > 0) msg += `${L.smsBillDisc}:-Rs.${fmt(R2(invoice.billDiscount))}\n`;
     if (v.showExchangeAmount && R2(invoice?.exchangeAmount) > 0) msg += `${L.smsExchange}:-Rs.${fmt(R2(invoice.exchangeAmount))}\n`;
   }
-
-  if (v.showNetAmount)    msg += `${isReturn ? L.smsRefund : L.smsTotal}:Rs.${fmt(netAmount)}\n`;
+  if (v.showNetAmount) msg += `${isReturn ? L.smsRefund : L.smsTotal}:Rs.${fmt(netAmount)}\n`;
   if (v.showPaymentMethod) msg += `${L.smsPay}:${isReturn ? getRefundLabel(payMethod, L) : getPaymentLabel(payMethod, L)}\n`;
-  if (v.showPaidAmount)   msg += `${isReturn ? L.smsRefunded : L.smsPaid}:Rs.${fmt(payAmount)}\n`;
-
+  if (v.showPaidAmount) msg += `${isReturn ? L.smsRefunded : L.smsPaid}:Rs.${fmt(payAmount)}\n`;
   if (!isReturn) {
-    if (v.showBalance        && balance >= 0.01)                 msg += `${L.smsChange}:Rs.${fmt(balance)}\n`;
-    if (v.showCreditDue      && isCreditSale && creditDue > 0)   msg += `${L.smsDue}:Rs.${fmt(creditDue)}\n`;
-    if (v.showPreviousBalance)                                   msg += `${L.smsPrevDue}:Rs.${fmt(previousBalance)}\n`;
-    if (v.showNewBalance)                                        msg += `${L.smsOutstanding}:Rs.${fmt(newBalance)}\n`;
-    if (v.showPortalLink && portalLink)                          msg += `${L.smsAccount}:${portalLink}\n`;
+    if (v.showBalance && balance >= 0.01) msg += `${L.smsChange}:Rs.${fmt(balance)}\n`;
+    if (v.showCreditDue && isCreditSale && creditDue > 0) msg += `${L.smsDue}:Rs.${fmt(creditDue)}\n`;
+    if (v.showPreviousBalance) msg += `${L.smsPrevDue}:Rs.${fmt(previousBalance)}\n`;
+    if (v.showNewBalance) msg += `${L.smsOutstanding}:Rs.${fmt(newBalance)}\n`;
+    if (v.showPortalLink && portalLink) msg += `${L.smsAccount}:${portalLink}\n`;
   }
-
-  if (v.showRemarks && (invoice?.remarks || invoice?.invoiceRemark))
-    msg += `${L.smsNote}:${invoice.remarks || invoice.invoiceRemark}\n`;
-  if (v.showFooterMessage)
-    msg += biz.footerMessage || (isReturn ? 'Return Processed!' : 'Thank You!');
-
+  if (v.showRemarks && (invoice?.remarks || invoice?.invoiceRemark)) msg += `${L.smsNote}:${invoice.remarks || invoice.invoiceRemark}\n`;
+  if (v.showFooterMessage) msg += biz.footerMessage || (isReturn ? 'Return Processed!' : 'Thank You!');
   return msg;
 }
 
@@ -793,11 +661,7 @@ function buildSMSMessage(invoice, customer, settings, visibility, langKey = 'en'
 const LANG_BADGE = { en: { color: '#2563eb', label: 'EN' }, si: { color: '#16a34a', label: 'සිං' }, mixed: { color: '#7c3aed', label: 'Mix' } };
 function LangBadge({ lang }) {
   const b = LANG_BADGE[lang] || { color: '#64748b', label: lang };
-  return (
-    <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: b.color, color: '#fff', marginLeft: 4, verticalAlign: 'middle' }}>
-      {b.label}
-    </span>
-  );
+  return <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: b.color, color: '#fff', marginLeft: 4, verticalAlign: 'middle' }}>{b.label}</span>;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -809,6 +673,13 @@ const MODES = [
   { key: 'sms',      icon: '📱', label: 'SMS',      color: '#f59e0b' },
   { key: 'share',    icon: '🔗', label: 'Share',    color: '#7c3aed' },
 ];
+
+// ═══════════════════════════════════
+// Part 1 END — Part 2 continues with Main Component
+// ═══════════════════════════════════// ═══════════════════════════════════
+// Part 2 — Main Component
+// (continues from Part 1 — paste below Part 1 code)
+// ═══════════════════════════════════
 
 /* ══════════════════════════════════════════════════════════
    MAIN COMPONENT
@@ -849,6 +720,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
   const editingLang       = getModeSettings(settingsMode).lang;
   const editingVisibility = getModeSettings(settingsMode).visibility;
 
+  /* ── Load settings + customer ── */
   useEffect(() => {
     if (!user?.uid || !invoice) return;
     let active = true;
@@ -894,12 +766,14 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
     return () => { active = false; };
   }, [user?.uid, invoice, showToast]);
 
+  /* ── ESC key close ── */
   useEffect(() => {
     const fn = (e) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', fn);
     return () => document.removeEventListener('keydown', fn);
   }, [onClose]);
 
+  /* ── Memos ── */
   const receiptHTML = useMemo(() =>
     buildReceiptHTML(invoice, settings, currentVisibility, customer, currentLang),
     [invoice, settings, currentVisibility, customer, currentLang]
@@ -922,6 +796,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
 
   const smsInfo = useMemo(() => getSMSCount(smsMessage), [smsMessage]);
 
+  /* ── Settings actions ── */
   const saveAllModeSettings = useCallback(async () => {
     if (!user?.uid) return;
     try {
@@ -1001,6 +876,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
     showToast('✅ සියලු modes වෙත copy විය!');
   }, [settingsMode, getModeSettings, showToast]);
 
+  /* ── Output actions ── */
   const handlePrint = useCallback(async () => {
     if (printing) return;
     setPrinting(true);
@@ -1012,10 +888,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
   const handleWhatsApp = useCallback(() => {
     const phone = invoice?.customerPhone || '';
     if (!phone) { showToast('⚠️ දුරකථන අංකයක් නැත'); return; }
-    window.open(
-      `https://wa.me/${formatPhoneWA(phone)}?text=${encodeURIComponent(waMessage)}`,
-      '_blank'
-    );
+    window.open(`https://wa.me/${formatPhoneWA(phone)}?text=${encodeURIComponent(waMessage)}`, '_blank');
     showToast('📲 WhatsApp opened!');
   }, [invoice, waMessage, showToast]);
 
@@ -1057,8 +930,12 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
     ? 'linear-gradient(135deg,#991b1b,#dc2626)'
     : 'linear-gradient(135deg,#1e293b,#334155)';
 
+  /* ════════════════════════════════════════
+     RENDER
+  ════════════════════════════════════════ */
   return (
     <>
+      {/* Toast */}
       {toastMsg && (
         <div style={{
           position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
@@ -1070,6 +947,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
         </div>
       )}
 
+      {/* Overlay */}
       <div
         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
         style={{
@@ -1083,6 +961,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
           display: 'flex', flexDirection: 'column', overflow: 'hidden',
         }}>
 
+          {/* ── Header ── */}
           <div style={{
             background: headerBg, color: '#fff', padding: '12px 16px',
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
@@ -1101,6 +980,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
             }}>✕</button>
           </div>
 
+          {/* ── Return badge ── */}
           {isReturn && (
             <div style={{
               background: '#fef2f2', borderBottom: '1px solid #fecaca', padding: '8px 16px',
@@ -1120,6 +1000,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
             </div>
           )}
 
+          {/* ── Mode tabs ── */}
           <div style={{ display: 'flex', borderBottom: '2px solid #e2e8f0', flexShrink: 0, overflowX: 'auto' }}>
             {MODES.map((m) => {
               const active = outputMode === m.key;
@@ -1140,6 +1021,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
             })}
           </div>
 
+          {/* ── Preview / Settings tabs ── */}
           <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
             {[{ key: 'preview', label: '👁️ Preview' }, { key: 'settings', label: '⚙️ සැකසුම්' }].map(tb => (
               <button key={tb.key} onClick={() => setActiveTab(tb.key)} style={{
@@ -1153,6 +1035,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
             ))}
           </div>
 
+          {/* ── Content area ── */}
           <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
             {loading ? (
               <div style={{ textAlign: 'center', padding: 60 }}>
@@ -1160,11 +1043,11 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                 <div style={{ fontSize: 13, color: '#64748b', marginTop: 8 }}>Loading…</div>
               </div>
             ) : activeTab === 'preview' ? (
+              /* ═══ PREVIEW TAB ═══ */
               <div>
                 <div style={{ textAlign: 'center', marginBottom: 10, fontSize: 11, color: '#64748b' }}>
                   🌐 {currentLang === 'si' ? 'සිංහල' : currentLang === 'mixed' ? 'Mixed' : 'English'}
-                  {' · '}
-                  {MODES.find(m => m.key === outputMode)?.icon} {MODES.find(m => m.key === outputMode)?.label}
+                  {' · '}{MODES.find(m => m.key === outputMode)?.icon} {MODES.find(m => m.key === outputMode)?.label}
                 </div>
 
                 {outputMode === 'print' && (
@@ -1179,11 +1062,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                 {outputMode === 'whatsapp' && (
                   <div style={{ maxWidth: 420, margin: '0 auto', background: '#e5ddd5', borderRadius: 12, padding: 16 }}>
                     <div style={{ fontSize: 12, color: '#555', marginBottom: 8, textAlign: 'center' }}>📲 WhatsApp Preview</div>
-                    <div style={{
-                      background: isReturn ? '#fde8e8' : '#dcf8c6',
-                      borderRadius: 10, padding: 12, fontSize: 13,
-                      whiteSpace: 'pre-wrap', lineHeight: 1.6, wordBreak: 'break-word',
-                    }}>
+                    <div style={{ background: isReturn ? '#fde8e8' : '#dcf8c6', borderRadius: 10, padding: 12, fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.6, wordBreak: 'break-word' }}>
                       {waMessage}
                     </div>
                   </div>
@@ -1193,48 +1072,31 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   <div style={{ maxWidth: 360, margin: '0 auto', background: '#f8fafc', borderRadius: 12, padding: 16, border: '1px solid #e2e8f0' }}>
                     <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, textAlign: 'center' }}>
                       📱 SMS Preview
-                      <span style={{
-                        marginLeft: 8, padding: '2px 8px', borderRadius: 8, fontSize: 11, fontWeight: 700,
-                        background: smsInfo.chars > smsInfo.perSMS ? '#fef3c7' : '#dcfce7',
-                        color: smsInfo.chars > smsInfo.perSMS ? '#b45309' : '#16a34a',
-                      }}>
-                        {smsInfo.chars} chars
-                        {smsInfo.chars > smsInfo.perSMS && ` (${smsInfo.parts} SMS)`}
-                        {smsInfo.perSMS === 70 && ' 🇱🇰'}
+                      <span style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 8, fontSize: 11, fontWeight: 700, background: smsInfo.chars > smsInfo.perSMS ? '#fef3c7' : '#dcfce7', color: smsInfo.chars > smsInfo.perSMS ? '#b45309' : '#16a34a' }}>
+                        {smsInfo.chars} chars{smsInfo.chars > smsInfo.perSMS && ` (${smsInfo.parts} SMS)`}{smsInfo.perSMS === 70 && ' 🇱🇰'}
                       </span>
                     </div>
-                    <div style={{
-                      background: '#fff', borderRadius: 8, padding: 12, fontSize: 13,
-                      whiteSpace: 'pre-wrap', lineHeight: 1.6,
-                      border: '1px solid #e2e8f0', wordBreak: 'break-word', fontFamily: 'monospace',
-                    }}>
+                    <div style={{ background: '#fff', borderRadius: 8, padding: 12, fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.6, border: '1px solid #e2e8f0', wordBreak: 'break-word', fontFamily: 'monospace' }}>
                       {smsMessage}
                     </div>
                   </div>
                 )}
 
                 {outputMode === 'share' && (
-                  <div style={{
-                    maxWidth: 420, margin: '0 auto',
-                    background: isReturn ? '#fef5f5' : '#f5f3ff',
-                    borderRadius: 12, padding: 16,
-                    border: `1px solid ${isReturn ? '#fecaca' : '#e9e5ff'}`,
-                  }}>
+                  <div style={{ maxWidth: 420, margin: '0 auto', background: isReturn ? '#fef5f5' : '#f5f3ff', borderRadius: 12, padding: 16, border: `1px solid ${isReturn ? '#fecaca' : '#e9e5ff'}` }}>
                     <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, textAlign: 'center' }}>
                       🔗 Share {isReturn ? 'Return Note' : 'Invoice'}
                     </div>
-                    <div style={{
-                      background: '#fff', borderRadius: 8, padding: 12, fontSize: 13,
-                      whiteSpace: 'pre-wrap', lineHeight: 1.6,
-                      border: '1px solid #e2e8f0', wordBreak: 'break-word',
-                    }}>
+                    <div style={{ background: '#fff', borderRadius: 8, padding: 12, fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.6, border: '1px solid #e2e8f0', wordBreak: 'break-word' }}>
                       {shareMessage}
                     </div>
                   </div>
                 )}
               </div>
             ) : (
+              /* ═══ SETTINGS TAB ═══ */
               <div>
+                {/* Mode selector */}
                 <div style={{ background: '#f0f9ff', borderRadius: 12, padding: 12, marginBottom: 16, border: '1px solid #bae6fd' }}>
                   <div style={{ fontSize: 13, fontWeight: 800, color: '#0369a1', marginBottom: 8 }}>🎯 සැකසීමට mode</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -1257,6 +1119,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   </div>
                 </div>
 
+                {/* Active mode header */}
                 <div style={{
                   background: MODES.find(m => m.key === settingsMode)?.color || '#2563eb',
                   color: '#fff', borderRadius: 10, padding: '10px 14px', marginBottom: 14,
@@ -1273,12 +1136,14 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   </div>
                 </div>
 
+                {/* Language selector */}
                 <LanguageSelector
                   lang={editingLang}
                   onChange={setEditingLang}
                   modeLabel={MODES.find(m => m.key === settingsMode)?.label || ''}
                 />
 
+                {/* Copy from */}
                 <div style={{ background: '#fffbeb', borderRadius: 10, padding: 10, marginBottom: 14, border: '1px solid #fde68a' }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: '#b45309', marginBottom: 6 }}>📋 Copy from:</div>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -1299,6 +1164,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   </div>
                 </div>
 
+                {/* Presets */}
                 <div style={{ marginBottom: 14 }}>
                   <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>⚡ Presets</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -1313,11 +1179,13 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   </div>
                 </div>
 
+                {/* All ON/OFF */}
                 <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
                   <button onClick={() => setAllFields(true)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #bbf7d0', background: '#f0fdf4', color: '#16a34a', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>✅ All ON</button>
                   <button onClick={() => setAllFields(false)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>❌ All OFF</button>
                 </div>
 
+                {/* Visibility sections */}
                 {VISIBILITY_SECTIONS.map((sec) => {
                   const expandKey = `${settingsMode}_${sec.title}`;
                   const isOpen = settingsExpanded[expandKey] !== false;
@@ -1356,6 +1224,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
                   );
                 })}
 
+                {/* Save button */}
                 <div style={{ marginTop: 20, textAlign: 'center' }}>
                   <button onClick={saveAllModeSettings} style={{
                     padding: '14px 40px', background: '#16a34a', color: '#fff', border: 'none',
@@ -1372,6 +1241,7 @@ export default function InvoiceOutputManager({ invoice, onClose, initialMode = '
             )}
           </div>
 
+          {/* ── Footer action buttons ── */}
           <div style={{
             padding: '12px 16px', borderTop: '2px solid #e2e8f0', background: '#f8fafc',
             flexShrink: 0, display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center',
