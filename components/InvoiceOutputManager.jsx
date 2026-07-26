@@ -16,22 +16,18 @@ import {
 /* ══════════════════════════════════════════════════════════
    ★ PRODUCTION BASE URL — always use NEXT_PUBLIC_APP_URL
    ══════════════════════════════════════════════════════════ */
-const POS_BASE = (() => {
-  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, '');
-  if (process.env.NEXT_PUBLIC_POS_URL) return process.env.NEXT_PUBLIC_POS_URL.replace(/\/$/, '');
-  if (typeof window !== 'undefined') return window.location.origin;
-  return '';
-})();
-
+const POS_BASE = (
+  process.env.NEXT_PUBLIC_CATALOG_URL ||
+  'https://pos-catalog-gold.vercel.app'
+).replace(/\/$/, '');
 /* ══════════════════════════════════════════════════════════
    ★ PORTAL LINK — strict: resolved customer only
    ══════════════════════════════════════════════════════════ */
 const getPortalLink = (customer) => {
   const key = customer?.portalAccessKey || '';
-  if (!key || !POS_BASE) return '';
+  if (!key) return '';
   return `${POS_BASE}/portal/${key}`;
 };
-
 /* ══════════════════════════════════════════════════════════
    HELPERS
    ══════════════════════════════════════════════════════════ */
