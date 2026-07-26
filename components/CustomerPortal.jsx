@@ -1,9 +1,8 @@
 'use client';
 
-// src/components/CustomerPortal.jsx
-// ✅ Next.js migrated — useParams → next/navigation
-// ✅ Part 2: ContactPhoneModal, BankAccountCard, PaymentModal,
-//            TripCard, ProductionEntryCard, UnpaidBillCard, Main Component
+// components/CustomerPortal.jsx
+// ✅ Next.js — portalKey prop + useParams dual support
+// ✅ Same-origin portal links
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
@@ -14,22 +13,28 @@ import {
 } from 'firebase/firestore';
 
 /* ════════════════════════════════════════
-   HELPERS  (same as Part 1)
+   HELPERS
 ════════════════════════════════════════ */
 const nn = v => {
   if (v === null || v === undefined || v === '') return 0;
   const n = Number(v); return isNaN(n) ? 0 : n;
 };
-const fmtAmt = v => nn(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const fmtAmt = v => nn(v).toLocaleString('en-US', {
+  minimumFractionDigits: 2, maximumFractionDigits: 2,
+});
+
 const defaultImg = 'https://placehold.co/200x200/e2e8f0/64748b?text=No+Image';
 
 const getImg = item => {
   if (!item) return defaultImg;
   for (const f of ['imageUrl','picture','photoURL','image','itemImage','productImage']) {
     const val = item[f];
-    if (typeof val === 'string' && val.length > 10 && (val.startsWith('http') || val.startsWith('data:image'))) return val;
+    if (typeof val === 'string' && val.length > 10 &&
+      (val.startsWith('http') || val.startsWith('data:image'))) return val;
   }
-  if (item.images?.length > 0 && typeof item.images[0] === 'string' && item.images[0].length > 10) return item.images[0];
+  if (item.images?.length > 0 && typeof item.images[0] === 'string' &&
+    item.images[0].length > 10) return item.images[0];
   return defaultImg;
 };
 
@@ -44,9 +49,10 @@ const normalizePhone = p => {
   return s;
 };
 
-// ★ Next.js: env variable
+// ★ Same-origin portal link
 const PORTAL_SHARE_BASE =
-  process.env.NEXT_PUBLIC_APP_URL || 'https://pos-catalog-gold.vercel.app';
+  process.env.NEXT_PUBLIC_APP_URL ||
+  (typeof window !== 'undefined' ? window.location.origin : '');
 
 const portalLinkFromKey = key =>
   key ? `${PORTAL_SHARE_BASE}/portal/${key}` : '';
@@ -80,11 +86,16 @@ const enrichItem = (it, catalogItems) => {
 
 const getTransactionImage = tx => {
   if (!tx) return null;
-  for (const f of ['receiptImage','receiptUrl','imageUrl','paymentReceipt','image','photoURL','picture','attachment']) {
+  for (const f of [
+    'receiptImage','receiptUrl','imageUrl','paymentReceipt',
+    'image','photoURL','picture','attachment',
+  ]) {
     const val = tx[f];
-    if (typeof val === 'string' && val.length > 10 && (val.startsWith('http') || val.startsWith('data:image'))) return val;
+    if (typeof val === 'string' && val.length > 10 &&
+      (val.startsWith('http') || val.startsWith('data:image'))) return val;
   }
-  if (tx.images && Array.isArray(tx.images) && tx.images.length > 0 && typeof tx.images[0] === 'string') return tx.images[0];
+  if (tx.images && Array.isArray(tx.images) && tx.images.length > 0 &&
+    typeof tx.images[0] === 'string') return tx.images[0];
   return null;
 };
 
@@ -111,8 +122,10 @@ const getPriceInfo = item => {
   const type = item.catalogPriceType || 'retail';
   let bp = 0, dp = 0;
   switch (type) {
-    case 'wholesale': bp = nn(item.sellingPriceWholesale); dp = nn(item.wholesaleDiscount); break;
-    case 'loose':     bp = nn(item.sellingPriceLoose);     dp = nn(item.looseDiscount);     break;
+    case 'wholesale':
+      bp = nn(item.sellingPriceWholesale); dp = nn(item.wholesaleDiscount); break;
+    case 'loose':
+      bp = nn(item.sellingPriceLoose);     dp = nn(item.looseDiscount);     break;
     default:
       bp = nn(item.sellingPriceRetail || item.sellingPrice || item.price);
       dp = nn(item.retailDiscount || item.discountPercent);
@@ -137,9 +150,9 @@ const getHistoryItemPrices = it => {
   const sda = nn(it.discAmount  || it.discAmout);
   let fp    = nn(it.yourPrice);
   if (fp === 0 && op > 0) {
-    if (sda > 0) fp = op - sda;
-    else if (dp > 0) fp = op - (op * dp / 100);
-    else fp = op;
+    if (sda > 0)      fp = op - sda;
+    else if (dp > 0)  fp = op - (op * dp / 100);
+    else              fp = op;
   }
   if (op === 0 && fp > 0) op = dp > 0 ? fp / (1 - dp / 100) : fp;
   const adu = Math.max(0, op - fp), hd = adu > 0.005;
@@ -155,12 +168,20 @@ const getHistoryItemPrices = it => {
 
 const getReturnItemPrices = it => {
   let qty = 0;
-  for (const f of ['qty','quantity','count','returnQty']) { const v = nn(it[f]); if (v > 0) { qty = v; break; } }
+  for (const f of ['qty','quantity','count','returnQty']) {
+    const v = nn(it[f]); if (v > 0) { qty = v; break; }
+  }
   if (qty <= 0) qty = 1;
   let up = 0;
-  for (const f of ['price','unitPrice','refundPrice','yourPrice','sellingPrice','sellingRetail','sellingPriceRetail','originalPrice','cost','rate']) { const v = nn(it[f]); if (v > 0) { up = v; break; } }
+  for (const f of [
+    'price','unitPrice','refundPrice','yourPrice',
+    'sellingPrice','sellingRetail','sellingPriceRetail',
+    'originalPrice','cost','rate',
+  ]) { const v = nn(it[f]); if (v > 0) { up = v; break; } }
   let la = 0;
-  for (const f of ['amount','total','lineTotal','lineAmount','refundAmount','subTotal']) { const v = nn(it[f]); if (v > 0) { la = v; break; } }
+  for (const f of ['amount','total','lineTotal','lineAmount','refundAmount','subTotal']) {
+    const v = nn(it[f]); if (v > 0) { la = v; break; }
+  }
   if (up === 0 && la > 0 && qty > 0) up = la / qty;
   if (la === 0 && up > 0 && qty > 0) la = up * qty;
   return { qty, refundPrice: up, lineAmount: la };
@@ -171,7 +192,8 @@ const calculateReturnTotals = rd => {
   if (Array.isArray(rd.items) && rd.items.length > 0) {
     for (const item of rd.items) itemsTotal += getReturnItemPrices(item).lineAmount;
   }
-  const docTotal = nn(rd.refundAmount) || nn(rd.total) || nn(rd.amount) || nn(rd.netAmount) || nn(rd.grandTotal);
+  const docTotal = nn(rd.refundAmount) || nn(rd.total) || nn(rd.amount) ||
+    nn(rd.netAmount) || nn(rd.grandTotal);
   return { itemsTotal, docTotal, displayTotal: itemsTotal > 0 ? itemsTotal : docTotal };
 };
 
@@ -225,35 +247,24 @@ const PRODUCTION_BIZ_META = {
 };
 
 const PRODUCTION_PAY_META = {
-  cash:   { icon: '💵', label: 'Cash'   },
-  card:   { icon: '💳', label: 'Card'   },
-  bank:   { icon: '🏦', label: 'Bank'   },
-  online: { icon: '📱', label: 'Online' },
-  cheque: { icon: '📝', label: 'Cheque' },
-  credit: { icon: '📌', label: 'Credit' },
+  cash: { icon: '💵', label: 'Cash' }, card: { icon: '💳', label: 'Card' },
+  bank: { icon: '🏦', label: 'Bank' }, online: { icon: '📱', label: 'Online' },
+  cheque: { icon: '📝', label: 'Cheque' }, credit: { icon: '📌', label: 'Credit' },
 };
 
 const QUARRY_OUTPUT_LABELS = {
-  stone34:   { si: '3/4 ගල්',  en: '3/4 Stone'  },
-  stone12:   { si: '1/2 ගල්',  en: '1/2 Stone'  },
-  stoneDust: { si: 'ගල් කුඩු', en: 'Stone Dust' },
-  chips:     { si: 'චිප්ස්',   en: 'Chips'      },
-  metal:     { si: 'මෙටල්',    en: 'Metal'      },
-  sand:      { si: 'වැලි',     en: 'Sand'       },
-  boulder:   { si: 'බොල්ඩර්',  en: 'Boulder'    },
-  baseRock:  { si: 'Base Rock', en: 'Base Rock'  },
-  rubble:    { si: 'රබල්',     en: 'Rubble'     },
+  stone34: { si: '3/4 ගල්', en: '3/4 Stone' }, stone12: { si: '1/2 ගල්', en: '1/2 Stone' },
+  stoneDust: { si: 'ගල් කුඩු', en: 'Stone Dust' }, chips: { si: 'චිප්ස්', en: 'Chips' },
+  metal: { si: 'මෙටල්', en: 'Metal' }, sand: { si: 'වැලි', en: 'Sand' },
+  boulder: { si: 'බොල්ඩර්', en: 'Boulder' }, baseRock: { si: 'Base Rock', en: 'Base Rock' },
+  rubble: { si: 'රබල්', en: 'Rubble' },
 };
 
 const CROP_OUTPUT_LABELS = {
-  tea:       { si: 'තේ',          en: 'Tea'       },
-  coconut:   { si: 'පොල්',        en: 'Coconut'   },
-  rubber:    { si: 'රබර්',        en: 'Rubber'    },
-  cinnamon:  { si: 'කුරුඳු',      en: 'Cinnamon'  },
-  pepper:    { si: 'ගම්මිරිස්',   en: 'Pepper'    },
-  clove:     { si: 'කරාබු නැටි', en: 'Clove'     },
-  paddy:     { si: 'වී',          en: 'Paddy'     },
-  vegetable: { si: 'එළවළු',      en: 'Vegetable' },
+  tea: { si: 'තේ', en: 'Tea' }, coconut: { si: 'පොල්', en: 'Coconut' },
+  rubber: { si: 'රබර්', en: 'Rubber' }, cinnamon: { si: 'කුරුඳු', en: 'Cinnamon' },
+  pepper: { si: 'ගම්මිරිස්', en: 'Pepper' }, clove: { si: 'කරාබු නැටි', en: 'Clove' },
+  paddy: { si: 'වී', en: 'Paddy' }, vegetable: { si: 'එළවළු', en: 'Vegetable' },
 };
 
 const getOutputLabel = (bizType, value, lang) => {
@@ -264,14 +275,15 @@ const getOutputLabel = (bizType, value, lang) => {
 };
 
 const getPayLabel = method => {
-  const p = PRODUCTION_PAY_META[(method || '').toLowerCase()] || { icon: '💰', label: method || 'Payment' };
+  const p = PRODUCTION_PAY_META[(method || '').toLowerCase()] ||
+    { icon: '💰', label: method || 'Payment' };
   return `${p.icon} ${p.label}`;
 };
 
-const getProdPartGross     = p => nn(p.qty || 1) * nn(p.sellPrice || p.unitPrice || p.price || p.yourPrice);
-const getProdPartNet       = p => { const g = getProdPartGross(p); const d = nn(p.discount || p.discountPercent || p.discPercent); return g - (g * d / 100); };
+const getProdPartGross  = p => nn(p.qty || 1) * nn(p.sellPrice || p.unitPrice || p.price || p.yourPrice);
+const getProdPartNet    = p => { const g = getProdPartGross(p); const d = nn(p.discount || p.discountPercent || p.discPercent); return g - (g * d / 100); };
 const getProdExpenseAmount = e => nn(e.amount) || (nn(e.qty) * nn(e.unitPrice));
-const getPaymentsTotal     = arr => Array.isArray(arr) ? arr.reduce((s, p) => s + nn(p.amount), 0) : 0;
+const getPaymentsTotal  = arr => Array.isArray(arr) ? arr.reduce((s, p) => s + nn(p.amount), 0) : 0;
 
 const getProdPayStatusMeta = (status, due, paid, total, lang) => {
   const s = (status || '').toLowerCase();
@@ -301,22 +313,22 @@ const formatPortalDate = (src, lang) => {
 };
 
 const STATUS_STYLE = {
-  pending:          { label: 'Pending',       labelSi: 'පොරොත්තුවේ',               color: '#f59e0b', bg: '#fefce8', icon: '⏳' },
-  confirmed:        { label: 'Confirmed',      labelSi: 'තහවුරු',                   color: '#16a34a', bg: '#f0fdf4', icon: '✅' },
-  processing:       { label: 'Processing',     labelSi: 'සැකසෙමින්',                color: '#2563eb', bg: '#eff6ff', icon: '⚙️' },
-  shipped:          { label: 'Shipped',        labelSi: 'යවන ලදී',                  color: '#7c3aed', bg: '#faf5ff', icon: '🚚' },
-  delivered:        { label: 'Delivered',      labelSi: 'බාර දුන්නා',               color: '#059669', bg: '#ecfdf5', icon: '📦' },
-  cancelled:        { label: 'Cancelled',      labelSi: 'අවලංගු',                   color: '#dc2626', bg: '#fef2f2', icon: '❌' },
-  payment:          { label: 'Paid',           labelSi: 'ගෙවීම',                    color: '#16a34a', bg: '#dcfce7', icon: '💰' },
-  invoice:          { label: 'Bill',           labelSi: 'බිල',                      color: '#1e40af', bg: '#dbeafe', icon: '🧾' },
-  return_pending:   { label: 'Return Pending', labelSi: 'ආපසු බාරය පොරොත්තුවේ',   color: '#ea580c', bg: '#fff7ed', icon: '⏳' },
-  return_completed: { label: 'Return Done',    labelSi: 'ආපසු බාරය සම්පූර්ණයි',    color: '#16a34a', bg: '#f0fdf4', icon: '✅' },
-  return:           { label: 'Returned',       labelSi: 'ආපසු භාරයි',               color: '#ea580c', bg: '#fff7ed', icon: '↩️' },
-  completed:        { label: 'Completed',      labelSi: 'සම්පූර්ණයි',               color: '#059669', bg: '#ecfdf5', icon: '✅' },
-  production:       { label: 'Service',        labelSi: 'සේවාව',                    color: '#0891b2', bg: '#ecfeff', icon: '🔧' },
-  trip:             { label: 'Trip',           labelSi: 'ගමන',                      color: '#8b5cf6', bg: '#f5f3ff', icon: '🚛' },
-  approved:         { label: 'Approved',       labelSi: 'අනුමත කළා',                color: '#16a34a', bg: '#dcfce7', icon: '✅' },
-  rejected:         { label: 'Rejected',       labelSi: 'ප්‍රතික්ෂේප',              color: '#dc2626', bg: '#fef2f2', icon: '❌' },
+  pending:          { label: 'Pending',       labelSi: 'පොරොත්තුවේ',             color: '#f59e0b', bg: '#fefce8', icon: '⏳' },
+  confirmed:        { label: 'Confirmed',      labelSi: 'තහවුරු',                 color: '#16a34a', bg: '#f0fdf4', icon: '✅' },
+  processing:       { label: 'Processing',     labelSi: 'සැකසෙමින්',              color: '#2563eb', bg: '#eff6ff', icon: '⚙️' },
+  shipped:          { label: 'Shipped',        labelSi: 'යවන ලදී',                color: '#7c3aed', bg: '#faf5ff', icon: '🚚' },
+  delivered:        { label: 'Delivered',      labelSi: 'බාර දුන්නා',             color: '#059669', bg: '#ecfdf5', icon: '📦' },
+  cancelled:        { label: 'Cancelled',      labelSi: 'අවලංගු',                 color: '#dc2626', bg: '#fef2f2', icon: '❌' },
+  payment:          { label: 'Paid',           labelSi: 'ගෙවීම',                  color: '#16a34a', bg: '#dcfce7', icon: '💰' },
+  invoice:          { label: 'Bill',           labelSi: 'බිල',                    color: '#1e40af', bg: '#dbeafe', icon: '🧾' },
+  return_pending:   { label: 'Return Pending', labelSi: 'ආපසු බාරය පොරොත්තුවේ', color: '#ea580c', bg: '#fff7ed', icon: '⏳' },
+  return_completed: { label: 'Return Done',    labelSi: 'ආපසු බාරය සම්පූර්ණයි',  color: '#16a34a', bg: '#f0fdf4', icon: '✅' },
+  return:           { label: 'Returned',       labelSi: 'ආපසු භාරයි',             color: '#ea580c', bg: '#fff7ed', icon: '↩️' },
+  completed:        { label: 'Completed',      labelSi: 'සම්පූර්ණයි',             color: '#059669', bg: '#ecfdf5', icon: '✅' },
+  production:       { label: 'Service',        labelSi: 'සේවාව',                  color: '#0891b2', bg: '#ecfeff', icon: '🔧' },
+  trip:             { label: 'Trip',           labelSi: 'ගමන',                    color: '#8b5cf6', bg: '#f5f3ff', icon: '🚛' },
+  approved:         { label: 'Approved',       labelSi: 'අනුමත කළා',              color: '#16a34a', bg: '#dcfce7', icon: '✅' },
+  rejected:         { label: 'Rejected',       labelSi: 'ප්‍රතික්ෂේප',            color: '#dc2626', bg: '#fef2f2', icon: '❌' },
 };
 
 /* ════════════════════════════════════════
@@ -327,8 +339,8 @@ const translations = {
     balance: 'වත්මන් ශේෂය', orderTab: '🛒 ඇණවුම්', accountTab: '📊 ඉතිහාසය',
     shopsTab: '🏪 වෙළඳසැල්', search: 'භාණ්ඩ සොයන්න...', addToCart: 'කරත්තයට',
     checkout: 'ඇණවුම යොමු කරන්න', customerName: 'ඔබේ නම', customerPhone: 'දුරකථන අංකය',
-    placeOrder: 'ඇණවුම තහවුරු කරන්න', orderSuccess: 'ඇණවුම සාර්ථකයි!', loading: 'පූරණය වෙමින්...',
-    noOrders: 'ගනුදෙනු නොමැත.', itemsCount: 'භාණ්ඩ වර්ග',
+    placeOrder: 'ඇණවුම තහවුරු කරන්න', orderSuccess: 'ඇණවුම සාර්ථකයි!',
+    loading: 'පූරණය වෙමින්...', noOrders: 'ගනුදෙනු නොමැත.', itemsCount: 'භාණ්ඩ වර්ග',
     payment: 'මුදල් ගෙවීම', paid: 'ගෙවූ මුදල', due: 'හිඟ මුදල',
     download: 'රිසිට් පත', saving: 'ඉතිරි කිරීම', perUnit: 'එකකට',
     contactForPrice: 'මිල සඳහා අමතන්න', cartItems: 'භාණ්ඩ',
@@ -343,7 +355,7 @@ const translations = {
     receiptUploaded: '✅ රිසිට් පත Upload කළා',
     submitPayment: '💰 ගෙවීම යොමු කරන්න', submitting: 'යොමු කරමින්...',
     paymentSuccess: '✅ ගෙවීම සාර්ථකව යොමු කරන ලදී!',
-    paymentSuccessDesc: 'ඔබේ ගෙවීම සාර්ථකව ලැබුණි. වෙළඳසැල විසින් තහවුරු කළ පසු ඔබේ ශේෂය යාවත්කාලීන වේ.',
+    paymentSuccessDesc: 'ඔබේ ගෙවීම සාර්ථකව ලැබුණි. වෙළඳසැල විසින් තහවුරු කළ පසු ශේෂය යාවත්කාලීන වේ.',
     bankAccounts: '🏦 බැංකු ගිණුම් තොරතුරු',
     bankAccountsDesc: 'ගෙවීම් කිරීමට පහත බැංකු ගිණුම් වලින් එකකට මුදල් බැර කරන්න',
     noBankAccounts: 'බැංකු ගිණුම් තොරතුරු ලබා දී නැත',
@@ -362,8 +374,7 @@ const translations = {
     invoiceDue: 'ගෙවිය යුතු',
     paymentApproved: '✅ ගෙවීම අනුමත විය',
     paymentPending: '⏳ අනුමත වීමට පොරොත්තුවේ',
-    paymentRejected: '❌ ප්‍රතික්ෂේප විය',
-    rejectReason: 'හේතුව',
+    paymentRejected: '❌ ප්‍රතික්ෂේප විය', rejectReason: 'හේතුව',
     totalOutstanding: 'මුළු ණය එකතුව', unpaidBills: 'ගෙවිය යුතු බිල්පත්',
     billsTab: '🧾 බිල්පත්', settleBill: '💳 Settle කරන්න',
     billPaid: 'ගෙවූ මුදල', billDue: 'ඉතිරි ණය', billItems: 'භාණ්ඩ',
@@ -405,7 +416,7 @@ const translations = {
     receiptUploaded: '✅ Receipt Uploaded',
     submitPayment: '💰 Submit Payment', submitting: 'Submitting...',
     paymentSuccess: '✅ Payment Submitted Successfully!',
-    paymentSuccessDesc: 'Your payment has been received. Balance will update once the shop confirms.',
+    paymentSuccessDesc: 'Your payment has been received. Balance will update once confirmed.',
     bankAccounts: '🏦 Bank Account Details',
     bankAccountsDesc: 'Transfer money to one of the following bank accounts',
     noBankAccounts: 'No bank account details available',
@@ -424,8 +435,7 @@ const translations = {
     invoiceDue: 'Due',
     paymentApproved: '✅ Payment Approved',
     paymentPending: '⏳ Pending Approval',
-    paymentRejected: '❌ Payment Rejected',
-    rejectReason: 'Reason',
+    paymentRejected: '❌ Payment Rejected', rejectReason: 'Reason',
     totalOutstanding: 'Total Outstanding', unpaidBills: 'Unpaid Bills',
     billsTab: '🧾 Bills', settleBill: '💳 Settle',
     billPaid: 'Paid', billDue: 'Due', billItems: 'Items',
@@ -449,6 +459,13 @@ const translations = {
   },
 };
 
+// ═══════════════════════════════════
+// Part 1 END — Part 2 continues with Sub Components
+// ═══════════════════════════════════// ═══════════════════════════════════
+// Part 2 — Sub Components
+// (continues from Part 1 — paste below Part 1 code)
+// ═══════════════════════════════════
+
 /* ════════════════════════════════════════
    SUB COMPONENTS
 ════════════════════════════════════════ */
@@ -462,8 +479,9 @@ const ItemImageBox = ({ item, size = 44, onZoom, isReturn = false }) => {
         width: size, height: size, borderRadius: 8, overflow: 'hidden',
         flexShrink: 0,
         background: isReturn ? '#fff7ed' : '#f8fafc',
-        border: isReturn ? '2px solid #fed7aa'
-              : hasReal  ? '1.5px solid #cbd5e1' : '1.5px dashed #cbd5e1',
+        border: isReturn
+          ? '2px solid #fed7aa'
+          : hasReal ? '1.5px solid #cbd5e1' : '1.5px dashed #cbd5e1',
         cursor: hasReal ? 'zoom-in' : 'default',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         position: 'relative',
@@ -475,9 +493,11 @@ const ItemImageBox = ({ item, size = 44, onZoom, isReturn = false }) => {
         onError={e => { e.target.onerror = null; e.target.src = defaultImg; }}
       />
       {hasReal && (
-        <div style={{ position: 'absolute', bottom: 2, right: 2, background: 'rgba(0,0,0,0.35)', borderRadius: 4, padding: '1px 3px', fontSize: 8, color: 'white' }}>
-          🔍
-        </div>
+        <div style={{
+          position: 'absolute', bottom: 2, right: 2,
+          background: 'rgba(0,0,0,0.35)', borderRadius: 4,
+          padding: '1px 3px', fontSize: 8, color: 'white',
+        }}>🔍</div>
       )}
     </div>
   );
@@ -490,7 +510,11 @@ const ItemNamesBlock = ({ item, size = 'md', isReturn = false }) => {
   const bs = size === 'sm' ?  9 : 10;
   return (
     <div style={{ minWidth: 0 }}>
-      <div style={{ fontWeight: 800, fontSize: ps, color: isReturn ? '#9a3412' : '#1e293b', lineHeight: 1.35, wordBreak: 'break-word' }}>
+      <div style={{
+        fontWeight: 800, fontSize: ps,
+        color: isReturn ? '#9a3412' : '#1e293b',
+        lineHeight: 1.35, wordBreak: 'break-word',
+      }}>
         {isReturn && '↩️ '}{n.primary}
       </div>
       {n.secondary && (
@@ -501,7 +525,10 @@ const ItemNamesBlock = ({ item, size = 'md', isReturn = false }) => {
       {n.badges.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 5 }}>
           {n.badges.map((b, i) => (
-            <span key={i} style={{ fontSize: bs, fontWeight: 700, color: b.color, background: b.bg, padding: '2px 6px', borderRadius: 6 }}>
+            <span key={i} style={{
+              fontSize: bs, fontWeight: 700, color: b.color,
+              background: b.bg, padding: '2px 6px', borderRadius: 6,
+            }}>
               {b.icon} {b.label}
             </span>
           ))}
@@ -521,7 +548,9 @@ const ContactPhoneModal = ({ item, shopInfo, onClose, t }) => {
   const shopPhone = shopInfo?.phone || shopInfo?.shopPhone || shopInfo?.contactPhone || shopInfo?.mobile || '';
   const callLink  = formatPhoneForCall(shopPhone);
   const waLink    = formatPhoneForWhatsApp(shopPhone);
-  const waMessage = encodeURIComponent(`සුබ දවසක් 🙏\n\n"${n.primary}" භාණ්ඩයේ මිල දැනගැනීමට කැමැත්තෙමි.`);
+  const waMessage = encodeURIComponent(
+    `සුබ දවසක් 🙏\n\n"${n.primary}" භාණ්ඩයේ මිල දැනගැනීමට කැමැත්තෙමි.`
+  );
 
   return (
     <div
@@ -627,23 +656,26 @@ const BankAccountCard = ({ bank, t, onCopy }) => {
 /* ════════════════════════════════════════
    PAYMENT MODAL
 ════════════════════════════════════════ */
-const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, preSelectedInvoices, onClose, onSuccess, t, lang }) => {
-  const [amount,            setAmount           ] = useState('');
-  const [note,              setNote             ] = useState('');
-  const [receiptImage,      setReceiptImage     ] = useState(null);
-  const [receiptPreview,    setReceiptPreview   ] = useState(null);
-  const [submitting,        setSubmitting       ] = useState(false);
-  const [success,           setSuccess          ] = useState(false);
-  const [copiedMsg,         setCopiedMsg        ] = useState('');
-  const [selectedInvoiceIds,setSelectedInvoiceIds] = useState([]);
+const PaymentModal = ({
+  customer, selectedShop, bankAccounts, unpaidInvoices,
+  preSelectedInvoices, onClose, onSuccess, t, lang,
+}) => {
+  const [amount,             setAmount            ] = useState('');
+  const [note,               setNote              ] = useState('');
+  const [receiptImage,       setReceiptImage      ] = useState(null);
+  const [receiptPreview,     setReceiptPreview    ] = useState(null);
+  const [submitting,         setSubmitting        ] = useState(false);
+  const [success,            setSuccess           ] = useState(false);
+  const [copiedMsg,          setCopiedMsg         ] = useState('');
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState([]);
   const fileRef = React.useRef(null);
   const balance = nn(customer?.currentBalance);
 
   useEffect(() => {
-    if (preSelectedInvoices && preSelectedInvoices.length > 0) {
-      const ids     = preSelectedInvoices.map(inv => inv.id);
-      const invNos  = [];
-      let totalDue  = 0;
+    if (preSelectedInvoices?.length > 0) {
+      const ids    = preSelectedInvoices.map(inv => inv.id);
+      const invNos = [];
+      let totalDue = 0;
       preSelectedInvoices.forEach(inv => {
         const net  = nn(inv.netAmount || inv.grandTotal);
         const paid = nn(inv.payAmount || inv.paidAmount);
@@ -674,22 +706,14 @@ const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, pr
 
   const handleToggleInvoice = useCallback(inv => {
     setSelectedInvoiceIds(prev => {
-      const isSelected = prev.includes(inv.id);
-      const newIds     = isSelected ? prev.filter(id => id !== inv.id) : [...prev, inv.id];
-      const selInvs    = (unpaidInvoices || []).filter(i => newIds.includes(i.id));
-      let totalDue = 0; const invNos = [];
+      const newIds  = prev.includes(inv.id) ? prev.filter(id => id !== inv.id) : [...prev, inv.id];
+      const selInvs = (unpaidInvoices || []).filter(i => newIds.includes(i.id));
+      let totalDue = 0;
       selInvs.forEach(i => {
-        const net  = nn(i.netAmount || i.grandTotal);
-        const paid = nn(i.payAmount || i.paidAmount);
-        totalDue  += Math.max(0, net - paid);
-        invNos.push(i.invoiceNo || i.invoiceCode || `INV-${i.id.slice(0, 8).toUpperCase()}`);
+        totalDue += Math.max(0, nn(i.netAmount || i.grandTotal) - nn(i.payAmount || i.paidAmount));
       });
-      if (newIds.length > 0) {
-        setAmount(totalDue > 0 ? totalDue.toString() : '');
-        setNote(newIds.length === 1
-          ? `${invNos[0]} payment`
-          : `Payment for ${invNos.length} bills: ${invNos.join(', ')}`);
-      } else { setAmount(''); setNote(''); }
+      if (newIds.length > 0) setAmount(totalDue > 0 ? totalDue.toString() : '');
+      else { setAmount(''); setNote(''); }
       return newIds;
     });
   }, [unpaidInvoices]);
@@ -697,16 +721,12 @@ const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, pr
   const handleSelectAll = useCallback(() => {
     if (!unpaidInvoices || unpaidInvoices.length === 0) return;
     const allIds = unpaidInvoices.map(inv => inv.id);
-    let totalDue = 0; const invNos = [];
+    let totalDue = 0;
     unpaidInvoices.forEach(inv => {
-      const net  = nn(inv.netAmount || inv.grandTotal);
-      const paid = nn(inv.payAmount || inv.paidAmount);
-      totalDue  += Math.max(0, net - paid);
-      invNos.push(inv.invoiceNo || inv.invoiceCode || `INV-${inv.id.slice(0, 8).toUpperCase()}`);
+      totalDue += Math.max(0, nn(inv.netAmount || inv.grandTotal) - nn(inv.payAmount || inv.paidAmount));
     });
     setSelectedInvoiceIds(allIds);
     setAmount(totalDue > 0 ? totalDue.toString() : '');
-    setNote(`Payment for ${invNos.length} bills: ${invNos.join(', ')}`);
   }, [unpaidInvoices]);
 
   const handleDeselectAll = useCallback(() => { setSelectedInvoiceIds([]); setAmount(''); setNote(''); }, []);
@@ -714,10 +734,8 @@ const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, pr
 
   const handleReceiptUpload = async e => {
     const file = e.target.files[0]; if (!file) return;
-    try {
-      const b64 = await compressReceiptImage(file, 600);
-      setReceiptImage(b64); setReceiptPreview(b64);
-    } catch { alert('Image error'); }
+    try { const b64 = await compressReceiptImage(file, 600); setReceiptImage(b64); setReceiptPreview(b64); }
+    catch { alert('Image error'); }
     e.target.value = '';
   };
 
@@ -726,72 +744,47 @@ const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, pr
     if (payAmount <= 0) { alert(t.amountRequired); return; }
     setSubmitting(true);
     try {
-      const shopUid   = selectedShop?.uid || customer?.uid || '';
+      const shopUid    = selectedShop?.uid || customer?.uid || '';
       const invoiceIds = selectedInvoiceIds;
       const invoiceNos = selectedInvoicesData.map(inv =>
         inv.invoiceNo || inv.invoiceCode || `INV-${inv.id.slice(0, 8).toUpperCase()}`
       );
       await addDoc(collection(db, 'customerTransactions'), {
-        customerId:    customer.id,
-        customerName:  customer.name  || '',
-        customerPhone: customer.phone || '',
-        shopUid, uid: shopUid,
-        amount: payAmount,
-        type:   'payment', method: 'bank_transfer', paymentMethod: 'bank',
-        invoiceId:    invoiceIds[0]  || '',
-        invoiceNo:    invoiceNos[0]  || '',
+        customerId: customer.id, customerName: customer.name || '', customerPhone: customer.phone || '',
+        shopUid, uid: shopUid, amount: payAmount,
+        type: 'payment', method: 'bank_transfer', paymentMethod: 'bank',
+        invoiceId: invoiceIds[0] || '', invoiceNo: invoiceNos[0] || '',
         invoiceIds, invoiceNos, invoiceCount: invoiceIds.length,
-        note:         (note.trim() || `Payment by ${customer.name}`),
-        receiptImage: receiptImage || '',
-        status:       'pending',
-        source:       'customer_portal',
-        createdAt:    serverTimestamp(),
-        date:         new Date().toISOString(),
+        note: note.trim() || `Payment by ${customer.name}`,
+        receiptImage: receiptImage || '', status: 'pending', source: 'customer_portal',
+        createdAt: serverTimestamp(), date: new Date().toISOString(),
       });
       setSuccess(true);
       if (onSuccess) onSuccess();
-    } catch (e) {
-      console.error(e); alert(t.errorOccurred);
-    } finally { setSubmitting(false); }
+    } catch (e) { console.error(e); alert(t.errorOccurred); }
+    finally { setSubmitting(false); }
   };
 
   if (success) return (
-    <div
-      style={{ position: 'fixed', inset: 0, zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
-      onClick={onClose}
-    >
+    <div style={{ position: 'fixed', inset: 0, zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }} onClick={onClose}>
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(15,23,42,0.75)', backdropFilter: 'blur(4px)' }} />
-      <div
-        style={{ position: 'relative', width: '100%', maxWidth: 380, background: 'white', borderRadius: 24, textAlign: 'center', padding: '40px 24px' }}
-        onClick={e => e.stopPropagation()}
-      >
+      <div style={{ position: 'relative', width: '100%', maxWidth: 380, background: 'white', borderRadius: 24, textAlign: 'center', padding: '40px 24px' }} onClick={e => e.stopPropagation()}>
         <div style={{ fontSize: 64, marginBottom: 12 }}>✅</div>
         <h3 style={{ fontSize: 20, fontWeight: 800, color: '#16a34a', margin: '0 0 10px' }}>{t.paymentSuccess}</h3>
         <p style={{ fontSize: 13, color: '#64748b', lineHeight: 1.5, margin: '0 0 20px' }}>{t.paymentSuccessDesc}</p>
-        <button onClick={onClose} style={{ width: '100%', padding: 14, background: '#16a34a', color: 'white', border: 'none', borderRadius: 12, fontWeight: 800, fontSize: 16, cursor: 'pointer' }}>
-          {t.ok}
-        </button>
+        <button onClick={onClose} style={{ width: '100%', padding: 14, background: '#16a34a', color: 'white', border: 'none', borderRadius: 12, fontWeight: 800, fontSize: 16, cursor: 'pointer' }}>{t.ok}</button>
       </div>
     </div>
   );
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, zIndex: 99999, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
-      onClick={onClose}
-    >
+    <div style={{ position: 'fixed', inset: 0, zIndex: 99999, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }} onClick={onClose}>
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(15,23,42,0.75)', backdropFilter: 'blur(4px)' }} />
-      <div
-        style={{ position: 'relative', width: '100%', maxWidth: 500, background: 'white', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '92vh', overflowY: 'auto', boxSizing: 'border-box' }}
-        onClick={e => e.stopPropagation()}
-      >
+      <div style={{ position: 'relative', width: '100%', maxWidth: 500, background: 'white', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '92vh', overflowY: 'auto', boxSizing: 'border-box' }} onClick={e => e.stopPropagation()}>
         {copiedMsg && (
-          <div style={{ position: 'absolute', top: 60, left: '50%', transform: 'translateX(-50%)', background: '#16a34a', color: 'white', padding: '8px 18px', borderRadius: 10, fontSize: 13, fontWeight: 700, zIndex: 10 }}>
-            {copiedMsg}
-          </div>
+          <div style={{ position: 'absolute', top: 60, left: '50%', transform: 'translateX(-50%)', background: '#16a34a', color: 'white', padding: '8px 18px', borderRadius: 10, fontSize: 13, fontWeight: 700, zIndex: 10 }}>{copiedMsg}</div>
         )}
 
-        {/* Header */}
         <div style={{ background: 'linear-gradient(135deg,#1e40af,#3b82f6)', padding: '24px 20px 18px', color: 'white', textAlign: 'center', borderTopLeftRadius: 24, borderTopRightRadius: 24, position: 'relative' }}>
           <button onClick={onClose} style={{ position: 'absolute', top: 14, right: 14, background: 'rgba(255,255,255,0.2)', color: 'white', width: 32, height: 32, borderRadius: '50%', border: 'none', cursor: 'pointer' }}>✕</button>
           <div style={{ fontSize: 36, marginBottom: 6 }}>💳</div>
@@ -805,23 +798,16 @@ const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, pr
         </div>
 
         <div style={{ padding: '16px 20px 24px' }}>
-          {/* Steps */}
           <div style={{ background: '#f0fdf4', borderRadius: 12, padding: 14, marginBottom: 16, border: '1px solid #bbf7d0' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#166534', marginBottom: 8 }}>📋 {t.paymentSteps}</div>
-            <div style={{ fontSize: 12, color: '#15803d', lineHeight: 1.8 }}>
-              {t.step1}<br />{t.step2}<br />{t.step3}
-            </div>
+            <div style={{ fontSize: 12, color: '#15803d', lineHeight: 1.8 }}>{t.step1}<br />{t.step2}<br />{t.step3}</div>
           </div>
 
-          {/* Invoice selector */}
-          {unpaidInvoices && unpaidInvoices.length > 0 && (
+          {unpaidInvoices?.length > 0 && (
             <div style={{ marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                 <div style={{ fontSize: 14, fontWeight: 800, color: '#1e293b' }}>🧾 {t.selectInvoice}</div>
-                <button
-                  onClick={allSelected ? handleDeselectAll : handleSelectAll}
-                  style={{ padding: '6px 14px', borderRadius: 8, border: allSelected ? '1.5px solid #f87171' : '1.5px solid #3b82f6', background: allSelected ? '#fef2f2' : '#eff6ff', color: allSelected ? '#dc2626' : '#1d4ed8', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
-                >
+                <button onClick={allSelected ? handleDeselectAll : handleSelectAll} style={{ padding: '6px 14px', borderRadius: 8, border: allSelected ? '1.5px solid #f87171' : '1.5px solid #3b82f6', background: allSelected ? '#fef2f2' : '#eff6ff', color: allSelected ? '#dc2626' : '#1d4ed8', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
                   {allSelected ? `✕ ${t.deselectAll}` : `☑️ ${t.selectAll}`}
                 </button>
               </div>
@@ -845,11 +831,7 @@ const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, pr
                   const isSelected = selectedInvoiceIds.includes(inv.id);
                   const paidPct = net > 0 ? Math.min(100, Math.round((paid / net) * 100)) : 0;
                   return (
-                    <div
-                      key={inv.id}
-                      onClick={() => handleToggleInvoice(inv)}
-                      style={{ padding: '12px 14px', borderRadius: 12, border: isSelected ? '2.5px solid #3b82f6' : '1.5px solid #e2e8f0', background: isSelected ? '#eff6ff' : 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12 }}
-                    >
+                    <div key={inv.id} onClick={() => handleToggleInvoice(inv)} style={{ padding: '12px 14px', borderRadius: 12, border: isSelected ? '2.5px solid #3b82f6' : '1.5px solid #e2e8f0', background: isSelected ? '#eff6ff' : 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12 }}>
                       <div style={{ width: 28, height: 28, borderRadius: 8, border: isSelected ? '2px solid #3b82f6' : '2px solid #cbd5e1', background: isSelected ? '#3b82f6' : 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                         {isSelected && <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                       </div>
@@ -868,24 +850,19 @@ const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, pr
                     </div>
                   );
                 })}
-                <button
-                  onClick={handleDeselectAll}
-                  style={{ padding: '10px 14px', borderRadius: 10, border: selectedInvoiceIds.length === 0 ? '2px solid #f59e0b' : '1.5px solid #e2e8f0', background: selectedInvoiceIds.length === 0 ? '#fffbeb' : '#f8fafc', color: selectedInvoiceIds.length === 0 ? '#b45309' : '#64748b', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}
-                >
+                <button onClick={handleDeselectAll} style={{ padding: '10px 14px', borderRadius: 10, border: selectedInvoiceIds.length === 0 ? '2px solid #f59e0b' : '1.5px solid #e2e8f0', background: selectedInvoiceIds.length === 0 ? '#fffbeb' : '#f8fafc', color: selectedInvoiceIds.length === 0 ? '#b45309' : '#64748b', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
                   {t.generalPayment}
                 </button>
               </div>
             </div>
           )}
 
-          {/* Bank Accounts */}
           <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 15, fontWeight: 800, color: '#1e40af', marginBottom: 6 }}>🏦 {t.bankAccounts}</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: '#1e40af', marginBottom: 6 }}>{t.bankAccounts}</div>
             <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12 }}>{t.bankAccountsDesc}</div>
             {bankAccounts.length > 0
               ? bankAccounts.map((bank, idx) => (
-                  <BankAccountCard
-                    key={idx} bank={bank} t={t}
+                  <BankAccountCard key={idx} bank={bank} t={t}
                     onCopy={() => { setCopiedMsg(t.copiedAccNo); setTimeout(() => setCopiedMsg(''), 2000); }}
                   />
                 ))
@@ -898,19 +875,11 @@ const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, pr
             }
           </div>
 
-          {/* Amount */}
           <div style={{ marginBottom: 14 }}>
-            <label style={{ fontWeight: 700, fontSize: 14, color: '#1e293b', display: 'block', marginBottom: 6 }}>
-              {t.paymentAmount} *
-            </label>
+            <label style={{ fontWeight: 700, fontSize: 14, color: '#1e293b', display: 'block', marginBottom: 6 }}>{t.paymentAmount} *</label>
             <div style={{ position: 'relative' }}>
               <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 16, fontWeight: 800, color: '#64748b' }}>Rs.</span>
-              <input
-                type="number" inputMode="decimal"
-                value={amount} onChange={e => setAmount(e.target.value)}
-                placeholder="0.00"
-                style={{ width: '100%', padding: '14px 14px 14px 48px', fontSize: 22, fontWeight: 900, border: '2px solid #e2e8f0', borderRadius: 12, boxSizing: 'border-box', outline: 'none', color: '#059669', fontFamily: 'monospace' }}
-              />
+              <input type="number" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" style={{ width: '100%', padding: '14px 14px 14px 48px', fontSize: 22, fontWeight: 900, border: '2px solid #e2e8f0', borderRadius: 12, boxSizing: 'border-box', outline: 'none', color: '#059669', fontFamily: 'monospace' }} />
             </div>
             <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
               {balance > 0 && selectedInvoiceIds.length === 0 && (
@@ -926,16 +895,11 @@ const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, pr
             </div>
           </div>
 
-          {/* Note */}
           <div style={{ marginBottom: 14 }}>
             <label style={{ fontWeight: 700, fontSize: 13, display: 'block', marginBottom: 6 }}>{t.paymentNote}</label>
-            <input
-              value={note} onChange={e => setNote(e.target.value)}
-              style={{ width: '100%', padding: 12, fontSize: 14, border: '2px solid #e2e8f0', borderRadius: 10, boxSizing: 'border-box', outline: 'none' }}
-            />
+            <input value={note} onChange={e => setNote(e.target.value)} style={{ width: '100%', padding: 12, fontSize: 14, border: '2px solid #e2e8f0', borderRadius: 10, boxSizing: 'border-box', outline: 'none' }} />
           </div>
 
-          {/* Receipt Upload */}
           <div style={{ marginBottom: 20 }}>
             <label style={{ fontWeight: 700, fontSize: 13, display: 'block', marginBottom: 6 }}>{t.uploadReceipt}</label>
             {receiptPreview ? (
@@ -954,20 +918,11 @@ const PaymentModal = ({ customer, selectedShop, bankAccounts, unpaidInvoices, pr
             <input type="file" ref={fileRef} onChange={handleReceiptUpload} style={{ display: 'none' }} accept="image/*" />
           </div>
 
-          {/* Submit */}
-          <button
-            onClick={handleSubmit}
-            disabled={submitting || nn(amount) <= 0}
-            style={{ width: '100%', padding: 16, background: submitting || nn(amount) <= 0 ? '#9ca3af' : 'linear-gradient(135deg,#16a34a,#15803d)', color: 'white', border: 'none', borderRadius: 14, fontWeight: 800, fontSize: 17, cursor: submitting ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}
-          >
+          <button onClick={handleSubmit} disabled={submitting || nn(amount) <= 0} style={{ width: '100%', padding: 16, background: submitting || nn(amount) <= 0 ? '#9ca3af' : 'linear-gradient(135deg,#16a34a,#15803d)', color: 'white', border: 'none', borderRadius: 14, fontWeight: 800, fontSize: 17, cursor: submitting ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
             {submitting ? `⏳ ${t.submitting}` : t.submitPayment}
-            {!submitting && nn(amount) > 0 && (
-              <span style={{ background: 'rgba(255,255,255,0.2)', padding: '4px 12px', borderRadius: 8, fontSize: 14 }}>Rs. {fmtAmt(amount)}</span>
-            )}
+            {!submitting && nn(amount) > 0 && <span style={{ background: 'rgba(255,255,255,0.2)', padding: '4px 12px', borderRadius: 8, fontSize: 14 }}>Rs. {fmtAmt(amount)}</span>}
           </button>
-          <button onClick={onClose} style={{ width: '100%', marginTop: 10, padding: 12, background: 'none', border: 'none', color: '#64748b', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
-            {t.closeModal}
-          </button>
+          <button onClick={onClose} style={{ width: '100%', marginTop: 10, padding: 12, background: 'none', border: 'none', color: '#64748b', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>{t.closeModal}</button>
         </div>
       </div>
     </div>
@@ -984,23 +939,19 @@ const TripCard = ({ hi, t, lang, catalogItems, setViewImg, openReceipt, customer
   const tripDate  = hi.tripDate?.seconds
     ? new Date(hi.tripDate.seconds * 1000).toLocaleDateString(lang === 'si' ? 'si-LK' : 'en-GB', { year: 'numeric', month: 'long', day: 'numeric' })
     : (typeof hi.tripDate === 'string' ? hi.tripDate : '');
-  const fare        = nn(hi.fare);
-  const cargoTotal  = (hi.cargoItems || []).reduce((sum, i) => sum + nn(i.total), 0);
-  const meterTotal  = nn(hi.meterTotal);
-  const totalBill   = nn(hi.totalBillAmount) || (fare + cargoTotal + meterTotal);
-  const paidAmount  = nn(hi.paidAmount);
-  const balanceDue  = nn(hi.balanceDue) || Math.max(0, totalBill - paidAmount);
-  const cargoItems  = (hi.cargoItems || []).map(it => enrichItem(it, catalogItems));
-  const accountUrl  = portalLinkFromKey(hi.customerPortalKey || customer?.portalAccessKey || '');
+  const fare       = nn(hi.fare);
+  const cargoTotal = (hi.cargoItems || []).reduce((sum, i) => sum + nn(i.total), 0);
+  const meterTotal = nn(hi.meterTotal);
+  const totalBill  = nn(hi.totalBillAmount) || (fare + cargoTotal + meterTotal);
+  const paidAmount = nn(hi.paidAmount);
+  const balanceDue = nn(hi.balanceDue) || Math.max(0, totalBill - paidAmount);
+  const cargoItems = (hi.cargoItems || []).map(it => enrichItem(it, catalogItems));
+  const accountUrl = portalLinkFromKey(hi.customerPortalKey || customer?.portalAccessKey || '');
 
   const copyLink = async () => {
     if (!accountUrl) return;
     try { await navigator.clipboard.writeText(accountUrl); }
-    catch {
-      const ta = document.createElement('textarea');
-      ta.value = accountUrl; document.body.appendChild(ta);
-      ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
-    }
+    catch { const ta = document.createElement('textarea'); ta.value = accountUrl; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); }
     setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2500);
   };
 
@@ -1013,66 +964,48 @@ const TripCard = ({ hi, t, lang, catalogItems, setViewImg, openReceipt, customer
             {hi.vehicleName && <div style={{ fontSize: 11, color: '#7c3aed', marginTop: 2 }}>🚗 {hi.vehicleName}</div>}
             {tripDate && <div style={{ fontSize: 12, fontWeight: 700, color: '#5b21b6', marginTop: 4 }}>📅 {tripDate}</div>}
             {(hi.startLocation || hi.endLocation) && (
-              <div style={{ fontSize: 12, color: '#4c1d95', marginTop: 4, fontWeight: 600 }}>
-                🗺️ {hi.startLocation || '—'} ➔ {hi.endLocation || '—'}
-              </div>
+              <div style={{ fontSize: 12, color: '#4c1d95', marginTop: 4, fontWeight: 600 }}>🗺️ {hi.startLocation || '—'} ➔ {hi.endLocation || '—'}</div>
             )}
             {hi.description && <div style={{ fontSize: 11, color: '#6d28d9', marginTop: 3, fontStyle: 'italic' }}>📝 {hi.description}</div>}
           </div>
           <span style={{ fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: s.bg, color: s.color, height: 'fit-content' }}>{s.icon}</span>
         </div>
       </div>
-
       <div style={{ padding: '12px 16px' }}>
         <div style={{ background: 'linear-gradient(135deg,#1e1b4b,#3730a3)', borderRadius: 14, padding: '14px 16px', marginBottom: 12, display: 'flex', justifyContent: 'space-between', color: 'white' }}>
-          <div>
-            <div style={{ fontSize: 11, opacity: 0.7 }}>{t.tripTotalBill}</div>
-            <div style={{ fontSize: 26, fontWeight: 900 }}>Rs. {fmtAmt(totalBill)}</div>
-          </div>
+          <div><div style={{ fontSize: 11, opacity: 0.7 }}>{t.tripTotalBill}</div><div style={{ fontSize: 26, fontWeight: 900 }}>Rs. {fmtAmt(totalBill)}</div></div>
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 10, opacity: 0.7 }}>{t.tripPaid}</div>
             <div style={{ fontSize: 16, fontWeight: 800, color: '#86efac' }}>Rs. {fmtAmt(paidAmount)}</div>
-            {balanceDue > 0 && (
-              <>
-                <div style={{ fontSize: 10, opacity: 0.7, marginTop: 4 }}>{t.tripBalance}</div>
-                <div style={{ fontSize: 16, fontWeight: 800, color: '#fca5a5' }}>Rs. {fmtAmt(balanceDue)}</div>
-              </>
-            )}
+            {balanceDue > 0 && (<><div style={{ fontSize: 10, opacity: 0.7, marginTop: 4 }}>{t.tripBalance}</div><div style={{ fontSize: 16, fontWeight: 800, color: '#fca5a5' }}>Rs. {fmtAmt(balanceDue)}</div></>)}
           </div>
         </div>
-
         {accountUrl && (
           <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 12, background: '#eff6ff', border: '1.5px solid #bfdbfe', display: 'flex', gap: 8, alignItems: 'center' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: '#1e40af', marginBottom: 2 }}>👤 {t.viewAccount}</div>
               <div style={{ fontSize: 10, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{accountUrl}</div>
             </div>
-            <button onClick={copyLink} style={{ padding: '8px 14px', borderRadius: 10, border: linkCopied ? '1.5px solid #16a34a' : '1.5px solid #3b82f6', background: linkCopied ? '#dcfce7' : '#dbeafe', color: linkCopied ? '#16a34a' : '#1d4ed8', fontWeight: 700, fontSize: 12, cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' }}>
+            <button onClick={copyLink} style={{ padding: '8px 14px', borderRadius: 10, border: linkCopied ? '1.5px solid #16a34a' : '1.5px solid #3b82f6', background: linkCopied ? '#dcfce7' : '#dbeafe', color: linkCopied ? '#16a34a' : '#1d4ed8', fontWeight: 700, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>
               {linkCopied ? t.accountLinkCopied : t.copyAccountLink}
             </button>
           </div>
         )}
-
         <button onClick={() => setExpanded(!expanded)} style={{ width: '100%', padding: '10px 0', background: '#faf5ff', border: '1.5px solid #ddd6fe', borderRadius: 10, color: '#7c3aed', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
           {expanded ? `🔼 ${t.hideDetails}` : `🔽 ${t.viewDetails}`}
         </button>
       </div>
-
       {expanded && (
         <div style={{ borderTop: '2px solid #ede9fe', padding: '14px 16px' }}>
-          {/* Meter breakdown */}
-          {(nn(hi.meterKmTotal) > 0 || nn(hi.meterHoursTotal) > 0 || nn(hi.meterDaysTotal) > 0 || nn(hi.meterMonthsTotal) > 0 || nn(hi.damageAmount) > 0 || fare > 0) && (
+          {(nn(hi.meterKmTotal) > 0 || nn(hi.meterHoursTotal) > 0 || nn(hi.meterDaysTotal) > 0 || nn(hi.damageAmount) > 0 || fare > 0) && (
             <div style={{ background: '#f8fafc', borderRadius: 12, padding: 12, marginBottom: 12, border: '1px solid #e2e8f0' }}>
               {fare > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '4px 0', color: '#1e3a8a', fontWeight: 800, borderBottom: '1px dashed #cbd5e1', marginBottom: 4 }}><span>💵 {lang === 'si' ? 'ප්‍රවාහන ගාස්තුව' : 'Transport Fare'}</span><span>Rs.{fmtAmt(fare)}</span></div>}
               {nn(hi.meterKmTotal) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0', color: '#0369a1', fontWeight: 700 }}><span>🛣️ {hi.meterUnits || 0} KM</span><span>Rs.{fmtAmt(hi.meterKmTotal)}</span></div>}
               {nn(hi.meterHoursTotal) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0', color: '#7c3aed', fontWeight: 700 }}><span>⏱️ {hi.meterHours || 0} Hrs</span><span>Rs.{fmtAmt(hi.meterHoursTotal)}</span></div>}
               {nn(hi.meterDaysTotal) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0', color: '#d97706', fontWeight: 700 }}><span>📅 {hi.meterDays || 0} {lang === 'si' ? 'දින' : 'Days'}</span><span>Rs.{fmtAmt(hi.meterDaysTotal)}</span></div>}
-              {nn(hi.meterMonthsTotal) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0', color: '#059669', fontWeight: 700 }}><span>🗓️ {hi.meterMonths || 0} {lang === 'si' ? 'මාස' : 'Months'}</span><span>Rs.{fmtAmt(hi.meterMonthsTotal)}</span></div>}
-              {nn(hi.damageAmount) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0', color: '#b45309', fontWeight: 700 }}><span>⚠️ {lang === 'si' ? 'හානි' : 'Damage'}{hi.damageDescription ? ` (${hi.damageDescription})` : ''}</span><span>Rs.{fmtAmt(hi.damageAmount)}</span></div>}
+              {nn(hi.damageAmount) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0', color: '#b45309', fontWeight: 700 }}><span>⚠️ {lang === 'si' ? 'හානි' : 'Damage'}</span><span>Rs.{fmtAmt(hi.damageAmount)}</span></div>}
             </div>
           )}
-
-          {/* Cargo items */}
           {cargoItems.length > 0 && (
             <div style={{ background: '#faf5ff', borderRadius: 12, padding: 12, marginBottom: 12 }}>
               {cargoItems.map((it, idx) => (
@@ -1084,8 +1017,6 @@ const TripCard = ({ hi, t, lang, catalogItems, setViewImg, openReceipt, customer
               ))}
             </div>
           )}
-
-          {/* Previous debt summary */}
           {(() => {
             const prevDebt      = nn(hi.customerPreviousBalance);
             const totalDebtAfter = nn(hi.customerTotalDebtAfterTrip);
@@ -1095,16 +1026,11 @@ const TripCard = ({ hi, t, lang, catalogItems, setViewImg, openReceipt, customer
                 <div style={{ fontSize: 11, fontWeight: 800, color: '#991b1b', marginBottom: 6 }}>📊 {lang === 'si' ? 'ණය සාරාංශය' : 'Debt Summary'}</div>
                 {prevDebt > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#9a3412', marginBottom: 2 }}><span>{lang === 'si' ? 'පෙර ණය' : 'Prev Debt'}:</span><span>Rs.{fmtAmt(prevDebt)}</span></div>}
                 {balanceDue > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#9a3412', marginBottom: 4 }}><span>{lang === 'si' ? 'මෙම ගමන' : 'This Trip'}:</span><span>Rs.{fmtAmt(balanceDue)}</span></div>}
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#b91c1c', fontWeight: 800, borderTop: '1px dashed #fca5a5', paddingTop: 4 }}>
-                  <span>{t.totalOutstanding}:</span><span>Rs.{fmtAmt(totalDebtAfter)}</span>
-                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#b91c1c', fontWeight: 800, borderTop: '1px dashed #fca5a5', paddingTop: 4 }}><span>{t.totalOutstanding}:</span><span>Rs.{fmtAmt(totalDebtAfter)}</span></div>
               </div>
             );
           })()}
-
-          <button onClick={() => openReceipt(hi)} style={{ width: '100%', background: '#5b21b6', color: 'white', border: 'none', padding: '12px 0', borderRadius: 10, fontWeight: 700, cursor: 'pointer' }}>
-            🧾 {t.download}
-          </button>
+          <button onClick={() => openReceipt(hi)} style={{ width: '100%', background: '#5b21b6', color: 'white', border: 'none', padding: '12px 0', borderRadius: 10, fontWeight: 700, cursor: 'pointer' }}>🧾 {t.download}</button>
         </div>
       )}
     </div>
@@ -1117,19 +1043,16 @@ const TripCard = ({ hi, t, lang, catalogItems, setViewImg, openReceipt, customer
 const ProductionEntryCard = ({ hi, t, lang, catalogItems, setViewImg, openReceipt, customer }) => {
   const [expanded,   setExpanded  ] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
-
   const bizType  = hi.businessType || 'custom';
   const bizMeta  = PRODUCTION_BIZ_META[bizType] || PRODUCTION_BIZ_META.custom;
   const bizName  = hi.businessName || (lang === 'si' ? 'ව්‍යාපාරය' : 'Business');
   const dateStr  = formatPortalDate(hi.date || hi.createdAt, lang);
-
   const serviceItems = hi.serviceItems || [];
   const partsUsed    = (hi.partsUsed || []).map(it => enrichItem(it, catalogItems));
   const outputs      = hi.outputs     || [];
   const harvests     = hi.harvests    || [];
   const expenseItems = hi.expenseItems || [];
   const payments     = hi.payments    || [];
-
   const grandTotal   = nn(hi.grandTotal   || 0);
   const totalIncome  = nn(hi.totalIncome  || grandTotal);
   const totalCost    = nn(hi.totalCost    || 0);
@@ -1144,17 +1067,12 @@ const ProductionEntryCard = ({ hi, t, lang, catalogItems, setViewImg, openReceip
   const copyLink = async () => {
     if (!accountUrl) return;
     try { await navigator.clipboard.writeText(accountUrl); }
-    catch {
-      const ta = document.createElement('textarea');
-      ta.value = accountUrl; document.body.appendChild(ta);
-      ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
-    }
+    catch { const ta = document.createElement('textarea'); ta.value = accountUrl; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); }
     setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2500);
   };
 
   return (
     <div style={{ background: 'white', borderRadius: 18, marginBottom: 14, border: `1px solid ${bizMeta.color}22`, borderLeft: `5px solid ${bizMeta.color}`, overflow: 'hidden' }}>
-      {/* Header */}
       <div style={{ background: bizMeta.bg, padding: '14px 16px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -1170,76 +1088,41 @@ const ProductionEntryCard = ({ hi, t, lang, catalogItems, setViewImg, openReceip
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
             {hasBilling ? (
-              <>
-                <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.grandTotal}</div>
-                <div style={{ fontSize: 22, fontWeight: 900, color: '#1e3a8a' }}>Rs.{fmtAmt(grandTotal)}</div>
-                {balanceDue > 0 && <div style={{ fontSize: 11, color: '#dc2626', fontWeight: 800, marginTop: 2 }}>{t.balanceDue}: Rs.{fmtAmt(balanceDue)}</div>}
-              </>
+              <><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.grandTotal}</div><div style={{ fontSize: 22, fontWeight: 900, color: '#1e3a8a' }}>Rs.{fmtAmt(grandTotal)}</div>{balanceDue > 0 && <div style={{ fontSize: 11, color: '#dc2626', fontWeight: 800, marginTop: 2 }}>{t.balanceDue}: Rs.{fmtAmt(balanceDue)}</div>}</>
             ) : (
-              <>
-                <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.profit}</div>
-                <div style={{ fontSize: 22, fontWeight: 900, color: profit >= 0 ? '#16a34a' : '#dc2626' }}>Rs.{fmtAmt(profit)}</div>
-              </>
+              <><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.profit}</div><div style={{ fontSize: 22, fontWeight: 900, color: profit >= 0 ? '#16a34a' : '#dc2626' }}>Rs.{fmtAmt(profit)}</div></>
             )}
           </div>
         </div>
       </div>
-
-      {/* Summary row */}
       <div style={{ padding: '12px 16px' }}>
-        {hasBilling ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 12 }}>
-            <div style={{ background: '#eff6ff', borderRadius: 10, padding: 10, textAlign: 'center' }}>
-              <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.grandTotal}</div>
-              <div style={{ fontSize: 15, fontWeight: 900, color: '#1d4ed8' }}>Rs.{fmtAmt(grandTotal)}</div>
-            </div>
-            <div style={{ background: '#f0fdf4', borderRadius: 10, padding: 10, textAlign: 'center' }}>
-              <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.amountReceived}</div>
-              <div style={{ fontSize: 15, fontWeight: 900, color: '#16a34a' }}>Rs.{fmtAmt(totalPaid)}</div>
-            </div>
-            <div style={{ background: balanceDue > 0 ? '#fef2f2' : '#ecfdf5', borderRadius: 10, padding: 10, textAlign: 'center' }}>
-              <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.balanceDue}</div>
-              <div style={{ fontSize: 15, fontWeight: 900, color: balanceDue > 0 ? '#dc2626' : '#16a34a' }}>Rs.{fmtAmt(balanceDue)}</div>
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 12 }}>
-            <div style={{ background: '#eff6ff', borderRadius: 10, padding: 10, textAlign: 'center' }}>
-              <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.income}</div>
-              <div style={{ fontSize: 15, fontWeight: 900, color: '#1d4ed8' }}>Rs.{fmtAmt(totalIncome)}</div>
-            </div>
-            <div style={{ background: '#fff1f2', borderRadius: 10, padding: 10, textAlign: 'center' }}>
-              <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.totalCostLabel}</div>
-              <div style={{ fontSize: 15, fontWeight: 900, color: '#dc2626' }}>Rs.{fmtAmt(totalCost)}</div>
-            </div>
-            <div style={{ background: '#f0fdf4', borderRadius: 10, padding: 10, textAlign: 'center' }}>
-              <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.profit}</div>
-              <div style={{ fontSize: 15, fontWeight: 900, color: profit >= 0 ? '#16a34a' : '#dc2626' }}>Rs.{fmtAmt(profit)}</div>
-            </div>
-          </div>
-        )}
-
-        {/* Account link */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 12 }}>
+          {hasBilling ? (
+            <>
+              <div style={{ background: '#eff6ff', borderRadius: 10, padding: 10, textAlign: 'center' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.grandTotal}</div><div style={{ fontSize: 15, fontWeight: 900, color: '#1d4ed8' }}>Rs.{fmtAmt(grandTotal)}</div></div>
+              <div style={{ background: '#f0fdf4', borderRadius: 10, padding: 10, textAlign: 'center' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.amountReceived}</div><div style={{ fontSize: 15, fontWeight: 900, color: '#16a34a' }}>Rs.{fmtAmt(totalPaid)}</div></div>
+              <div style={{ background: balanceDue > 0 ? '#fef2f2' : '#ecfdf5', borderRadius: 10, padding: 10, textAlign: 'center' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.balanceDue}</div><div style={{ fontSize: 15, fontWeight: 900, color: balanceDue > 0 ? '#dc2626' : '#16a34a' }}>Rs.{fmtAmt(balanceDue)}</div></div>
+            </>
+          ) : (
+            <>
+              <div style={{ background: '#eff6ff', borderRadius: 10, padding: 10, textAlign: 'center' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.income}</div><div style={{ fontSize: 15, fontWeight: 900, color: '#1d4ed8' }}>Rs.{fmtAmt(totalIncome)}</div></div>
+              <div style={{ background: '#fff1f2', borderRadius: 10, padding: 10, textAlign: 'center' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.totalCostLabel}</div><div style={{ fontSize: 15, fontWeight: 900, color: '#dc2626' }}>Rs.{fmtAmt(totalCost)}</div></div>
+              <div style={{ background: '#f0fdf4', borderRadius: 10, padding: 10, textAlign: 'center' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{t.profit}</div><div style={{ fontSize: 15, fontWeight: 900, color: profit >= 0 ? '#16a34a' : '#dc2626' }}>Rs.{fmtAmt(profit)}</div></div>
+            </>
+          )}
+        </div>
         {accountUrl && (
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <a href={accountUrl} target="_blank" rel="noopener noreferrer" style={{ flex: 1, padding: '10px 12px', borderRadius: 10, textAlign: 'center', textDecoration: 'none', background: '#eff6ff', color: '#1d4ed8', fontWeight: 700, border: '2px solid #bfdbfe', fontSize: 12 }}>
-              {t.viewAccount}
-            </a>
-            <button onClick={copyLink} style={{ flex: 1, padding: '10px 12px', borderRadius: 10, border: '2px solid #e2e8f0', background: linkCopied ? '#dcfce7' : '#f8fafc', color: linkCopied ? '#16a34a' : '#475569', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
-              {linkCopied ? t.accountLinkCopied : t.copyAccountLink}
-            </button>
+            <a href={accountUrl} target="_blank" rel="noopener noreferrer" style={{ flex: 1, padding: '10px 12px', borderRadius: 10, textAlign: 'center', textDecoration: 'none', background: '#eff6ff', color: '#1d4ed8', fontWeight: 700, border: '2px solid #bfdbfe', fontSize: 12 }}>{t.viewAccount}</a>
+            <button onClick={copyLink} style={{ flex: 1, padding: '10px 12px', borderRadius: 10, border: '2px solid #e2e8f0', background: linkCopied ? '#dcfce7' : '#f8fafc', color: linkCopied ? '#16a34a' : '#475569', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>{linkCopied ? t.accountLinkCopied : t.copyAccountLink}</button>
           </div>
         )}
-
         <button onClick={() => setExpanded(!expanded)} style={{ width: '100%', padding: '10px 0', background: '#f8fafc', border: `1.5px solid ${bizMeta.color}30`, borderRadius: 10, color: bizMeta.color, fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
           {expanded ? `🔼 ${t.hideDetails}` : `🔽 ${t.viewDetails}`}
         </button>
       </div>
-
-      {/* Expanded details */}
       {expanded && (
         <div style={{ borderTop: '1px solid #e2e8f0', padding: '14px 16px', background: '#fcfcfd' }}>
-
           {serviceItems.length > 0 && (
             <div style={{ background: '#eff6ff', borderRadius: 12, padding: 10, marginBottom: 12, border: '1px solid #bfdbfe' }}>
               <div style={{ fontWeight: 800, fontSize: 12, color: '#1d4ed8', marginBottom: 8 }}>🔧 {t.services}</div>
@@ -1251,14 +1134,11 @@ const ProductionEntryCard = ({ hi, t, lang, catalogItems, setViewImg, openReceip
               ))}
             </div>
           )}
-
           {partsUsed.length > 0 && (
             <div style={{ background: '#faf5ff', borderRadius: 12, padding: 10, marginBottom: 12, border: '1px solid #ddd6fe' }}>
               <div style={{ fontWeight: 800, fontSize: 12, color: '#7c3aed', marginBottom: 8 }}>🔩 {t.parts}</div>
               {partsUsed.map((it, i) => {
-                const gross = getProdPartGross(it);
-                const net   = getProdPartNet(it);
-                const disc  = Math.max(0, gross - net);
+                const gross = getProdPartGross(it); const net = getProdPartNet(it); const disc = Math.max(0, gross - net);
                 return (
                   <div key={i} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: i < partsUsed.length - 1 ? '1px dashed #ede9fe' : 'none' }}>
                     <ItemImageBox item={it} size={48} onZoom={setViewImg} />
@@ -1273,19 +1153,16 @@ const ProductionEntryCard = ({ hi, t, lang, catalogItems, setViewImg, openReceip
               })}
             </div>
           )}
-
           {outputs.length > 0 && (
             <div style={{ background: '#fffbeb', borderRadius: 12, padding: 10, marginBottom: 12, border: '1px solid #fde68a' }}>
               <div style={{ fontWeight: 800, fontSize: 12, color: '#92400e', marginBottom: 8 }}>🪨 {t.outputDetails}</div>
               {outputs.map((o, i) => (
                 <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, borderBottom: i < outputs.length - 1 ? '1px dashed #fcd34d' : 'none' }}>
-                  <span>{getOutputLabel(bizType, o.product, lang)}</span>
-                  <span style={{ fontWeight: 800 }}>{nn(o.qty)} {o.unit || ''}</span>
+                  <span>{getOutputLabel(bizType, o.product, lang)}</span><span style={{ fontWeight: 800 }}>{nn(o.qty)} {o.unit || ''}</span>
                 </div>
               ))}
             </div>
           )}
-
           {harvests.length > 0 && (
             <div style={{ background: '#f0fdf4', borderRadius: 12, padding: 10, marginBottom: 12, border: '1px solid #bbf7d0' }}>
               <div style={{ fontWeight: 800, fontSize: 12, color: '#166534', marginBottom: 8 }}>🌿 {t.harvestDetails}</div>
@@ -1297,34 +1174,27 @@ const ProductionEntryCard = ({ hi, t, lang, catalogItems, setViewImg, openReceip
               ))}
             </div>
           )}
-
           {expenseItems.length > 0 && (
             <div style={{ background: '#fff1f2', borderRadius: 12, padding: 10, marginBottom: 12, border: '1px solid #fecdd3' }}>
               <div style={{ fontWeight: 800, fontSize: 12, color: '#be123c', marginBottom: 8 }}>💸 {t.expenseDetails}</div>
               {expenseItems.map((ex, i) => (
                 <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '4px 0', fontSize: 13, borderBottom: i < expenseItems.length - 1 ? '1px dashed #fda4af' : 'none' }}>
-                  <div>
-                    <div>{ex.description || ex.itemName || ex.category || 'Expense'}</div>
-                    {(nn(ex.qty) > 0 && nn(ex.unitPrice) > 0) && <div style={{ fontSize: 10, color: '#64748b' }}>{nn(ex.qty)} × Rs.{fmtAmt(ex.unitPrice)}</div>}
-                  </div>
+                  <div><div>{ex.description || ex.itemName || ex.category || 'Expense'}</div>{nn(ex.qty) > 0 && nn(ex.unitPrice) > 0 && <div style={{ fontSize: 10, color: '#64748b' }}>{nn(ex.qty)} × Rs.{fmtAmt(ex.unitPrice)}</div>}</div>
                   <div style={{ fontWeight: 800, color: '#dc2626' }}>Rs.{fmtAmt(getProdExpenseAmount(ex))}</div>
                 </div>
               ))}
             </div>
           )}
-
           {payments.length > 0 && (
             <div style={{ background: '#eff6ff', borderRadius: 12, padding: 10, marginBottom: 12, border: '1px solid #bfdbfe' }}>
               <div style={{ fontWeight: 800, fontSize: 12, color: '#1d4ed8', marginBottom: 8 }}>💳 {t.paymentDetails}</div>
               {payments.map((p, i) => (
                 <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, borderBottom: i < payments.length - 1 ? '1px dashed #bfdbfe' : 'none' }}>
-                  <span>{getPayLabel(p.method)}</span>
-                  <span style={{ fontWeight: 800, color: '#16a34a' }}>Rs.{fmtAmt(p.amount)}</span>
+                  <span>{getPayLabel(p.method)}</span><span style={{ fontWeight: 800, color: '#16a34a' }}>Rs.{fmtAmt(p.amount)}</span>
                 </div>
               ))}
             </div>
           )}
-
           {hasBilling && (
             <div style={{ background: 'linear-gradient(135deg,#fff7ed,#fff1f2)', borderRadius: 12, padding: 12, marginBottom: 12, border: '1px solid #fed7aa' }}>
               <div style={{ fontWeight: 800, fontSize: 12, color: '#9a3412', marginBottom: 8 }}>📊 {t.paymentStatus}</div>
@@ -1332,15 +1202,11 @@ const ProductionEntryCard = ({ hi, t, lang, catalogItems, setViewImg, openReceip
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}><span>{t.amountReceived}</span><span style={{ fontWeight: 800, color: '#16a34a' }}>Rs.{fmtAmt(totalPaid)}</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}><span>{t.balanceDue}</span><span style={{ fontWeight: 800, color: balanceDue > 0 ? '#dc2626' : '#16a34a' }}>Rs.{fmtAmt(balanceDue)}</span></div>
               <div style={{ borderTop: '1px dashed #fdba74', paddingTop: 6, display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-                <span>{t.currentOutstanding}</span>
-                <span style={{ fontWeight: 900, color: currentOutstanding > 0 ? '#b91c1c' : '#16a34a' }}>Rs.{fmtAmt(currentOutstanding)}</span>
+                <span>{t.currentOutstanding}</span><span style={{ fontWeight: 900, color: currentOutstanding > 0 ? '#b91c1c' : '#16a34a' }}>Rs.{fmtAmt(currentOutstanding)}</span>
               </div>
             </div>
           )}
-
-          <button onClick={() => openReceipt(hi)} style={{ width: '100%', background: '#1e3a8a', color: 'white', border: 'none', padding: '11px 0', borderRadius: 10, fontWeight: 700, cursor: 'pointer' }}>
-            📄 {t.download}
-          </button>
+          <button onClick={() => openReceipt(hi)} style={{ width: '100%', background: '#1e3a8a', color: 'white', border: 'none', padding: '11px 0', borderRadius: 10, fontWeight: 700, cursor: 'pointer' }}>📄 {t.download}</button>
         </div>
       )}
     </div>
@@ -1363,13 +1229,10 @@ const UnpaidBillCard = ({ inv, catalogItems, isSelected, onToggleSelect, onSettl
   const items = (inv.items || []).map(it => enrichItem(it, catalogItems));
 
   return (
-    <div style={{ background: 'white', borderRadius: 18, marginBottom: 14, border: isSelected ? '2.5px solid #3b82f6' : '1.5px solid #fecaca', borderLeft: isSelected ? '5px solid #3b82f6' : '5px solid #dc2626', overflow: 'hidden', transition: 'all 0.15s ease' }}>
+    <div style={{ background: 'white', borderRadius: 18, marginBottom: 14, border: isSelected ? '2.5px solid #3b82f6' : '1.5px solid #fecaca', borderLeft: isSelected ? '5px solid #3b82f6' : '5px solid #dc2626', overflow: 'hidden' }}>
       <div style={{ padding: '14px 16px', background: isSelected ? 'linear-gradient(135deg,#eff6ff,#dbeafe)' : 'linear-gradient(135deg,#fef2f2,#fff1f2)' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
-          <div
-            onClick={e => { e.stopPropagation(); onToggleSelect(inv); }}
-            style={{ width: 30, height: 30, borderRadius: 8, border: isSelected ? '2.5px solid #3b82f6' : '2.5px solid #cbd5e1', background: isSelected ? '#3b82f6' : 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer', marginTop: 2, boxShadow: isSelected ? '0 2px 8px rgba(59,130,246,0.3)' : 'none' }}
-          >
+          <div onClick={e => { e.stopPropagation(); onToggleSelect(inv); }} style={{ width: 30, height: 30, borderRadius: 8, border: isSelected ? '2.5px solid #3b82f6' : '2.5px solid #cbd5e1', background: isSelected ? '#3b82f6' : 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer', marginTop: 2, boxShadow: isSelected ? '0 2px 8px rgba(59,130,246,0.3)' : 'none' }}>
             {isSelected && <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
           </div>
           <div style={{ flex: 1 }}>
@@ -1385,7 +1248,6 @@ const UnpaidBillCard = ({ inv, catalogItems, isSelected, onToggleSelect, onSettl
             </div>
           </div>
         </div>
-
         <div style={{ marginBottom: 10, marginLeft: 42 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontWeight: 700, marginBottom: 4 }}>
             <span style={{ color: '#16a34a' }}>✅ {t.billPaid}: Rs.{fmtAmt(paid)}</span>
@@ -1395,18 +1257,12 @@ const UnpaidBillCard = ({ inv, catalogItems, isSelected, onToggleSelect, onSettl
             <div style={{ height: '100%', width: `${paidPct}%`, borderRadius: 4, background: paidPct >= 50 ? '#16a34a' : '#f59e0b' }} />
           </div>
         </div>
-
         <div style={{ marginLeft: 42 }}>
-          <button
-            onClick={e => { e.stopPropagation(); onSettle(inv); }}
-            style={{ width: '100%', padding: '12px 0', background: 'linear-gradient(135deg,#16a34a,#15803d)', color: 'white', border: 'none', borderRadius: 12, fontWeight: 800, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-          >
-            💳 {t.settleBill}
-            <span style={{ background: 'rgba(255,255,255,0.2)', padding: '3px 10px', borderRadius: 8, fontSize: 13 }}>Rs.{fmtAmt(due)}</span>
+          <button onClick={e => { e.stopPropagation(); onSettle(inv); }} style={{ width: '100%', padding: '12px 0', background: 'linear-gradient(135deg,#16a34a,#15803d)', color: 'white', border: 'none', borderRadius: 12, fontWeight: 800, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            💳 {t.settleBill} <span style={{ background: 'rgba(255,255,255,0.2)', padding: '3px 10px', borderRadius: 8, fontSize: 13 }}>Rs.{fmtAmt(due)}</span>
           </button>
         </div>
       </div>
-
       <div style={{ padding: '0 16px 12px' }}>
         <button onClick={() => setExpanded(!expanded)} style={{ width: '100%', padding: '8px 0', marginTop: 8, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, color: '#64748b', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
           {expanded ? `🔼 ${t.hideDetails}` : `🔽 ${t.viewDetails} (${items.length})`}
@@ -1426,9 +1282,7 @@ const UnpaidBillCard = ({ inv, catalogItems, isSelected, onToggleSelect, onSettl
                 </div>
               );
             })}
-            <button onClick={() => onReceipt(inv)} style={{ width: '100%', background: '#1e3a8a', color: 'white', border: 'none', padding: 10, borderRadius: 8, marginTop: 8, fontWeight: 'bold', cursor: 'pointer' }}>
-              📄 {t.download}
-            </button>
+            <button onClick={() => onReceipt(inv)} style={{ width: '100%', background: '#1e3a8a', color: 'white', border: 'none', padding: 10, borderRadius: 8, marginTop: 8, fontWeight: 'bold', cursor: 'pointer' }}>📄 {t.download}</button>
           </div>
         )}
       </div>
@@ -1436,13 +1290,20 @@ const UnpaidBillCard = ({ inv, catalogItems, isSelected, onToggleSelect, onSettl
   );
 };
 
+// ═══════════════════════════════════
+// Part 2 END — Part 3 continues with Main Component
+// ═══════════════════════════════════// ═══════════════════════════════════
+// Part 3 — Main Component
+// (continues from Part 2 — paste below Part 2 code)
+// ═══════════════════════════════════
+
 /* ════════════════════════════════════════
    MAIN COMPONENT
 ════════════════════════════════════════ */
-export default function CustomerPortal() {
-  // ★ Next.js: useParams from next/navigation
+export default function CustomerPortal({ portalKey: portalKeyProp }) {
+  // ★ Support both: prop (from PortalClient) OR useParams
   const params    = useParams();
-  const portalKey = params?.key || '';
+  const portalKey = portalKeyProp || params?.portalKey || params?.key || '';
   const router    = useRouter();
 
   const [lang, setLang] = useState('si');
@@ -1474,16 +1335,19 @@ export default function CustomerPortal() {
   const [settleInvoices,setSettleInvoices] = useState([]);
   const [selectedBillIds,setSelectedBillIds] = useState([]);
 
-  /* ══════════════════════
+  /* ════════════════════════════════════════
      INITIAL LOAD
-  ══════════════════════ */
+  ════════════════════════════════════════ */
   useEffect(() => {
+    if (!portalKey) { setError(t.notFound); setLoading(false); return; }
+
     (async () => {
       try {
         const cs = await getDocs(
           query(collection(db, 'customers'), where('portalAccessKey', '==', portalKey))
         );
         if (cs.empty) { setError(t.notFound); setLoading(false); return; }
+
         const c = { id: cs.docs[0].id, ...cs.docs[0].data() };
         setCustomer(c); setCustomerId(c.id);
         setCustName(c.name || ''); setCustPhone(c.phone || '');
@@ -1570,7 +1434,9 @@ export default function CustomerPortal() {
   useEffect(() => {
     if (!selectedShop) return;
     getDocs(query(collection(db, 'items'), where('uid', '==', selectedShop.uid)))
-      .then(s => setCatalogItems(s.docs.map(d => ({ id: d.id, ...d.data() })).filter(i => !i.isHidden)));
+      .then(s => setCatalogItems(
+        s.docs.map(d => ({ id: d.id, ...d.data() })).filter(i => !i.isHidden)
+      ));
   }, [selectedShop]);
 
   /* ── Unpaid invoices ── */
@@ -1594,32 +1460,7 @@ export default function CustomerPortal() {
     return () => unsub();
   }, [customer?.id]);
 
-  const totalOutstanding = useMemo(() =>
-    unpaidInvoices.reduce((sum, inv) => {
-      const net  = nn(inv.netAmount || inv.grandTotal);
-      const paid = nn(inv.payAmount || inv.paidAmount);
-      return sum + Math.max(0, net - paid);
-    }, 0),
-    [unpaidInvoices]
-  );
-
-  const selectedBillsTotal = useMemo(() =>
-    unpaidInvoices
-      .filter(inv => selectedBillIds.includes(inv.id))
-      .reduce((sum, inv) => {
-        const net  = nn(inv.netAmount || inv.grandTotal);
-        const paid = nn(inv.payAmount || inv.paidAmount);
-        return sum + Math.max(0, net - paid);
-      }, 0),
-    [unpaidInvoices, selectedBillIds]
-  );
-
-  const selectedBillObjects = useMemo(() =>
-    unpaidInvoices.filter(inv => selectedBillIds.includes(inv.id)),
-    [unpaidInvoices, selectedBillIds]
-  );
-
-  /* ── History (includes Production Entries) ── */
+  /* ── History ── */
   useEffect(() => {
     if (activeTab !== 'history' || !selectedShop?.uid || !customer?.id) return;
     const cleanups = [];
@@ -1683,11 +1524,12 @@ export default function CustomerPortal() {
           .map(d => ({ id: d.id, ...d.data() }))
           .filter(p => {
             if (p.isStandaloneExpense) return false;
-            const byPortalKey  = !!portalKey && !!p.customerPortalKey && p.customerPortalKey === portalKey;
-            const byCustomerId = !!cId    && !!p.customerId    && p.customerId === cId;
-            const byName       = !!cName  && !!p.customerName  && norm(p.customerName) === cName;
-            const byPhone      = !!cPhone && !!p.customerPhone && normalizePhone(p.customerPhone) === cPhone;
-            return byPortalKey || byCustomerId || byName || byPhone;
+            return (
+              (portalKey && p.customerPortalKey === portalKey) ||
+              (cId    && p.customerId    === cId) ||
+              (cName  && norm(p.customerName)   === cName) ||
+              (cPhone && normalizePhone(p.customerPhone) === cPhone)
+            );
           })
           .map(p => ({ ...p, type: 'production' }));
         updateAll();
@@ -1698,7 +1540,32 @@ export default function CustomerPortal() {
     return () => cleanups.forEach(fn => fn && fn());
   }, [activeTab, selectedShop?.uid, customer?.id, customer?.name, customer?.phone, portalKey]);
 
-  /* ── Catalog filter ── */
+  /* ── Derived ── */
+  const totalOutstanding = useMemo(() =>
+    unpaidInvoices.reduce((sum, inv) => {
+      const net  = nn(inv.netAmount || inv.grandTotal);
+      const paid = nn(inv.payAmount || inv.paidAmount);
+      return sum + Math.max(0, net - paid);
+    }, 0),
+    [unpaidInvoices]
+  );
+
+  const selectedBillsTotal = useMemo(() =>
+    unpaidInvoices
+      .filter(inv => selectedBillIds.includes(inv.id))
+      .reduce((sum, inv) => {
+        const net  = nn(inv.netAmount || inv.grandTotal);
+        const paid = nn(inv.payAmount || inv.paidAmount);
+        return sum + Math.max(0, net - paid);
+      }, 0),
+    [unpaidInvoices, selectedBillIds]
+  );
+
+  const selectedBillObjects = useMemo(() =>
+    unpaidInvoices.filter(inv => selectedBillIds.includes(inv.id)),
+    [unpaidInvoices, selectedBillIds]
+  );
+
   const filtered = useMemo(() => {
     const terms = search.trim().toLowerCase().split(/\s+/);
     return catalogItems.filter(i => {
@@ -1709,8 +1576,15 @@ export default function CustomerPortal() {
   }, [catalogItems, search]);
 
   /* ── Cart ── */
-  const addToCart    = useCallback(i => setCart(p => { const e = p.find(x => x.id === i.id); if (e) return p.map(x => x.id === i.id ? { ...x, qty: x.qty + 1 } : x); return [...p, { ...i, qty: 1 }]; }), []);
-  const updateCartQty = useCallback((id, q) => { if (q <= 0) setCart(p => p.filter(x => x.id !== id)); else setCart(p => p.map(x => x.id === id ? { ...x, qty: q } : x)); }, []);
+  const addToCart    = useCallback(i => setCart(p => {
+    const e = p.find(x => x.id === i.id);
+    if (e) return p.map(x => x.id === i.id ? { ...x, qty: x.qty + 1 } : x);
+    return [...p, { ...i, qty: 1 }];
+  }), []);
+  const updateCartQty = useCallback((id, q) => {
+    if (q <= 0) setCart(p => p.filter(x => x.id !== id));
+    else        setCart(p => p.map(x => x.id === id ? { ...x, qty: q } : x));
+  }, []);
   const clearCart    = useCallback(() => setCart([]), []);
   const cartTotal    = useMemo(() => cart.reduce((s, i) => s + (nn(i.stock) <= 0 ? 0 : getPriceInfo(i).final * i.qty), 0), [cart]);
   const cartGrossTotal = useMemo(() => cart.reduce((s, i) => s + (nn(i.stock) <= 0 ? 0 : getPriceInfo(i).original * i.qty), 0), [cart]);
@@ -1718,9 +1592,17 @@ export default function CustomerPortal() {
 
   /* ── Bill actions ── */
   const handleSettleBill       = useCallback(inv => { setSettleInvoices([inv]); setShowPayment(true); }, []);
-  const handlePaySelectedBills = useCallback(() => { if (selectedBillObjects.length === 0) return; setSettleInvoices(selectedBillObjects); setShowPayment(true); }, [selectedBillObjects]);
-  const handleToggleBillSelect = useCallback(inv => { setSelectedBillIds(prev => prev.includes(inv.id) ? prev.filter(id => id !== inv.id) : [...prev, inv.id]); }, []);
-  const handleSelectAllBills   = useCallback(() => { if (selectedBillIds.length === unpaidInvoices.length) setSelectedBillIds([]); else setSelectedBillIds(unpaidInvoices.map(inv => inv.id)); }, [unpaidInvoices, selectedBillIds]);
+  const handlePaySelectedBills = useCallback(() => {
+    if (selectedBillObjects.length === 0) return;
+    setSettleInvoices(selectedBillObjects); setShowPayment(true);
+  }, [selectedBillObjects]);
+  const handleToggleBillSelect = useCallback(inv => {
+    setSelectedBillIds(prev => prev.includes(inv.id) ? prev.filter(id => id !== inv.id) : [...prev, inv.id]);
+  }, []);
+  const handleSelectAllBills   = useCallback(() => {
+    if (selectedBillIds.length === unpaidInvoices.length) setSelectedBillIds([]);
+    else setSelectedBillIds(unpaidInvoices.map(inv => inv.id));
+  }, [unpaidInvoices, selectedBillIds]);
   const allBillsSelected = unpaidInvoices.length > 0 && selectedBillIds.length === unpaidInvoices.length;
 
   /* ── Place Order ── */
@@ -1766,14 +1648,17 @@ export default function CustomerPortal() {
     const isReturn   = inv.type === 'return';
     const isTrip     = inv.type === 'trip';
     const isProduction = inv.type === 'production';
-    const enrich = arr => (arr || []).map(it => { const cat = findCatalogMatch(catalogItems, it); return cat ? { ...cat, ...it } : it; });
+    const enrich = arr => (arr || []).map(it => {
+      const cat = findCatalogMatch(catalogItems, it);
+      return cat ? { ...cat, ...it } : it;
+    });
     const ei = { ...inv, items: enrich(inv.items), partsUsed: enrich(inv.partsUsed), cargoItems: enrich(inv.cargoItems) };
 
     let totalVal = 0, paidVal = 0, dueVal = 0;
-    if (isReturn)     { const rt = calculateReturnTotals(ei); totalVal = rt.displayTotal; paidVal = totalVal; dueVal = 0; }
-    else if (isTrip)  { totalVal = nn(ei.totalBillAmount); paidVal = nn(ei.paidAmount); dueVal = Math.max(0, totalVal - paidVal); }
+    if (isReturn)      { const rt = calculateReturnTotals(ei); totalVal = rt.displayTotal; paidVal = totalVal; dueVal = 0; }
+    else if (isTrip)   { totalVal = nn(ei.totalBillAmount); paidVal = nn(ei.paidAmount); dueVal = Math.max(0, totalVal - paidVal); }
     else if (isProduction) { totalVal = nn(ei.grandTotal || ei.totalIncome); paidVal = nn(ei.totalPaid || getPaymentsTotal(ei.payments)); dueVal = nn(ei.balanceDue || Math.max(0, totalVal - paidVal)); }
-    else              { totalVal = nn(ei.netAmount || ei.grandTotal); paidVal = nn(ei.paidAmount || ei.payAmount); dueVal = totalVal - paidVal; }
+    else               { totalVal = nn(ei.netAmount || ei.grandTotal); paidVal = nn(ei.paidAmount || ei.payAmount); dueVal = totalVal - paidVal; }
 
     const shopName = selectedShop?.name || '';
     const buildRows = items => items.map(it => {
@@ -1796,16 +1681,17 @@ export default function CustomerPortal() {
 
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,sans-serif;background:#f1f5f9}.r{max-width:420px;margin:0 auto;background:white;min-height:100vh;padding:16px}</style></head><body><div class="r"><div style="text-align:center;padding:16px;background:#1e3a8a;color:white;border-radius:12px;margin-bottom:16px"><h2>${settings.businessName || shopName}</h2><div style="font-size:12px;margin-top:4px">#${refNo} • ${dateStr}</div></div>${ei.customerName ? `<div style="padding:10px;background:#f8fafc;border-radius:8px;margin-bottom:12px"><strong>👤 ${ei.customerName}</strong>${ei.vehicleNumber ? `<div style="font-size:12px;margin-top:3px">🚗 ${ei.vehicleNumber}</div>` : ''}</div>` : ''}${serviceRows}${partRows}${itemRows}<div style="margin-top:16px;padding-top:12px;border-top:2px solid #0f172a"><div style="display:flex;justify-content:space-between;font-size:18px;font-weight:900;color:#059669"><span>${t.grandTotal}</span><span>Rs.${fmtAmt(totalVal)}</span></div></div><div style="display:flex;gap:8px;margin-top:12px"><div style="flex:1;background:#f0fdf4;padding:10px;border-radius:10px;text-align:center"><div style="font-size:11px;color:#64748b">✅ ${t.paid}</div><div style="font-size:16px;font-weight:900;color:#16a34a">Rs.${fmtAmt(paidVal)}</div></div><div style="flex:1;background:#fef2f2;padding:10px;border-radius:10px;text-align:center"><div style="font-size:11px;color:#64748b">⚠️ ${t.due}</div><div style="font-size:16px;font-weight:900;color:#dc2626">Rs.${fmtAmt(dueVal)}</div></div></div></div></body></html>`;
 
-    // ★ Next.js: window.open is fine in 'use client'
     const win = window.open('', '_blank');
     if (win) { win.document.write(html); win.document.close(); }
   }, [shopSettings, selectedShop, t, lang, catalogItems]);
+
+  const balance = nn(customer?.currentBalance);
 
   /* ════════════════════════════════════════
      LOADING / ERROR
   ════════════════════════════════════════ */
   if (loading) return (
-    <div style={{ padding: 50, textAlign: 'center' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', fontFamily: 'Arial, sans-serif' }}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
       <div style={{ width: 40, height: 40, border: '4px solid #e2e8f0', borderTopColor: '#3b82f6', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto' }} />
       <p style={{ color: '#64748b', marginTop: 16 }}>{t.loading}</p>
@@ -1813,9 +1699,9 @@ export default function CustomerPortal() {
   );
 
   if (error) return (
-    <div style={{ padding: 50, textAlign: 'center', color: '#ef4444' }}>
-      <div style={{ fontSize: 48, marginBottom: 16 }}>❌</div>
-      <p>{error}</p>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', fontFamily: 'Arial, sans-serif', padding: 20, textAlign: 'center' }}>
+      <div style={{ fontSize: 56, marginBottom: 16 }}>❌</div>
+      <h2 style={{ color: '#dc2626', margin: '0 0 10px' }}>{error}</h2>
     </div>
   );
 
@@ -1823,7 +1709,7 @@ export default function CustomerPortal() {
      RENDER
   ════════════════════════════════════════ */
   return (
-    <div style={{ maxWidth: 500, margin: '0 auto', background: '#f8fafc', minHeight: '100vh', fontFamily: 'sans-serif', overflowX: 'hidden', boxSizing: 'border-box' }}>
+    <div style={{ maxWidth: 500, margin: '0 auto', background: '#f8fafc', minHeight: '100vh', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif', overflowX: 'hidden', boxSizing: 'border-box' }}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}} @keyframes slideUp{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}`}</style>
 
       {/* Modals */}
@@ -1840,11 +1726,10 @@ export default function CustomerPortal() {
         />
       )}
 
-      {/* Image zoom */}
       {viewImg && (
         <div onClick={() => setViewImg(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.95)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
           <img src={viewImg} style={{ maxWidth: '100%', maxHeight: '85%', borderRadius: 12, objectFit: 'contain' }} alt="" />
-          <div style={{ position: 'absolute', top: 16, right: 16, color: 'white', fontSize: 18, cursor: 'pointer', background: 'rgba(255,255,255,0.18)', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setViewImg(null)}>✕</div>
+          <div onClick={() => setViewImg(null)} style={{ position: 'absolute', top: 16, right: 16, color: 'white', fontSize: 18, cursor: 'pointer', background: 'rgba(255,255,255,0.18)', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</div>
         </div>
       )}
 
@@ -1854,10 +1739,10 @@ export default function CustomerPortal() {
           {t.langSwitch}
         </button>
         <h2 style={{ margin: 0, fontSize: 18 }}>{customer?.name}</h2>
-        <div style={{ marginTop: 10, fontSize: 26, fontWeight: 900, color: customer?.currentBalance > 0 ? '#fca5a5' : '#86efac' }}>
-          Rs. {fmtAmt(customer?.currentBalance)}
+        <div style={{ marginTop: 10, fontSize: 26, fontWeight: 900, color: balance > 0 ? '#fca5a5' : '#86efac' }}>
+          Rs. {fmtAmt(balance)}
         </div>
-        <div style={{ fontSize: 11, opacity: .7, marginTop: 4 }}>{t.balance}</div>
+        <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>{t.balance}</div>
 
         {unpaidInvoices.length > 0 && (
           <div style={{ marginTop: 12, background: 'rgba(255,255,255,0.12)', borderRadius: 14, padding: '12px 16px', border: '1px solid rgba(255,255,255,0.2)' }}>
@@ -1877,7 +1762,7 @@ export default function CustomerPortal() {
           </div>
         )}
 
-        {unpaidInvoices.length === 0 && nn(customer?.currentBalance) > 0 && (
+        {unpaidInvoices.length === 0 && balance > 0 && (
           <button onClick={() => { setSettleInvoices([]); setShowPayment(true); }} style={{ marginTop: 12, padding: '10px 28px', background: 'linear-gradient(135deg,#16a34a,#15803d)', color: 'white', border: '2px solid rgba(255,255,255,0.3)', borderRadius: 14, fontWeight: 800, fontSize: 14, cursor: 'pointer' }}>
             💳 {t.makePayment}
           </button>
@@ -1892,11 +1777,7 @@ export default function CustomerPortal() {
           { id: 'history',   label: t.accountTab },
           { id: 'directory', label: t.shopsTab },
         ].map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            style={{ flex: 1, padding: '13px 4px', border: 'none', background: activeTab === tab.id ? (tab.id === 'bills' && unpaidInvoices.length > 0 ? '#dc2626' : '#3b82f6') : 'white', color: activeTab === tab.id ? 'white' : tab.id === 'bills' && unpaidInvoices.length > 0 ? '#dc2626' : '#64748b', fontWeight: 'bold', fontSize: 11, cursor: 'pointer' }}
-          >
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ flex: 1, padding: '13px 4px', border: 'none', background: activeTab === tab.id ? (tab.id === 'bills' && unpaidInvoices.length > 0 ? '#dc2626' : '#3b82f6') : 'white', color: activeTab === tab.id ? 'white' : tab.id === 'bills' && unpaidInvoices.length > 0 ? '#dc2626' : '#64748b', fontWeight: 'bold', fontSize: 11, cursor: 'pointer' }}>
             {tab.label}
           </button>
         ))}
@@ -1915,15 +1796,12 @@ export default function CustomerPortal() {
                   <div style={{ fontSize: 34, fontWeight: 900, marginTop: 4, fontFamily: 'monospace' }}>Rs. {fmtAmt(totalOutstanding)}</div>
                   <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>{unpaidInvoices.length} {t.unpaidBills}</div>
                 </div>
-
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, padding: '10px 14px', background: 'white', borderRadius: 14, border: '1.5px solid #e2e8f0' }}>
                   <button onClick={handleSelectAllBills} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', borderRadius: 10, border: allBillsSelected ? '2px solid #f87171' : '2px solid #3b82f6', background: allBillsSelected ? '#fef2f2' : '#eff6ff', color: allBillsSelected ? '#dc2626' : '#1d4ed8', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}>
                     <div style={{ width: 22, height: 22, borderRadius: 6, border: allBillsSelected ? '2px solid #dc2626' : '2px solid #3b82f6', background: allBillsSelected ? '#dc2626' : selectedBillIds.length > 0 ? '#3b82f6' : 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       {allBillsSelected
                         ? <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                        : selectedBillIds.length > 0
-                        ? <div style={{ width: 8, height: 2, background: 'white', borderRadius: 1 }} />
-                        : null}
+                        : selectedBillIds.length > 0 ? <div style={{ width: 8, height: 2, background: 'white', borderRadius: 1 }} /> : null}
                     </div>
                     {allBillsSelected ? t.deselectAll : t.selectAll}
                   </button>
@@ -1954,7 +1832,7 @@ export default function CustomerPortal() {
           </div>
         )}
 
-        {/* ─── FLOATING ACTION BAR ─── */}
+        {/* Bills floating bar */}
         {selectedBillIds.length > 0 && activeTab === 'bills' && (
           <div style={{ position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)', width: '92%', maxWidth: 460, background: 'linear-gradient(135deg,#1e293b,#0f172a)', padding: '14px 18px', borderRadius: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 10px 40px rgba(0,0,0,.5)', zIndex: 100, animation: 'slideUp 0.25s ease-out', border: '1px solid rgba(255,255,255,0.1)' }}>
             <div style={{ color: 'white' }}>
@@ -1973,11 +1851,7 @@ export default function CustomerPortal() {
         {/* ─── SHOP TAB ─── */}
         {activeTab === 'shop' && (
           <>
-            <input
-              type="text" placeholder={t.search} value={search}
-              onChange={e => setSearch(e.target.value)}
-              style={{ width: '100%', padding: 14, borderRadius: 12, border: '1px solid #e2e8f0', boxSizing: 'border-box', outline: 'none', fontSize: 15, marginBottom: 20, background: 'white' }}
-            />
+            <input type="text" placeholder={t.search} value={search} onChange={e => setSearch(e.target.value)} style={{ width: '100%', padding: 14, borderRadius: 12, border: '1px solid #e2e8f0', boxSizing: 'border-box', outline: 'none', fontSize: 15, marginBottom: 20, background: 'white' }} />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               {filtered.map(item => {
                 const p   = getPriceInfo(item);
@@ -2014,9 +1888,7 @@ export default function CustomerPortal() {
                           <button onClick={() => updateCartQty(item.id, ic.qty + 1)} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#dbeafe', color: '#1e40af', fontWeight: 900, fontSize: 16, cursor: 'pointer' }}>+</button>
                         </div>
                       ) : (!oos && (
-                        <button onClick={() => addToCart(item)} style={{ width: '100%', marginTop: 8, background: '#3b82f6', color: 'white', border: 'none', padding: 9, borderRadius: 10, fontWeight: 'bold', fontSize: 11, cursor: 'pointer' }}>
-                          🛒 {t.addToCart}
-                        </button>
+                        <button onClick={() => addToCart(item)} style={{ width: '100%', marginTop: 8, background: '#3b82f6', color: 'white', border: 'none', padding: 9, borderRadius: 10, fontWeight: 'bold', fontSize: 11, cursor: 'pointer' }}>🛒 {t.addToCart}</button>
                       ))}
                     </div>
                   </div>
@@ -2110,9 +1982,7 @@ export default function CustomerPortal() {
                     <div style={{ padding: '8px 0', display: 'flex', flexDirection: 'column', gap: 8 }}>
                       <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 'bold' }}>💰 {hi.note || t.payment}</div>
                       {hi.invoiceNo && (
-                        <div style={{ display: 'inline-flex', padding: '4px 10px', borderRadius: 8, fontSize: 11, fontWeight: 700, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #93c5fd', width: 'fit-content' }}>
-                          🧾 {hi.invoiceNo}
-                        </div>
+                        <div style={{ display: 'inline-flex', padding: '4px 10px', borderRadius: 8, fontSize: 11, fontWeight: 700, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #93c5fd', width: 'fit-content' }}>🧾 {hi.invoiceNo}</div>
                       )}
                       {hi.invoiceNos && hi.invoiceNos.length > 1 && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -2156,11 +2026,7 @@ export default function CustomerPortal() {
         {activeTab === 'directory' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {shopsList.map(s => (
-              <div
-                key={s.id}
-                onClick={() => { setSelectedShop(s); setActiveTab('shop'); }}
-                style={{ background: 'white', padding: 15, borderRadius: 16, display: 'flex', alignItems: 'center', gap: 15, border: selectedShop?.uid === s.uid ? '2px solid #3b82f6' : '1px solid #e2e8f0', cursor: 'pointer' }}
-              >
+              <div key={s.id} onClick={() => { setSelectedShop(s); setActiveTab('shop'); }} style={{ background: 'white', padding: 15, borderRadius: 16, display: 'flex', alignItems: 'center', gap: 15, border: selectedShop?.uid === s.uid ? '2px solid #3b82f6' : '1px solid #e2e8f0', cursor: 'pointer' }}>
                 <div style={{ width: 50, height: 50, background: '#f1f5f9', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   {s.logo ? <img src={s.logo} style={{ width: '100%' }} alt="" /> : <span style={{ fontSize: 24 }}>🏪</span>}
                 </div>
@@ -2189,14 +2055,14 @@ export default function CustomerPortal() {
         </div>
       )}
 
-      {/* ══ CHECKOUT ══ */}
+      {/* ══ CHECKOUT MODAL ══ */}
       {showCheckout && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.8)', zIndex: 1000, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
           <div style={{ background: 'white', width: '100%', maxWidth: 500, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: '24px 20px', maxHeight: '90vh', overflowY: 'auto', boxSizing: 'border-box' }}>
             <h3 style={{ marginTop: 0 }}>{t.confirmOrder}</h3>
             <div style={{ background: '#f8fafc', borderRadius: 12, padding: 12, marginBottom: 16, border: '1px solid #e2e8f0' }}>
               {cart.map((ci, idx) => {
-                const p = getPriceInfo(ci), o = nn(ci.stock) <= 0;
+                const p = getPriceInfo(ci); const o = nn(ci.stock) <= 0;
                 return (
                   <div key={idx} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderBottom: idx < cart.length - 1 ? '1px dashed #e2e8f0' : 'none' }}>
                     <ItemImageBox item={ci} size={44} onZoom={setViewImg} />
@@ -2214,12 +2080,10 @@ export default function CustomerPortal() {
             </div>
             <input placeholder={t.customerName} value={custName} onChange={e => setCustName(e.target.value)} style={{ width: '100%', padding: 14, marginBottom: 10, borderRadius: 12, border: '1px solid #ddd', boxSizing: 'border-box', fontSize: 14 }} />
             <input placeholder={t.customerPhone} value={custPhone} onChange={e => setCustPhone(e.target.value)} style={{ width: '100%', padding: 14, marginBottom: 20, borderRadius: 12, border: '1px solid #ddd', boxSizing: 'border-box', fontSize: 14 }} />
-            <button onClick={handlePlaceOrder} disabled={placing} style={{ width: '100%', background: '#059669', color: 'white', padding: 16, borderRadius: 14, fontWeight: 'bold', border: 'none', fontSize: 15, opacity: placing ? .6 : 1, cursor: placing ? 'wait' : 'pointer' }}>
+            <button onClick={handlePlaceOrder} disabled={placing} style={{ width: '100%', background: '#059669', color: 'white', padding: 16, borderRadius: 14, fontWeight: 'bold', border: 'none', fontSize: 15, opacity: placing ? 0.6 : 1, cursor: placing ? 'wait' : 'pointer' }}>
               {placing ? '⏳...' : t.placeOrder}
             </button>
-            <button onClick={() => setShowCheckout(false)} style={{ width: '100%', background: 'none', border: 'none', marginTop: 12, color: '#ef4444', fontWeight: 'bold', fontSize: 14, cursor: 'pointer' }}>
-              {t.cancelOrder}
-            </button>
+            <button onClick={() => setShowCheckout(false)} style={{ width: '100%', background: 'none', border: 'none', marginTop: 12, color: '#ef4444', fontWeight: 'bold', fontSize: 14, cursor: 'pointer' }}>{t.cancelOrder}</button>
           </div>
         </div>
       )}
@@ -2229,9 +2093,7 @@ export default function CustomerPortal() {
         <div style={{ position: 'fixed', inset: 0, background: 'white', zIndex: 2000, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 20 }}>
           <div style={{ fontSize: 60 }}>✅</div>
           <h2>{t.orderSuccess}</h2>
-          <button onClick={() => setOrderSuccess(false)} style={{ background: '#3b82f6', color: 'white', border: 'none', padding: '15px 40px', borderRadius: 15, fontWeight: 'bold', marginTop: 20, fontSize: 15, cursor: 'pointer' }}>
-            {t.ok}
-          </button>
+          <button onClick={() => setOrderSuccess(false)} style={{ background: '#3b82f6', color: 'white', border: 'none', padding: '15px 40px', borderRadius: 15, fontWeight: 'bold', marginTop: 20, fontSize: 15, cursor: 'pointer' }}>{t.ok}</button>
         </div>
       )}
     </div>
