@@ -941,7 +941,9 @@ const SendLinkModal = memo(function SendLinkModal({ isOpen, onClose, customer, o
 
 const EditCustomerModal = memo(function EditCustomerModal({ isOpen, onClose, customer, onSave, lang }) {
   const t = translations[lang];
-  const [form, setForm] = useState({ name:'', phone:'', address:'' });
+  const [form, setForm] = useState({ name: '', phone: '', address: '', profilePicture: '' });
+  const [uploading, setUploading] = useState(false);
+  const photoRef = useRef(null);
 
   useEffect(() => {
     if (isOpen && customer) {
@@ -949,29 +951,179 @@ const EditCustomerModal = memo(function EditCustomerModal({ isOpen, onClose, cus
         name: customer.name || '',
         phone: formatPhoneWithCode(customer.phone),
         address: customer.address || '',
+        profilePicture: customer.profilePicture || customer.photoURL || '',
       });
     }
   }, [isOpen, customer]);
 
+  const handlePhotoSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const maxW = 400;
+          const scale = Math.min(maxW / img.width, 1);
+          canvas.width = img.width * scale;
+          canvas.height = img.height * scale;
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          const compressed = canvas.toDataURL('image/jpeg', 0.7);
+          setForm(prev => ({ ...prev, profilePicture: compressed }));
+          setUploading(false);
+        };
+        img.onerror = () => setUploading(false);
+        img.src = ev.target.result;
+      };
+      reader.onerror = () => setUploading(false);
+      reader.readAsDataURL(file);
+    } catch {
+      setUploading(false);
+    }
+    if (photoRef.current) photoRef.current.value = '';
+  };
+
   if (!isOpen) return null;
+
+  const avatarSrc = form.profilePicture ||
+    (typeof window !== 'undefined'
+      ? "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23dbeafe'/%3E%3Ccircle cx='50' cy='35' r='15' fill='%233b82f6'/%3E%3Cpath d='M20 80a30 30 0 0 1 60 0' stroke='%233b82f6' stroke-width='8' fill='none'/%3E%3C/svg%3E"
+      : '');
 
   return (
     <div style={styles.modalOverlay}>
-      <div style={styles.modal}>
-        <h3>✏️ {t.editTitle}</h3>
-        <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} style={styles.input} placeholder={t.customerName} />
-        <input value={form.phone} onChange={e => setForm({ ...form, phone: handlePhoneInput(e.target.value) })} style={styles.input} />
-        <textarea value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} style={styles.textarea} placeholder={t.address} />
+      <div style={{ ...styles.modal, maxWidth: 440 }}>
+        <h3 style={{ margin: '0 0 16px' }}>✏️ {t.editTitle}</h3>
+
+        {/* Photo upload */}
+        <div style={{ textAlign: 'center', marginBottom: 20 }}>
+          <div style={{ position: 'relative', display: 'inline-block' }}>
+            <img
+              src={avatarSrc}
+              alt=""
+              style={{
+                width: 100,
+                height: 100,
+                borderRadius: '50%',
+                objectFit: 'cover',
+                border: '3px solid #3b82f6',
+              }}
+            />
+            <button
+              onClick={() => photoRef.current?.click()}
+              disabled={uploading}
+              style={{
+                position: 'absolute',
+                bottom: -2,
+                right: -2,
+                width: 34,
+                height: 34,
+                borderRadius: '50%',
+                background: '#3b82f6',
+                color: 'white',
+                border: '3px solid white',
+                fontSize: 16,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              {uploading ? '⏳' : '📷'}
+            </button>
+          </div>
+
+          <input
+            ref={photoRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={handlePhotoSelect}
+            style={{ display: 'none' }}
+          />
+
+          {form.profilePicture && (
+            <div style={{ marginTop: 8 }}>
+              <button
+                onClick={() => setForm(prev => ({ ...prev, profilePicture: '' }))}
+                style={{
+                  fontSize: 11,
+                  color: '#dc2626',
+                  background: '#fef2f2',
+                  border: '1px solid #fecaca',
+                  borderRadius: 6,
+                  padding: '3px 10px',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                }}
+              >
+                ✕ {lang === 'si' ? 'පින්තූරය ඉවත් කරන්න' : 'Remove Photo'}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Name */}
+        <input
+          value={form.name}
+          onChange={e => setForm({ ...form, name: e.target.value })}
+          style={styles.input}
+          placeholder={t.customerName}
+        />
+
+        {/* Phone */}
+        <input
+          value={form.phone}
+          onChange={e => setForm({ ...form, phone: handlePhoneInput(e.target.value) })}
+          style={styles.input}
+          placeholder={t.phone}
+        />
+
+        {/* Address */}
+        <textarea
+          value={form.address}
+          onChange={e => setForm({ ...form, address: e.target.value })}
+          style={styles.textarea}
+          placeholder={t.address}
+        />
+
+        {/* Actions */}
         <div style={styles.modalActions}>
-          <button onClick={onClose} style={styles.btnCancel}>{t.cancel}</button>
-          <button onClick={async () => {
-            if (!form.name.trim()) return;
-            try {
-              await updateDoc(doc(db, 'customers', customer.id), form);
-              onSave({ ...customer, ...form });
-              onClose();
-            } catch (e) { alert(e.message); }
-          }} style={styles.btnSave}>{t.save}</button>
+          <button onClick={onClose} style={styles.btnCancel}>
+            {t.cancel}
+          </button>
+          <button
+            onClick={async () => {
+              if (!form.name.trim()) return;
+              try {
+                const updateData = {
+                  name: form.name,
+                  phone: form.phone,
+                  address: form.address,
+                  profilePicture: form.profilePicture || '',
+                  photoURL: form.profilePicture || '',
+                  updatedAt: serverTimestamp(),
+                };
+                await updateDoc(doc(db, 'customers', customer.id), updateData);
+                onSave({ ...customer, ...updateData });
+                onClose();
+              } catch (e) {
+                alert(e.message);
+              }
+            }}
+            disabled={uploading}
+            style={{
+              ...styles.btnSave,
+              opacity: uploading ? 0.6 : 1,
+            }}
+          >
+            {uploading
+              ? '⏳...'
+              : `💾 ${t.save}`}
+          </button>
         </div>
       </div>
     </div>
