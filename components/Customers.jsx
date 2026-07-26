@@ -821,10 +821,15 @@ export default function Customers({ lang = 'si' }) {
                         ? <img src={cus.profilePicture} style={styles.avatarImg} alt="" />
                         : <div style={styles.avatarPlaceholder}>{(cus.name || '?').charAt(0).toUpperCase()}</div>}
                     </td>
-                    <td style={styles.td}>
-                      <div style={{ fontWeight: 700, color: '#1e293b', fontSize: 15 }}>{cus.name || ''}</div>
-                      {cus.email && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>📧 {cus.email}</div>}
-                    </td>
+                    <td
+  style={{ ...styles.td, cursor: 'pointer' }}
+  onClick={() => { window.location.href = `/customers/${cus.id}`; }}
+>
+  <div style={{ fontWeight: 700, color: '#1e293b', fontSize: 15 }}>
+    {cus.name || ''}
+  </div>
+  {cus.email && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>📧 {cus.email}</div>}
+</td>
                     <td style={styles.td}>{cus.phone || '-'}</td>
                     <td style={styles.td}>{cus.address || '-'}</td>
                     <td style={{ ...styles.td, textAlign: 'right' }}><BalanceBadge balance={bal} /></td>
@@ -855,7 +860,15 @@ export default function Customers({ lang = 'si' }) {
           ) : pagedCustomers.map((cus) => {
             const bal = nn(cus.currentBalance);
             return (
-              <div key={cus.id} style={{ ...styles.customerCard, borderLeftColor: bal > 0.01 ? '#dc2626' : bal < -0.01 ? '#2563eb' : '#16a34a' }}>
+              <div
+  key={cus.id}
+  onClick={() => { window.location.href = `/customers/${cus.id}`; }}
+  style={{
+    ...styles.customerCard,
+    cursor: 'pointer',
+    borderLeftColor: bal > 0.01 ? '#dc2626' : bal < -0.01 ? '#2563eb' : '#16a34a'
+  }}
+>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
                   {cus.profilePicture
                     ? <img src={cus.profilePicture} style={{ ...styles.avatarImg, width: 48, height: 48 }} alt="" />
