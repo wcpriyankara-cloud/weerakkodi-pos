@@ -943,121 +943,225 @@ const EditCustomerModal = memo(function EditCustomerModal({ isOpen, onClose, cus
   const t = translations[lang];
   const [form, setForm] = useState({ name: '', phone: '', address: '', profilePicture: '' });
   const [uploading, setUploading] = useState(false);
-  const photoRef = useRef(null);
+  const [showPhotoOptions, setShowPhotoOptions] = useState(false);
+  const galleryRef = useRef(null);   // folder/gallery
+  const cameraRef  = useRef(null);   // camera capture
 
   useEffect(() => {
     if (isOpen && customer) {
       setForm({
-        name: customer.name || '',
-        phone: formatPhoneWithCode(customer.phone),
-        address: customer.address || '',
+        name:           customer.name || '',
+        phone:          formatPhoneWithCode(customer.phone),
+        address:        customer.address || '',
         profilePicture: customer.profilePicture || customer.photoURL || '',
       });
+      setShowPhotoOptions(false);
     }
   }, [isOpen, customer]);
 
-  const handlePhotoSelect = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
+  /* ── Image compress helper ── */
+  const compressImage = (file) =>
+    new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (ev) => {
         const img = new Image();
         img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const maxW = 400;
-          const scale = Math.min(maxW / img.width, 1);
-          canvas.width = img.width * scale;
+          const canvas  = document.createElement('canvas');
+          const maxW    = 400;
+          const scale   = Math.min(maxW / img.width, 1);
+          canvas.width  = img.width  * scale;
           canvas.height = img.height * scale;
           canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-          const compressed = canvas.toDataURL('image/jpeg', 0.7);
-          setForm(prev => ({ ...prev, profilePicture: compressed }));
-          setUploading(false);
+          resolve(canvas.toDataURL('image/jpeg', 0.7));
         };
-        img.onerror = () => setUploading(false);
+        img.onerror = reject;
         img.src = ev.target.result;
       };
-      reader.onerror = () => setUploading(false);
+      reader.onerror = reject;
       reader.readAsDataURL(file);
-    } catch {
+    });
+
+  /* ── Handle file from any input ── */
+  const handlePhotoFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setShowPhotoOptions(false);
+    try {
+      const compressed = await compressImage(file);
+      setForm(prev => ({ ...prev, profilePicture: compressed }));
+    } catch (err) {
+      alert('Image processing failed: ' + err.message);
+    } finally {
       setUploading(false);
+      // reset both inputs so same file can be selected again
+      if (galleryRef.current) galleryRef.current.value = '';
+      if (cameraRef.current)  cameraRef.current.value  = '';
     }
-    if (photoRef.current) photoRef.current.value = '';
   };
 
   if (!isOpen) return null;
 
   const avatarSrc = form.profilePicture ||
-    (typeof window !== 'undefined'
-      ? "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23dbeafe'/%3E%3Ccircle cx='50' cy='35' r='15' fill='%233b82f6'/%3E%3Cpath d='M20 80a30 30 0 0 1 60 0' stroke='%233b82f6' stroke-width='8' fill='none'/%3E%3C/svg%3E"
-      : '');
+    "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23dbeafe'/%3E%3Ccircle cx='50' cy='35' r='15' fill='%233b82f6'/%3E%3Cpath d='M20 80a30 30 0 0 1 60 0' stroke='%233b82f6' stroke-width='8' fill='none'/%3E%3C/svg%3E";
 
   return (
     <div style={styles.modalOverlay}>
       <div style={{ ...styles.modal, maxWidth: 440 }}>
         <h3 style={{ margin: '0 0 16px' }}>✏️ {t.editTitle}</h3>
 
-        {/* Photo upload */}
+        {/* ── Photo Section ── */}
         <div style={{ textAlign: 'center', marginBottom: 20 }}>
+
+          {/* Avatar */}
           <div style={{ position: 'relative', display: 'inline-block' }}>
             <img
               src={avatarSrc}
               alt=""
               style={{
-                width: 100,
-                height: 100,
-                borderRadius: '50%',
-                objectFit: 'cover',
-                border: '3px solid #3b82f6',
+                width: 100, height: 100, borderRadius: '50%',
+                objectFit: 'cover', border: '3px solid #3b82f6',
               }}
             />
+            {/* Camera icon button — toggles option panel */}
             <button
-              onClick={() => photoRef.current?.click()}
+              onClick={() => setShowPhotoOptions(prev => !prev)}
               disabled={uploading}
               style={{
-                position: 'absolute',
-                bottom: -2,
-                right: -2,
-                width: 34,
-                height: 34,
-                borderRadius: '50%',
-                background: '#3b82f6',
-                color: 'white',
-                border: '3px solid white',
-                fontSize: 16,
+                position: 'absolute', bottom: -2, right: -2,
+                width: 34, height: 34, borderRadius: '50%',
+                background: '#3b82f6', color: 'white',
+                border: '3px solid white', fontSize: 16,
                 cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}
             >
               {uploading ? '⏳' : '📷'}
             </button>
           </div>
 
+          {/* ── Photo source picker ── */}
+          {showPhotoOptions && !uploading && (
+            <div style={{
+              marginTop: 12,
+              background: '#f8fafc',
+              border: '2px solid #e2e8f0',
+              borderRadius: 14,
+              padding: 14,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}>
+              <p style={{
+                margin: 0,
+                fontSize: 13,
+                fontWeight: 700,
+                color: '#334155',
+              }}>
+                {lang === 'si'
+                  ? '📂 පින්තූරය කොතැනින් ගන්නද?'
+                  : '📂 Choose photo source'}
+              </p>
+
+              {/* Gallery / Folder button */}
+              <button
+                onClick={() => galleryRef.current?.click()}
+                style={{
+                  padding: '12px 16px',
+                  borderRadius: 10,
+                  border: '2px solid #3b82f6',
+                  background: '#eff6ff',
+                  color: '#1d4ed8',
+                  fontWeight: 700,
+                  fontSize: 14,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                }}
+              >
+                <span style={{ fontSize: 22 }}>🖼️</span>
+                {lang === 'si'
+                  ? 'ගැලරිය / Folder තෝරන්න'
+                  : 'Gallery / Browse Folder'}
+              </button>
+
+              {/* Camera button */}
+              <button
+                onClick={() => cameraRef.current?.click()}
+                style={{
+                  padding: '12px 16px',
+                  borderRadius: 10,
+                  border: '2px solid #16a34a',
+                  background: '#f0fdf4',
+                  color: '#15803d',
+                  fontWeight: 700,
+                  fontSize: 14,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                }}
+              >
+                <span style={{ fontSize: 22 }}>📷</span>
+                {lang === 'si'
+                  ? 'කැමරාවෙන් ගන්න'
+                  : 'Take Photo (Camera)'}
+              </button>
+
+              {/* Cancel picker */}
+              <button
+                onClick={() => setShowPhotoOptions(false)}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: 10,
+                  border: 'none',
+                  background: '#f1f5f9',
+                  color: '#94a3b8',
+                  fontWeight: 600,
+                  fontSize: 13,
+                  cursor: 'pointer',
+                }}
+              >
+                {t.cancel}
+              </button>
+            </div>
+          )}
+
+          {/* Hidden inputs */}
+          {/* Gallery — no capture, allows folder browsing */}
           <input
-            ref={photoRef}
+            ref={galleryRef}
+            type="file"
+            accept="image/*"
+            onChange={handlePhotoFile}
+            style={{ display: 'none' }}
+          />
+          {/* Camera — capture="environment" forces rear camera */}
+          <input
+            ref={cameraRef}
             type="file"
             accept="image/*"
             capture="environment"
-            onChange={handlePhotoSelect}
+            onChange={handlePhotoFile}
             style={{ display: 'none' }}
           />
 
+          {/* Remove photo */}
           {form.profilePicture && (
-            <div style={{ marginTop: 8 }}>
+            <div style={{ marginTop: 10 }}>
               <button
-                onClick={() => setForm(prev => ({ ...prev, profilePicture: '' }))}
+                onClick={() => {
+                  setForm(prev => ({ ...prev, profilePicture: '' }));
+                  setShowPhotoOptions(false);
+                }}
                 style={{
-                  fontSize: 11,
-                  color: '#dc2626',
-                  background: '#fef2f2',
-                  border: '1px solid #fecaca',
-                  borderRadius: 6,
-                  padding: '3px 10px',
-                  cursor: 'pointer',
-                  fontWeight: 600,
+                  fontSize: 11, color: '#dc2626',
+                  background: '#fef2f2', border: '1px solid #fecaca',
+                  borderRadius: 6, padding: '3px 10px',
+                  cursor: 'pointer', fontWeight: 600,
                 }}
               >
                 ✕ {lang === 'si' ? 'පින්තූරය ඉවත් කරන්න' : 'Remove Photo'}
@@ -1100,12 +1204,12 @@ const EditCustomerModal = memo(function EditCustomerModal({ isOpen, onClose, cus
               if (!form.name.trim()) return;
               try {
                 const updateData = {
-                  name: form.name,
-                  phone: form.phone,
-                  address: form.address,
+                  name:           form.name,
+                  phone:          form.phone,
+                  address:        form.address,
                   profilePicture: form.profilePicture || '',
-                  photoURL: form.profilePicture || '',
-                  updatedAt: serverTimestamp(),
+                  photoURL:       form.profilePicture || '',
+                  updatedAt:      serverTimestamp(),
                 };
                 await updateDoc(doc(db, 'customers', customer.id), updateData);
                 onSave({ ...customer, ...updateData });
@@ -1115,21 +1219,15 @@ const EditCustomerModal = memo(function EditCustomerModal({ isOpen, onClose, cus
               }
             }}
             disabled={uploading}
-            style={{
-              ...styles.btnSave,
-              opacity: uploading ? 0.6 : 1,
-            }}
+            style={{ ...styles.btnSave, opacity: uploading ? 0.6 : 1 }}
           >
-            {uploading
-              ? '⏳...'
-              : `💾 ${t.save}`}
+            {uploading ? '⏳...' : `💾 ${t.save}`}
           </button>
         </div>
       </div>
     </div>
   );
 });
-
 const DeleteCustomerModal = memo(function DeleteCustomerModal({ isOpen, onClose, customer, onDelete, lang }) {
   const t = translations[lang];
   const [confirm, setConfirm] = useState('');
