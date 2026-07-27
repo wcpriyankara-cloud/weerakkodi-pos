@@ -1,16 +1,15 @@
 'use client';
 
-// app/(dashboard)/vehicles/page.js
+// app/(dashboard)/vehicle-expenses/page.js
 // ═══════════════════════════════════════════════════════════════
-// Vehicle Manager Page — Next.js App Router
+// Vehicle Expense Manager Page — Next.js App Router
 // ═══════════════════════════════════════════════════════════════
 
 import React, { Suspense } from 'react';
 import dynamic from 'next/dynamic';
 
-// Dynamic import to avoid SSR issues with Firebase
-const VehicleIncomeManager = dynamic(
-  () => import('@/components/VehicleIncomeManager'),
+const VehicleExpenseTab = dynamic(
+  () => import('@/components/VehicleExpenseTab'),
   {
     ssr: false,
     loading: () => (
@@ -26,7 +25,7 @@ const VehicleIncomeManager = dynamic(
           width: 56,
           height: 56,
           border: '5px solid #e2e8f0',
-          borderTopColor: '#667eea',
+          borderTopColor: '#ef4444',
           borderRadius: '50%',
           animation: 'spin 0.8s linear infinite',
         }} />
@@ -35,7 +34,7 @@ const VehicleIncomeManager = dynamic(
           fontSize: 16,
           fontWeight: 600,
         }}>
-          🚛 වාහන කළමනාකරණය පූරණය වෙමින්...
+          🚛 වාහන වියදම් පූරණය වෙමින්...
         </p>
         <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
       </div>
@@ -43,7 +42,7 @@ const VehicleIncomeManager = dynamic(
   }
 );
 
-export default function VehiclesPage() {
+export default function VehicleExpensesPage() {
   return (
     <Suspense
       fallback={
@@ -59,7 +58,7 @@ export default function VehiclesPage() {
             width: 56,
             height: 56,
             border: '5px solid #e2e8f0',
-            borderTopColor: '#667eea',
+            borderTopColor: '#ef4444',
             borderRadius: '50%',
             animation: 'spin 0.8s linear infinite',
           }} />
@@ -70,7 +69,7 @@ export default function VehiclesPage() {
         </div>
       }
     >
-      <VehicleIncomeManager />
+      <VehicleExpenseTab />
     </Suspense>
   );
 }
