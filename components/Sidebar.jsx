@@ -5,6 +5,15 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { getAuth, signOut } from 'firebase/auth';
 
+// ═══════════════════════════════════════════════════════════
+// WHATSAPP SUPPORT
+// ═══════════════════════════════════════════════════════════
+const WHATSAPP_NUMBER = '94787666999';
+const WHATSAPP_MESSAGE = encodeURIComponent('හායි! මට POS System ගැන උදව් අවශ්‍යයි.');
+
+// ═══════════════════════════════════════════════════════════
+// TRANSLATIONS
+// ═══════════════════════════════════════════════════════════
 const TRANSLATIONS = {
   si: {
     brandName: 'Weerakkodi POS',
@@ -17,8 +26,10 @@ const TRANSLATIONS = {
     approved: 'අනුමත ඇණවුම්',
     customerOrders: 'පාරිභෝගික ඇණවුම්',
     customers: 'පාරිභෝගිකයින්',
+    suppliers: 'සැපයුම්කරුවන්',
     returns: 'ආපසු භාර',
     vehicleIncome: 'වාහන ආදායම්',
+    vehicleExpenses: 'වාහන වියදම්',
     shops: 'වෙළඳසැල්',
     catalogDemo: 'Catalog Demo',
     login: 'Login',
@@ -32,6 +43,7 @@ const TRANSLATIONS = {
     secOrders: 'ඇණවුම්',
     secBusiness: 'ව්‍යාපාර',
     secSystem: 'පද්ධතිය',
+    getSupport: 'උදව් ගන්න',
   },
   en: {
     brandName: 'Weerakkodi POS',
@@ -44,8 +56,10 @@ const TRANSLATIONS = {
     approved: 'Approved Orders',
     customerOrders: 'Customer Orders',
     customers: 'Customers',
+    suppliers: 'Suppliers',
     returns: 'Returns',
     vehicleIncome: 'Vehicle Income',
+    vehicleExpenses: 'Vehicle Expenses',
     shops: 'Shops',
     catalogDemo: 'Catalog Demo',
     login: 'Login',
@@ -59,11 +73,16 @@ const TRANSLATIONS = {
     secOrders: 'ORDERS',
     secBusiness: 'BUSINESS',
     secSystem: 'SYSTEM',
+    getSupport: 'Get Support',
   },
 };
 
+// ═══════════════════════════════════════════════════════════
+// MENU ITEMS
+// ═══════════════════════════════════════════════════════════
 function getMenuItems(t) {
   return [
+    // ── SALES ──
     { id: 'dashboard', title: t.dashboard, icon: '🏠', path: '/', section: t.secSales },
     {
       id: 'sales', title: t.invoices, icon: '🧾', section: t.secSales,
@@ -75,6 +94,8 @@ function getMenuItems(t) {
       ],
     },
     { id: 'customers', title: t.customers, icon: '👥', path: '/customers', section: t.secSales },
+
+    // ── ORDERS ──
     {
       id: 'orders', title: t.customerOrders, icon: '📦', section: t.secOrders,
       submenu: [
@@ -82,7 +103,11 @@ function getMenuItems(t) {
         { title: t.customerOrders, path: '/customer-orders' },
       ],
     },
+
+    // ── BUSINESS ──
+    { id: 'suppliers', title: t.suppliers, icon: '🏭', path: '/suppliers', section: t.secBusiness },
     { id: 'vehicle-income', title: t.vehicleIncome, icon: '🚛', path: '/vehicle-income', section: t.secBusiness },
+    { id: 'vehicle-expenses', title: t.vehicleExpenses, icon: '💸', path: '/vehicle-expenses', section: t.secBusiness },
     {
       id: 'shops', title: t.shops, icon: '🏪', section: t.secBusiness,
       submenu: [
@@ -90,10 +115,15 @@ function getMenuItems(t) {
         { title: t.catalogDemo, path: '/pfi/demo-shop' },
       ],
     },
+
+    // ── SYSTEM ──
     { id: 'login', title: t.login, icon: '🔐', path: '/login', section: t.secSystem },
   ];
 }
 
+// ═══════════════════════════════════════════════════════════
+// SIDEBAR COMPONENT
+// ═══════════════════════════════════════════════════════════
 export default function Sidebar({
   isOpen = true,
   onClose,
@@ -104,41 +134,34 @@ export default function Sidebar({
 }) {
   const pathname = usePathname() || '/';
 
-  // ✅ Hydration-safe: initial state = stable (no localStorage)
+  // ── Hydration-safe language ──
   const [lang, setLangInternal] = useState(externalLang || 'si');
   const [mounted, setMounted] = useState(false);
 
-  // ✅ After mount: sync from localStorage + listen for changes
   useEffect(() => {
     setMounted(true);
-
     const syncLang = () => {
       try {
         const saved = localStorage.getItem('language');
         if (saved) setLangInternal(saved);
       } catch {}
     };
-
-    const onLangChange = (e) => {
-      setLangInternal(e.detail || 'si');
-    };
+    const onLangChange = (e) => setLangInternal(e.detail || 'si');
 
     syncLang();
     window.addEventListener('app-language-change', onLangChange);
     window.addEventListener('storage', syncLang);
-
     return () => {
       window.removeEventListener('app-language-change', onLangChange);
       window.removeEventListener('storage', syncLang);
     };
   }, []);
 
-  // ✅ Before mount: use stable lang (server = client match)
-  // ✅ After mount: use localStorage-synced lang
   const safeLang = mounted ? lang : (externalLang || 'si');
   const t = TRANSLATIONS[safeLang] || TRANSLATIONS.si;
   const menuItems = useMemo(() => getMenuItems(t), [t]);
 
+  // ── State ──
   const [expandedMenus, setExpandedMenus] = useState({});
   const [isMobile, setIsMobile] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -161,6 +184,7 @@ export default function Sidebar({
     });
   }, [pathname, menuItems]);
 
+  // ── Helpers ──
   const checkActive = (path, currentPath = pathname) => {
     if (!path) return false;
     if (path === '/') return currentPath === '/';
@@ -184,7 +208,6 @@ export default function Sidebar({
     window.location.href = path;
   }, [isMobile, onClose]);
 
-  // ✅ Language toggle — updates internal + localStorage + dispatches event
   const handleLangToggle = () => {
     const newLang = lang === 'si' ? 'en' : 'si';
     setLangInternal(newLang);
@@ -209,6 +232,7 @@ export default function Sidebar({
     }
   };
 
+  // ── Filter ──
   const filteredItems = useMemo(() => {
     if (!searchTerm.trim()) return menuItems;
     const s = searchTerm.toLowerCase();
@@ -228,6 +252,9 @@ export default function Sidebar({
   const showLabels = !isCollapsed || isMobile;
   const sidebarWidth = isMobile ? '280px' : (isCollapsed ? '72px' : '290px');
 
+  // ═══════════════════════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════════════════════
   return (
     <>
       {/* MOBILE OVERLAY */}
@@ -255,7 +282,7 @@ export default function Sidebar({
           overflowX: 'hidden',
         }}
       >
-        {/* HEADER */}
+        {/* ── HEADER ── */}
         <div
           style={{
             padding: isCollapsed && !isMobile ? '16px 8px' : '16px',
@@ -330,7 +357,7 @@ export default function Sidebar({
           )}
         </div>
 
-        {/* SEARCH */}
+        {/* ── SEARCH ── */}
         {showLabels && (
           <div style={{ padding: '12px 14px', borderBottom: '1px solid #1e293b', flexShrink: 0 }}>
             <div style={{ position: 'relative' }}>
@@ -375,7 +402,7 @@ export default function Sidebar({
           </div>
         )}
 
-        {/* MENU */}
+        {/* ── MENU ITEMS ── */}
         <nav style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '8px 0' }}>
           {filteredItems.map((item) => {
             const isActive = item.path
@@ -385,6 +412,7 @@ export default function Sidebar({
 
             return (
               <React.Fragment key={item.id}>
+                {/* Section header */}
                 {item.section && showLabels && !searchTerm && (
                   <div
                     style={{
@@ -402,6 +430,7 @@ export default function Sidebar({
                 <div style={{ margin: '2px 0' }}>
                   {item.submenu ? (
                     <>
+                      {/* Parent with submenu */}
                       <button
                         onClick={() => handleToggleSubmenu(item.id)}
                         onMouseEnter={(e) => handleHover(e, item)}
@@ -444,6 +473,7 @@ export default function Sidebar({
                         )}
                       </button>
 
+                      {/* Submenu items */}
                       <div
                         style={{
                           maxHeight: isExpanded && showLabels
@@ -487,6 +517,7 @@ export default function Sidebar({
                       </div>
                     </>
                   ) : (
+                    /* Direct link item */
                     <Link
                       href={item.path}
                       prefetch={false}
@@ -527,6 +558,7 @@ export default function Sidebar({
             );
           })}
 
+          {/* No search results */}
           {searchTerm && filteredItems.length === 0 && (
             <div style={{
               padding: '30px 16px', textAlign: 'center',
@@ -538,14 +570,41 @@ export default function Sidebar({
           )}
         </nav>
 
-        {/* BOTTOM */}
+        {/* ── BOTTOM SECTION ── */}
         <div
           style={{
             padding: '12px 14px', borderTop: '1px solid #1e293b',
             flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8,
           }}
         >
-          {/* ✅ Language toggle */}
+          {/* ★ WhatsApp Support Button */}
+          <a
+            href={`https://wa.me/${WHATSAPP_NUMBER}?text=${WHATSAPP_MESSAGE}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              width: '100%',
+              padding: isCollapsed && !isMobile ? '11px 0' : '10px 14px',
+              background: 'linear-gradient(135deg, #25d366, #128c7e)',
+              color: 'white',
+              border: 'none',
+              borderRadius: 10,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: isCollapsed && !isMobile ? 'center' : 'flex-start',
+              gap: 10,
+              fontSize: 14,
+              fontWeight: 700,
+              textDecoration: 'none',
+              boxSizing: 'border-box',
+            }}
+          >
+            <span style={{ fontSize: 18, flexShrink: 0 }}>💬</span>
+            {showLabels && <span>{t.getSupport}</span>}
+          </a>
+
+          {/* Language toggle */}
           <button
             onClick={handleLangToggle}
             style={{
@@ -584,7 +643,7 @@ export default function Sidebar({
           </button>
         </div>
 
-        {/* VERSION */}
+        {/* ── VERSION ── */}
         {showLabels && (
           <div style={{
             padding: '10px 14px', borderTop: '1px solid #1e293b', flexShrink: 0,
@@ -599,7 +658,7 @@ export default function Sidebar({
         )}
       </aside>
 
-      {/* TOOLTIP */}
+      {/* ── TOOLTIP (collapsed mode) ── */}
       {isCollapsed && !isMobile && hoveredItem && (
         <div
           style={{
