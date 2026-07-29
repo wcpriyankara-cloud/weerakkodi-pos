@@ -1,4 +1,4 @@
-﻿// shared/firebase-config.js
+// firebaseConfig.js - compatibility wrapper
 export {
   app,
   db,
@@ -12,6 +12,6 @@ export {
   signInWithPhoneNumber,
   PhoneAuthProvider,
   signInWithCredential,
-} from '../firebase-config';
+} from './firebase-config';
 
-export { default } from '../firebase-config';
+export { default } from './firebase-config';

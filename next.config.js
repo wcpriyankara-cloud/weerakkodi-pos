@@ -1,11 +1,12 @@
-// catalog/next.config.js
 const path = require('path');
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // ✅ Fix multiple lockfiles warning
   turbopack: {
     root: path.join(__dirname),
+    resolveAlias: {
+      '@': path.join(__dirname, 'src'),
+    },
   },
 
   images: {
