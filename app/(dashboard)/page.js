@@ -1,7 +1,7 @@
 'use client';
 
 // app/(dashboard)/page.js
-// Dashboard Home Page — All Quick Access Buttons (Updated)
+// Dashboard Home Page — Purchases enabled
 
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
@@ -11,62 +11,66 @@ import Link from 'next/link';
    ═══════════════════════════════════════ */
 const T = {
   si: {
-    welcome:              'සාදරයෙන් පිළිගනිමු!',
-    subtitle:             'ඔබේ ව්‍යාපාරය කළමනාකරණය කරන්න',
-    quickAccess:          'ඉක්මන් ප්‍රවේශය',
-    pos:                  'POS',
-    posDesc:              'අලුත් බිල්පතක්',
-    invoices:             'ඉන්වොයිස්',
-    invoicesDesc:         'බිල්පත් ලැයිස්තුව',
-    customers:            'පාරිභෝගිකයින්',
-    customersDesc:        'ගනුදෙනුකරුවන්',
-    suppliers:            'සැපයුම්කරුවන්',
-    suppliersDesc:        'සැපයුම්කරු කළමනාකරණය',
-    purchases:            'ගැනුම්',
-    purchasesDesc:        'ගැනුම් ඉන්වොයිස් කළමනාකරණය',
-    purchaseReturn:       'ගැනුම් ආපසු',
-    purchaseReturnDesc:   'ගැනුම් ආපසු භාරදීම්',
-    purchaseOrders:       'ගැනුම් ඇණවුම්',
-    purchaseOrdersDesc:   'ගැනුම් ඇණවුම් කළමනාකරණය',
-    vehicleIncome:        'වාහන ආදායම්',
-    vehicleIncomeDesc:    'වාහන ගමන් කළමනාකරණය',
-    vehicleExpenses:      'වාහන වියදම්',
-    vehicleExpensesDesc:  'වාහන වියදම් කළමනාකරණය',
-    orders:               'ඇණවුම්',
-    ordersDesc:           'පාරිභෝගික ඇණවුම්',
-    returns:              'ආපසු භාර',
-    returnsDesc:          'ආපසු භාර ගැනීම්',
-    shops:                'වෙළඳසැල්',
-    shopsDesc:            'වෙළඳසැල් කළමනාකරණය',
+    welcome:            'සාදරයෙන් පිළිගනිමු!',
+    subtitle:           'ඔබේ ව්‍යාපාරය කළමනාකරණය කරන්න',
+    quickAccess:        'ඉක්මන් ප්‍රවේශය',
+    pos:                'POS',
+    posDesc:            'අලුත් බිල්පතක්',
+    invoices:           'ඉන්වොයිස්',
+    invoicesDesc:       'බිල්පත් ලැයිස්තුව',
+    customers:          'පාරිභෝගිකයින්',
+    customersDesc:      'ගනුදෙනුකරුවන්',
+    suppliers:          'සැපයුම්කරුවන්',
+    suppliersDesc:      'සැපයුම්කරු කළමනාකරණය',
+
+    purchases:          'ගැනුම්',
+    purchasesDesc:      'ගැනුම් ඉන්වොයිස් කළමනාකරණය',
+    purchaseReturn:     'ගැනුම් ආපසු',
+    purchaseReturnDesc: 'ගැනුම් ආපසු භාරදීම්',
+    purchaseOrders:     'ගැනුම් ඇණවුම්',
+    purchaseOrdersDesc: 'ගැනුම් ඇණවුම් කළමනාකරණය',
+
+    vehicleIncome:      'වාහන ආදායම්',
+    vehicleIncomeDesc:  'වාහන ගමන් කළමනාකරණය',
+    vehicleExpenses:    'වාහන වියදම්',
+    vehicleExpensesDesc:'වාහන වියදම් කළමනාකරණය',
+    orders:             'ඇණවුම්',
+    ordersDesc:         'පාරිභෝගික ඇණවුම්',
+    returns:            'ආපසු භාර',
+    returnsDesc:        'ආපසු භාර ගැනීම්',
+    shops:              'වෙළඳසැල්',
+    shopsDesc:          'වෙළඳසැල් කළමනාකරණය',
   },
   en: {
-    welcome:              'Welcome!',
-    subtitle:             'Manage your business',
-    quickAccess:          'Quick Access',
-    pos:                  'POS',
-    posDesc:              'New invoice',
-    invoices:             'Invoices',
-    invoicesDesc:         'Invoice list',
-    customers:            'Customers',
-    customersDesc:        'Customer management',
-    suppliers:            'Suppliers',
-    suppliersDesc:        'Supplier management',
-    purchases:            'Purchases',
-    purchasesDesc:        'Purchase invoice management',
-    purchaseReturn:       'Purchase Returns',
-    purchaseReturnDesc:   'Purchase return management',
-    purchaseOrders:       'Purchase Orders',
-    purchaseOrdersDesc:   'Purchase order management',
-    vehicleIncome:        'Vehicle Income',
-    vehicleIncomeDesc:    'Vehicle trip management',
-    vehicleExpenses:      'Vehicle Expenses',
-    vehicleExpensesDesc:  'Vehicle expense management',
-    orders:               'Orders',
-    ordersDesc:           'Customer orders',
-    returns:              'Returns',
-    returnsDesc:          'Return management',
-    shops:                'Shops',
-    shopsDesc:            'Shop management',
+    welcome:            'Welcome!',
+    subtitle:           'Manage your business',
+    quickAccess:        'Quick Access',
+    pos:                'POS',
+    posDesc:            'New invoice',
+    invoices:           'Invoices',
+    invoicesDesc:       'Invoice list',
+    customers:          'Customers',
+    customersDesc:      'Customer management',
+    suppliers:          'Suppliers',
+    suppliersDesc:      'Supplier management',
+
+    purchases:          'Purchases',
+    purchasesDesc:      'Purchase invoice management',
+    purchaseReturn:     'Purchase Returns',
+    purchaseReturnDesc: 'Purchase return management',
+    purchaseOrders:     'Purchase Orders',
+    purchaseOrdersDesc: 'Purchase order management',
+
+    vehicleIncome:      'Vehicle Income',
+    vehicleIncomeDesc:  'Vehicle trip management',
+    vehicleExpenses:    'Vehicle Expenses',
+    vehicleExpensesDesc:'Vehicle expense management',
+    orders:             'Orders',
+    ordersDesc:         'Customer orders',
+    returns:            'Returns',
+    returnsDesc:        'Return management',
+    shops:              'Shops',
+    shopsDesc:          'Shop management',
   },
 };
 
@@ -91,6 +95,8 @@ function getQuickCards(t) {
       path: '/invoice-list',
       gradient: 'linear-gradient(135deg, #8b5cf6, #7c3aed)',
     },
+
+    // ✅ Purchases
     {
       id: 'purchases',
       title: t.purchases,
@@ -115,6 +121,7 @@ function getQuickCards(t) {
       path: '/purchase-orders',
       gradient: 'linear-gradient(135deg, #a855f7, #9333ea)',
     },
+
     {
       id: 'customers',
       title: t.customers,
@@ -151,7 +158,7 @@ function getQuickCards(t) {
       id: 'orders',
       title: t.orders,
       desc: t.ordersDesc,
-      icon: '📦',
+      icon: '🛒',
       path: '/customer-orders',
       gradient: 'linear-gradient(135deg, #06b6d4, #0891b2)',
     },
@@ -181,10 +188,10 @@ function DashboardCard({ card }) {
   return (
     <Link
       href={card.path}
+      aria-label={card.title}
       style={{
         textDecoration: 'none',
         background: card.gradient,
-        border: 'none',
         borderRadius: 16,
         padding: '24px 20px',
         color: 'white',
@@ -194,6 +201,7 @@ function DashboardCard({ card }) {
         display: 'flex',
         alignItems: 'center',
         gap: 16,
+        border: '1px solid rgba(255,255,255,0.1)',
       }}
       onMouseEnter={(e) => {
         e.currentTarget.style.transform = 'translateY(-3px)';
@@ -204,7 +212,6 @@ function DashboardCard({ card }) {
         e.currentTarget.style.boxShadow = '0 4px 15px rgba(0,0,0,0.1)';
       }}
     >
-      {/* Icon box */}
       <div
         style={{
           width: 52,
@@ -221,7 +228,6 @@ function DashboardCard({ card }) {
         {card.icon}
       </div>
 
-      {/* Text */}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
@@ -249,7 +255,6 @@ function DashboardCard({ card }) {
         </div>
       </div>
 
-      {/* Arrow */}
       <div style={{ fontSize: 18, opacity: 0.6, flexShrink: 0 }}>→</div>
     </Link>
   );
@@ -259,26 +264,22 @@ function DashboardCard({ card }) {
    DASHBOARD PAGE
    ═══════════════════════════════════════ */
 export default function DashboardPage() {
-  // Language state
   const [lang, setLang] = useState('si');
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
 
-    // Load from localStorage
     try {
       const saved = localStorage.getItem('language');
       if (saved === 'en' || saved === 'si') setLang(saved);
     } catch {}
 
-    // Listen for sidebar language change (custom event)
     const handleLangEvent = (e) => {
       const value = e.detail;
       if (value === 'en' || value === 'si') setLang(value);
     };
 
-    // Listen for cross-tab storage changes
     const handleStorage = (e) => {
       if (e.key !== 'language') return;
       if (e.newValue === 'en' || e.newValue === 'si') {
@@ -293,13 +294,12 @@ export default function DashboardPage() {
       window.removeEventListener('app-language-change', handleLangEvent);
       window.removeEventListener('storage', handleStorage);
     };
-  }, []); // ✅ Empty deps — no polling, no re-subscribe
+  }, []);
 
   const safeLang = mounted ? lang : 'si';
   const t = useMemo(() => T[safeLang] || T.si, [safeLang]);
   const cards = useMemo(() => getQuickCards(t), [t]);
 
-  /* ─── RENDER ─── */
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', padding: '0 4px' }}>
       {/* Welcome Header */}
