@@ -4,9 +4,10 @@
 // ✅ Next.js compatible
 // ✅ react-router-dom removed
 // ✅ public shop slug/id -> owner uid resolve
-// ✅ Firestore items loaded by resolved uid
-// ✅ Orders saved to actual shop uid
-// ✅ Share links still use public shop id/slug
+// ✅ items loaded by resolved uid
+// ✅ orders saved to actual shop uid
+// ✅ /pfi page opens shop selector
+// ✅ empty state shows "Select Shop" button
 
 import React, {
   useState,
@@ -137,8 +138,9 @@ const getImg = (item) => {
     if (
       typeof c === 'string' &&
       (c.startsWith('http') || c.startsWith('data:image'))
-    )
+    ) {
       return c;
+    }
   }
   return DEFAULT_IMG;
 };
@@ -156,8 +158,9 @@ const getShopImg = (shop) => {
     if (
       typeof c === 'string' &&
       (c.startsWith('http') || c.startsWith('data:image'))
-    )
+    ) {
       return c;
+    }
   }
   return DEFAULT_SHOP_IMG;
 };
@@ -313,18 +316,18 @@ const formatPhoneForWhatsApp = (phone) => {
 };
 
 /* ═══════════════════════════════════════
-   PUBLIC SHOP ID -> UID RESOLVER
+   PUBLIC SHOP ID -> OWNER UID RESOLVER
    ═══════════════════════════════════════ */
 const resolvePublicShopToUid = async (rawShopId) => {
   if (!rawShopId) return '';
 
-  // 1. rawShopId itself might already be uid
+  // 1. rawShopId itself might be a users doc id
   try {
     const userSnap = await getDoc(doc(db, 'users', rawShopId));
     if (userSnap.exists()) return rawShopId;
   } catch {}
 
-  // 2. shopDirectory doc id might be public id
+  // 2. shopDirectory doc id might be public slug
   try {
     const dirSnap = await getDoc(doc(db, 'shopDirectory', rawShopId));
     if (dirSnap.exists()) {
@@ -340,11 +343,15 @@ const resolvePublicShopToUid = async (rawShopId) => {
     }
   } catch {}
 
-  // 3. Search common slug fields in shopDirectory
+  // 3. common slug/public fields in shopDirectory
   for (const field of ['shopSlug', 'slug', 'publicId', 'catalogSlug']) {
     try {
       const snap = await getDocs(
-        query(collection(db, 'shopDirectory'), where(field, '==', rawShopId), limit(1))
+        query(
+          collection(db, 'shopDirectory'),
+          where(field, '==', rawShopId),
+          limit(1)
+        )
       );
       if (!snap.empty) {
         const d = snap.docs[0].data();
@@ -360,11 +367,15 @@ const resolvePublicShopToUid = async (rawShopId) => {
     } catch {}
   }
 
-  // 4. Search common slug fields in users
+  // 4. common slug/public fields in users
   for (const field of ['shopSlug', 'slug', 'publicId', 'catalogSlug']) {
     try {
       const snap = await getDocs(
-        query(collection(db, 'users'), where(field, '==', rawShopId), limit(1))
+        query(
+          collection(db, 'users'),
+          where(field, '==', rawShopId),
+          limit(1)
+        )
       );
       if (!snap.empty) return snap.docs[0].id;
     } catch {}
@@ -386,23 +397,41 @@ const GlobalStyles = memo(({ embedded }) => (
     @keyframes ccPulse { 0%{box-shadow:0 0 0 0 rgba(59,130,246,.6)}70%{box-shadow:0 0 0 10px rgba(59,130,246,0)}100%{box-shadow:0 0 0 0 rgba(59,130,246,0)} }
     @keyframes ccShopPulse { 0%{box-shadow:0 0 0 0 rgba(139,92,246,.5)}70%{box-shadow:0 0 0 8px rgba(139,92,246,0)}100%{box-shadow:0 0 0 0 rgba(139,92,246,0)} }
     @keyframes ccPhoneRing { 0%,100%{transform:rotate(0)}10%{transform:rotate(14deg)}20%{transform:rotate(-14deg)}30%{transform:rotate(10deg)}40%{transform:rotate(-10deg)}50%{transform:rotate(6deg)}60%{transform:rotate(-6deg)}70%{transform:rotate(0)} }
+
     #customer-catalog-root {
-      ${embedded
-        ? "position:relative;width:100%;min-height:calc(100vh - 100px);display:flex;overflow:hidden;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;border-radius:12px;border:1px solid #e2e8f0;"
-        : "position:fixed;inset:0;z-index:200;display:flex;overflow:hidden;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+      ${
+        embedded
+          ? "position:relative;width:100%;min-height:calc(100vh - 100px);display:flex;overflow:hidden;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;border-radius:12px;border:1px solid #e2e8f0;"
+          : "position:fixed;inset:0;z-index:200;display:flex;overflow:hidden;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
       }
     }
+
     .cc-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
     .cc-main-body{flex:1;overflow-y:auto}
-    .cc-main-body::-webkit-scrollbar{width:6px}.cc-main-body::-webkit-scrollbar-track{background:#f1f5f9}.cc-main-body::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
-    .cc-cart-sidebar{width:340px;min-width:340px;max-width:340px;background:white;border-left:1px solid #e2e8f0;display:flex;flex-direction:column;overflow:hidden}
-    .cc-cart-body{flex:1;overflow-y:auto}.cc-cart-body::-webkit-scrollbar-thumb{background:#e2e8f0;border-radius:3px}
+    .cc-main-body::-webkit-scrollbar{width:6px}
+    .cc-main-body::-webkit-scrollbar-track{background:#f1f5f9}
+    .cc-main-body::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+
+    .cc-cart-sidebar{
+      width:340px;min-width:340px;max-width:340px;background:white;
+      border-left:1px solid #e2e8f0;display:flex;flex-direction:column;overflow:hidden
+    }
+    .cc-cart-body{flex:1;overflow-y:auto}
+    .cc-cart-body::-webkit-scrollbar-thumb{background:#e2e8f0;border-radius:3px}
+
     .cc-grid{display:grid;padding:12px;gap:12px;grid-template-columns:repeat(2,1fr)}
     @media(min-width:480px){.cc-grid{grid-template-columns:repeat(3,1fr)}}
     @media(min-width:900px){.cc-grid{grid-template-columns:repeat(3,1fr);gap:14px;padding:14px}}
     @media(min-width:1100px){.cc-grid{grid-template-columns:repeat(4,1fr)}}
-    @media(max-width:899px){.cc-cart-sidebar{display:none!important}.cc-desktop-only{display:none!important}}
-    @media(min-width:900px){.cc-mobile-only{display:none!important}}
+
+    @media(max-width:899px){
+      .cc-cart-sidebar{display:none!important}
+      .cc-desktop-only{display:none!important}
+    }
+    @media(min-width:900px){
+      .cc-mobile-only{display:none!important}
+    }
+
     .cc-card{transition:transform .15s,box-shadow .15s;cursor:pointer}
     .cc-card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.10)!important}
     .cc-contact-btn,.cc-share-btn{transition:transform .15s,box-shadow .15s}
@@ -411,7 +440,9 @@ const GlobalStyles = memo(({ embedded }) => (
     .cc-shop-card{transition:all .2s ease;cursor:pointer}
     .cc-shop-card:hover{transform:translateY(-3px);box-shadow:0 8px 28px rgba(0,0,0,.12)!important}
     .cc-shop-card:active{transform:scale(.98)}
-    input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}
+
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}
     input[type=number]{-moz-appearance:textfield}
   `}</style>
 ));
@@ -422,6 +453,7 @@ GlobalStyles.displayName = 'GlobalStyles';
    ═══════════════════════════════════════ */
 const Toast = memo(({ message, show }) => {
   if (!show) return null;
+
   return (
     <div
       role="status"
@@ -463,7 +495,9 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose }) => {
   const searchRef = useRef(null);
 
   useEffect(() => {
-    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    const h = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
@@ -471,7 +505,9 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose }) => {
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    return () => { document.body.style.overflow = prev; };
+    return () => {
+      document.body.style.overflow = prev;
+    };
   }, []);
 
   useEffect(() => {
@@ -496,7 +532,9 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose }) => {
         const itemCountMap = {};
         itemsSnap.docs.forEach((d) => {
           const uid = d.data()?.uid;
-          if (uid) itemCountMap[uid] = (itemCountMap[uid] || 0) + 1;
+          if (uid) {
+            itemCountMap[uid] = (itemCountMap[uid] || 0) + 1;
+          }
         });
 
         const uidsWithItems = new Set(Object.keys(itemCountMap));
@@ -520,8 +558,8 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose }) => {
         usersSnap.docs.forEach((d) => {
           const s = d.data();
           const uid = d.id;
-
-          const shopName = s.shopName || s.businessName || s.companyName || '';
+          const shopName =
+            s.shopName || s.businessName || s.companyName || '';
           const displayName = s.displayName || '';
           const email = s.email || '';
 
@@ -589,7 +627,9 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose }) => {
     };
 
     loadShops();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const filteredShops = useMemo(() => {
@@ -614,10 +654,13 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose }) => {
     [shops]
   );
 
-  const handleSelect = useCallback((shop) => {
-    onSelectShop(shop.id, shop);
-    onClose();
-  }, [onSelectShop, onClose]);
+  const handleSelect = useCallback(
+    (shop) => {
+      onSelectShop(shop.id, shop);
+      onClose();
+    },
+    [onSelectShop, onClose]
+  );
 
   return (
     <div
@@ -850,8 +893,12 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose }) => {
                 outline: 'none',
                 boxSizing: 'border-box',
               }}
-              onFocus={(e) => (e.target.style.borderColor = '#7c3aed')}
-              onBlur={(e) => (e.target.style.borderColor = '#e2e8f0')}
+              onFocus={(e) => {
+                e.target.style.borderColor = '#7c3aed';
+              }}
+              onBlur={(e) => {
+                e.target.style.borderColor = '#e2e8f0';
+              }}
             />
             {search && (
               <button
@@ -968,40 +1015,48 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose }) => {
             </div>
           )}
 
-          {!loading && !error && filteredShops.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '48px 10px' }}>
-              <div style={{ fontSize: 44, marginBottom: 10, opacity: 0.4 }}>
-                🔍
-              </div>
-              <p
-                style={{
-                  fontSize: 15,
-                  fontWeight: 800,
-                  color: '#1e293b',
-                }}
-              >
-                {TEXT.noShopsFound}
-              </p>
-              {search && (
-                <button
-                  onClick={() => setSearch('')}
+          {!loading &&
+            !error &&
+            filteredShops.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '48px 10px' }}>
+                <div
                   style={{
-                    marginTop: 10,
-                    background: '#7c3aed',
-                    color: 'white',
-                    padding: '9px 20px',
-                    borderRadius: 10,
-                    fontSize: 12,
-                    fontWeight: 700,
-                    border: 'none',
-                    cursor: 'pointer',
+                    fontSize: 44,
+                    marginBottom: 10,
+                    opacity: 0.4,
                   }}
                 >
-                  {TEXT.clearSearch}
-                </button>
-              )}
-            </div>
-          )}
+                  🔍
+                </div>
+                <p
+                  style={{
+                    fontSize: 15,
+                    fontWeight: 800,
+                    color: '#1e293b',
+                  }}
+                >
+                  {TEXT.noShopsFound}
+                </p>
+                {search && (
+                  <button
+                    onClick={() => setSearch('')}
+                    style={{
+                      marginTop: 10,
+                      background: '#7c3aed',
+                      color: 'white',
+                      padding: '9px 20px',
+                      borderRadius: 10,
+                      fontSize: 12,
+                      fontWeight: 700,
+                      border: 'none',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {TEXT.clearSearch}
+                  </button>
+                )}
+              </div>
+            )}
 
           {!loading &&
             !error &&
@@ -1036,7 +1091,9 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose }) => {
                       : '0 1px 4px rgba(0,0,0,0.04)',
                     opacity: hasItems ? 1 : 0.6,
                     position: 'relative',
-                    ...(isCurrent ? { animation: 'ccShopPulse 2s infinite' } : {}),
+                    ...(isCurrent
+                      ? { animation: 'ccShopPulse 2s infinite' }
+                      : {}),
                   }}
                   role="button"
                   tabIndex={0}
@@ -1219,6 +1276,7 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose }) => {
                         {TEXT.shopItems}
                       </div>
                     </div>
+
                     <div
                       style={{
                         width: 24,
@@ -1276,7 +1334,9 @@ ShopSelectorModal.displayName = 'ShopSelectorModal';
    ═══════════════════════════════════════ */
 const ShareModal = memo(({ item, shopId, shopInfo, onClose, onToast }) => {
   useEffect(() => {
-    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    const h = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
@@ -1291,7 +1351,10 @@ const ShareModal = memo(({ item, shopId, shopInfo, onClose, onToast }) => {
   const payload = getSharePayload(item, shopId, shopInfo);
 
   const handleWhatsApp = () => {
-    window.open(`https://wa.me/?text=${encodeURIComponent(payload.whatsappText)}`, '_blank');
+    window.open(
+      `https://wa.me/?text=${encodeURIComponent(payload.whatsappText)}`,
+      '_blank'
+    );
     onClose();
   };
 
@@ -1317,7 +1380,9 @@ const ShareModal = memo(({ item, shopId, shopInfo, onClose, onToast }) => {
 
   const handleFacebook = () => {
     window.open(
-      `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(payload.url)}`,
+      `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(
+        payload.url
+      )}`,
       '_blank',
       'width=600,height=400'
     );
@@ -1442,6 +1507,7 @@ const ShareModal = memo(({ item, shopId, shopInfo, onClose, onToast }) => {
             >
               {name}
             </div>
+
             {!oos ? (
               <div style={{ marginTop: 4 }}>
                 <span
@@ -1630,7 +1696,9 @@ ShareModal.displayName = 'ShareModal';
    ═══════════════════════════════════════ */
 const ContactPhoneModal = memo(({ item, shopInfo, onClose }) => {
   useEffect(() => {
-    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    const h = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
@@ -1952,7 +2020,14 @@ ContactPhoneModal.displayName = 'ContactPhoneModal';
 /* ═══════════════════════════════════════
    DETAIL MODAL
    ═══════════════════════════════════════ */
-const DetailModal = memo(({ item, onClose, onAddToCart, onContactClick, onShareClick, shopId }) => {
+const DetailModal = memo(({
+  item,
+  onClose,
+  onAddToCart,
+  onContactClick,
+  onShareClick,
+  shopId,
+}) => {
   const [imgIdx, setImgIdx] = useState(0);
   const [qty, setQty] = useState(1);
 
@@ -1962,7 +2037,9 @@ const DetailModal = memo(({ item, onClose, onAddToCart, onContactClick, onShareC
   }, [item?.id]);
 
   useEffect(() => {
-    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    const h = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
@@ -2071,8 +2148,12 @@ const DetailModal = memo(({ item, onClose, onAddToCart, onContactClick, onShareC
             }}
             alt={name}
           />
+
           <button
-            onClick={(e) => { e.stopPropagation(); onShareClick(item); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onShareClick(item);
+            }}
             className="cc-share-btn"
             style={{
               position: 'absolute',
@@ -2092,6 +2173,7 @@ const DetailModal = memo(({ item, onClose, onAddToCart, onContactClick, onShareC
           >
             📤
           </button>
+
           <button
             onClick={handleQuickWA}
             className="cc-share-btn"
@@ -2153,7 +2235,10 @@ const DetailModal = memo(({ item, onClose, onAddToCart, onContactClick, onShareC
                     width: 32,
                     height: 32,
                     borderRadius: 7,
-                    border: imgIdx === i ? '2px solid #3b82f6' : '2px solid white',
+                    border:
+                      imgIdx === i
+                        ? '2px solid #3b82f6'
+                        : '2px solid white',
                     overflow: 'hidden',
                     padding: 0,
                     cursor: 'pointer',
@@ -2161,7 +2246,11 @@ const DetailModal = memo(({ item, onClose, onAddToCart, onContactClick, onShareC
                 >
                   <img
                     src={im}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                    }}
                     onError={(e) => {
                       e.target.onerror = null;
                       e.target.src = DEFAULT_IMG;
@@ -2385,7 +2474,13 @@ const DetailModal = memo(({ item, onClose, onAddToCart, onContactClick, onShareC
               }}
             >
               <div style={{ fontSize: 28, marginBottom: 5 }}>📞</div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: 'white' }}>
+              <div
+                style={{
+                  fontSize: 16,
+                  fontWeight: 800,
+                  color: 'white',
+                }}
+              >
                 {TEXT.contactForPrice}
               </div>
             </button>
@@ -2585,7 +2680,14 @@ DetailModal.displayName = 'DetailModal';
 /* ═══════════════════════════════════════
    CARD
    ═══════════════════════════════════════ */
-const Card = memo(({ item, onClick, onAddToCart, onContactClick, onShareClick, shopId }) => {
+const Card = memo(({
+  item,
+  onClick,
+  onAddToCart,
+  onContactClick,
+  onShareClick,
+  shopId,
+}) => {
   const p = useMemo(() => calcPrice(item), [item]);
   const oos = isOutOfStock(item);
   const displayUnit = getDisplayUnit(item);
@@ -2595,28 +2697,40 @@ const Card = memo(({ item, onClick, onAddToCart, onContactClick, onShareClick, s
   const img = getImg(item);
   const imgCount = item.images?.length || (item.picture ? 1 : 0);
 
-  const handleQuickWA = useCallback((e) => {
-    e.stopPropagation();
-    window.open(
-      `https://wa.me/?text=${encodeURIComponent(getShareUrl(shopId, item.id))}`,
-      '_blank'
-    );
-  }, [shopId, item.id]);
+  const handleQuickWA = useCallback(
+    (e) => {
+      e.stopPropagation();
+      window.open(
+        `https://wa.me/?text=${encodeURIComponent(getShareUrl(shopId, item.id))}`,
+        '_blank'
+      );
+    },
+    [shopId, item.id]
+  );
 
-  const handleShare = useCallback((e) => {
-    e.stopPropagation();
-    onShareClick(item);
-  }, [item, onShareClick]);
+  const handleShare = useCallback(
+    (e) => {
+      e.stopPropagation();
+      onShareClick(item);
+    },
+    [item, onShareClick]
+  );
 
-  const handleContact = useCallback((e) => {
-    e.stopPropagation();
-    onContactClick(item);
-  }, [item, onContactClick]);
+  const handleContact = useCallback(
+    (e) => {
+      e.stopPropagation();
+      onContactClick(item);
+    },
+    [item, onContactClick]
+  );
 
-  const handleAdd = useCallback((e) => {
-    e.stopPropagation();
-    onAddToCart(item, 1);
-  }, [item, onAddToCart]);
+  const handleAdd = useCallback(
+    (e) => {
+      e.stopPropagation();
+      onAddToCart(item, 1);
+    },
+    [item, onAddToCart]
+  );
 
   return (
     <div
@@ -2999,6 +3113,7 @@ const CartItemRow = memo(({ cartItem, isLast, onUpdateQty, onRemove }) => {
         }}
         alt={name}
       />
+
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
@@ -3012,6 +3127,7 @@ const CartItemRow = memo(({ cartItem, isLast, onUpdateQty, onRemove }) => {
         >
           {name}
         </div>
+
         {oos ? (
           <div
             style={{
@@ -3180,14 +3296,29 @@ const CheckoutForm = memo(({
   onBack,
 }) => {
   const [customerName, setCustomerName] = useState(() => {
-    try { return localStorage.getItem('cust_name') || ''; } catch { return ''; }
+    try {
+      return localStorage.getItem('cust_name') || '';
+    } catch {
+      return '';
+    }
   });
+
   const [customerPhone, setCustomerPhone] = useState(() => {
-    try { return localStorage.getItem('cust_phone') || ''; } catch { return ''; }
+    try {
+      return localStorage.getItem('cust_phone') || '';
+    } catch {
+      return '';
+    }
   });
+
   const [customerAddress, setCustomerAddress] = useState(() => {
-    try { return localStorage.getItem('cust_address') || ''; } catch { return ''; }
+    try {
+      return localStorage.getItem('cust_address') || '';
+    } catch {
+      return '';
+    }
   });
+
   const [orderNote, setOrderNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState({});
@@ -3195,7 +3326,9 @@ const CheckoutForm = memo(({
   const validate = useCallback(() => {
     const e = {};
     if (!customerName.trim()) e.name = true;
-    if (!customerPhone.trim() || customerPhone.replace(/\D/g, '').length < 9) e.phone = true;
+    if (!customerPhone.trim() || customerPhone.replace(/\D/g, '').length < 9) {
+      e.phone = true;
+    }
     setErrors(e);
     return Object.keys(e).length === 0;
   }, [customerName, customerPhone]);
@@ -3220,6 +3353,7 @@ const CheckoutForm = memo(({
         const itemOOS = isOutOfStock(c.item);
         const yourPrice = itemOOS ? 0 : c.priceInfo.final;
         const discAmount = itemOOS ? 0 : c.priceInfo.discAmt;
+
         return {
           id: c.item.id || '',
           name: c.item.name || '',
@@ -3258,11 +3392,8 @@ const CheckoutForm = memo(({
         status: 'pending',
         hasOutOfStock: hasOOS,
 
-        // actual owner uid
         shopId: shopUid,
         uid: shopUid,
-
-        // public route id
         publicShopId: publicShopId || shopUid,
 
         createdAt: serverTimestamp(),
@@ -3273,7 +3404,10 @@ const CheckoutForm = memo(({
       };
 
       await addDoc(collection(db, `shops/${shopUid}/pfis`), orderData);
-      try { await addDoc(collection(db, 'orders'), orderData); } catch {}
+
+      try {
+        await addDoc(collection(db, 'orders'), orderData);
+      } catch {}
 
       onSuccess();
     } catch (err) {
@@ -3476,6 +3610,7 @@ const CheckoutForm = memo(({
         {cart.map((c, idx) => {
           const itemOOS = isOutOfStock(c.item);
           const price = itemOOS ? 0 : c.priceInfo.final;
+
           return (
             <div
               key={c.item.id}
@@ -3760,7 +3895,9 @@ const DesktopCartSidebar = memo(({
         {view === 'cart' &&
           (cart.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '50px 10px' }}>
-              <div style={{ fontSize: 44, marginBottom: 10, opacity: 0.35 }}>🛒</div>
+              <div style={{ fontSize: 44, marginBottom: 10, opacity: 0.35 }}>
+                🛒
+              </div>
               <p
                 style={{
                   fontSize: 14,
@@ -3939,11 +4076,15 @@ const MobileCartModal = memo(({
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    return () => { document.body.style.overflow = prev; };
+    return () => {
+      document.body.style.overflow = prev;
+    };
   }, []);
 
   useEffect(() => {
-    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    const h = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
@@ -4139,7 +4280,12 @@ const MobileCartModal = memo(({
                 >
                   {TEXT.emptyCart}
                 </h3>
-                <p style={{ fontSize: 12, color: '#475569' }}>
+                <p
+                  style={{
+                    fontSize: 12,
+                    color: '#475569',
+                  }}
+                >
                   {TEXT.emptyCartDesc}
                 </p>
               </div>
@@ -4290,7 +4436,6 @@ export default function CustomerCatalog({ shopId: propShopId }) {
 
   const embedded = !!propShopId;
 
-  // public route shop id / slug
   const initialShopId = propShopId || params?.shopId || '';
   const [activeShopId, setActiveShopId] = useState(initialShopId);
 
@@ -4339,11 +4484,22 @@ export default function CustomerCatalog({ shopId: propShopId }) {
     toastTimerRef.current = setTimeout(() => setShowToast(false), 2200);
   }, []);
 
-  useEffect(() => () => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
   }, []);
 
-  // Resolve public shop slug/id -> actual uid
+  // ✅ Auto open shop selector when no shop is selected
+  useEffect(() => {
+    if (!publicShopId) {
+      setShowShopSelector(true);
+    } else {
+      setShowShopSelector(false);
+    }
+  }, [publicShopId]);
+
+  // Resolve public shop id -> owner uid
   useEffect(() => {
     let cancelled = false;
 
@@ -4372,10 +4528,12 @@ export default function CustomerCatalog({ shopId: propShopId }) {
         }
       });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [publicShopId]);
 
-  // Load cart by public shop id (route-based cart)
+  // Load cart by public route id
   useEffect(() => {
     if (!publicShopId) return;
     try {
@@ -4386,7 +4544,7 @@ export default function CustomerCatalog({ shopId: propShopId }) {
     }
   }, [publicShopId]);
 
-  // Save cart by public shop id
+  // Save cart by public route id
   useEffect(() => {
     if (publicShopId) {
       try {
@@ -4423,7 +4581,10 @@ export default function CustomerCatalog({ shopId: propShopId }) {
     setItems([]);
     setShopInfo(null);
 
-    const q = query(collection(db, 'items'), where('uid', '==', resolvedShopUid));
+    const q = query(
+      collection(db, 'items'),
+      where('uid', '==', resolvedShopUid)
+    );
 
     const unsub = onSnapshot(
       q,
@@ -4437,7 +4598,11 @@ export default function CustomerCatalog({ shopId: propShopId }) {
             .map((ci) => {
               const fresh = data.find((d) => d.id === ci.item.id);
               if (!fresh) return null;
-              return { ...ci, item: fresh, priceInfo: calcPrice(fresh) };
+              return {
+                ...ci,
+                item: fresh,
+                priceInfo: calcPrice(fresh),
+              };
             })
             .filter(Boolean)
         );
@@ -4456,7 +4621,13 @@ export default function CustomerCatalog({ shopId: propShopId }) {
       try {
         const sources = await Promise.allSettled([
           getDoc(doc(db, 'users', resolvedShopUid)),
-          getDocs(query(collection(db, 'invoice_settings'), where('uid', '==', resolvedShopUid), limit(1))),
+          getDocs(
+            query(
+              collection(db, 'invoice_settings'),
+              where('uid', '==', resolvedShopUid),
+              limit(1)
+            )
+          ),
           getDoc(doc(db, 'generalSettings', resolvedShopUid)),
           getDoc(doc(db, 'shopDirectory', publicShopId)),
           getDoc(doc(db, 'shopDirectory', resolvedShopUid)),
@@ -4483,14 +4654,19 @@ export default function CustomerCatalog({ shopId: propShopId }) {
           const val = result.value;
           let data = null;
 
-          if (typeof val.exists === 'function' || typeof val.exists === 'boolean') {
-            const exists = typeof val.exists === 'function' ? val.exists() : val.exists;
+          if (
+            typeof val.exists === 'function' ||
+            typeof val.exists === 'boolean'
+          ) {
+            const exists =
+              typeof val.exists === 'function' ? val.exists() : val.exists;
             data = exists ? val.data() : null;
           } else if (val.empty !== undefined) {
             data = val.empty ? null : val.docs[0]?.data();
           }
 
           if (!data) return;
+
           fields.forEach((f) => {
             if (!merged[f] && data[f]) merged[f] = data[f];
           });
@@ -4529,13 +4705,16 @@ export default function CustomerCatalog({ shopId: propShopId }) {
     };
   }, [publicShopId, resolvedShopUid, shopResolved]);
 
-  useEffect(() => () => {
-    if (unsubRef.current) unsubRef.current();
+  useEffect(() => {
+    return () => {
+      if (unsubRef.current) unsubRef.current();
+    };
   }, []);
 
   // Auto-open highlighted item
   useEffect(() => {
     if (!highlightId || !items.length) return;
+
     const key = `${publicShopId}:${highlightId}`;
     if (autoOpenedRef.current === key) return;
 
@@ -4552,24 +4731,34 @@ export default function CustomerCatalog({ shopId: propShopId }) {
   }, [highlightId, items, publicShopId]);
 
   // Cart actions
-  const addToCart = useCallback((item, qty) => {
-    setCart((prev) => {
-      const existing = prev.find((c) => c.item.id === item.id);
-      const priceInfo = calcPrice(item);
-      if (existing) {
-        return prev.map((c) =>
-          c.item.id === item.id ? { ...c, qty: c.qty + qty, priceInfo } : c
-        );
-      }
-      return [...prev, { item, qty, priceInfo }];
-    });
-    showToastMessage(`${item.sinhalaName || item.name} ${TEXT.addedToCart}`);
-  }, [showToastMessage]);
+  const addToCart = useCallback(
+    (item, qty) => {
+      setCart((prev) => {
+        const existing = prev.find((c) => c.item.id === item.id);
+        const priceInfo = calcPrice(item);
+
+        if (existing) {
+          return prev.map((c) =>
+            c.item.id === item.id
+              ? { ...c, qty: c.qty + qty, priceInfo }
+              : c
+          );
+        }
+
+        return [...prev, { item, qty, priceInfo }];
+      });
+
+      showToastMessage(`${item.sinhalaName || item.name} ${TEXT.addedToCart}`);
+    },
+    [showToastMessage]
+  );
 
   const updateCartQty = useCallback((itemId, newQty) => {
     setCart((prev) =>
       prev.map((c) =>
-        c.item.id === itemId ? { ...c, qty: Math.max(1, newQty) } : c
+        c.item.id === itemId
+          ? { ...c, qty: Math.max(1, newQty) }
+          : c
       )
     );
   }, []);
@@ -4581,12 +4770,19 @@ export default function CustomerCatalog({ shopId: propShopId }) {
   const clearCart = useCallback(() => {
     setCart([]);
     if (publicShopId) {
-      try { localStorage.removeItem(`cart_${publicShopId}`); } catch {}
+      try {
+        localStorage.removeItem(`cart_${publicShopId}`);
+      } catch {}
     }
   }, [publicShopId]);
 
-  const handleContactClick = useCallback((item) => setContactItem(item), []);
-  const handleShareClick = useCallback((item) => setShareItem(item), []);
+  const handleContactClick = useCallback((item) => {
+    setContactItem(item);
+  }, []);
+
+  const handleShareClick = useCallback((item) => {
+    setShareItem(item);
+  }, []);
 
   const closeSelectedItem = useCallback(() => {
     setSelItem(null);
@@ -4597,36 +4793,45 @@ export default function CustomerCatalog({ shopId: propShopId }) {
     }
   }, [highlightId, router]);
 
-  const handleShopSelect = useCallback((newShopId, shopData) => {
-    if (newShopId === publicShopId) {
-      showToastMessage(`${shopData?.name || ''} — දැනටමත් මෙම වෙළඳසැලේ සිටී`);
-      return;
-    }
+  const handleShopSelect = useCallback(
+    (newShopId, shopData) => {
+      if (newShopId === publicShopId) {
+        showToastMessage(
+          `${shopData?.name || ''} — දැනටමත් මෙම වෙළඳසැලේ සිටී`
+        );
+        return;
+      }
 
-    setCart([]);
-    setSearch('');
-    setSelCat('');
-    setSelBrand('');
-    setSortBy('default');
-    setSelItem(null);
-    setShowSort(false);
-    setActiveShopId(newShopId);
+      setCart([]);
+      setSearch('');
+      setSelCat('');
+      setSelBrand('');
+      setSortBy('default');
+      setSelItem(null);
+      setShowSort(false);
+      setActiveShopId(newShopId);
 
-    if (!embedded) {
-      const nextUrl = `/pfi/${newShopId}`;
-      router.push(nextUrl);
-    }
+      if (!embedded) {
+        router.push(`/pfi/${newShopId}`);
+      }
 
-    showToastMessage(`${shopData?.name || ''} ${TEXT.shopSelected}`);
-  }, [publicShopId, showToastMessage, embedded, router]);
+      showToastMessage(`${shopData?.name || ''} ${TEXT.shopSelected}`);
+    },
+    [publicShopId, showToastMessage, embedded, router]
+  );
 
   // Derived
-  const cartCount = useMemo(() => cart.reduce((s, c) => s + c.qty, 0), [cart]);
+  const cartCount = useMemo(
+    () => cart.reduce((s, c) => s + c.qty, 0),
+    [cart]
+  );
 
   const cats = useMemo(() => {
     const s = new Set();
     items.forEach((i) => {
-      if (!i.isHidden && !i.isPurchaseOnly && i.categoryName) s.add(i.categoryName);
+      if (!i.isHidden && !i.isPurchaseOnly && i.categoryName) {
+        s.add(i.categoryName);
+      }
     });
     return [...s].sort();
   }, [items]);
@@ -4634,7 +4839,9 @@ export default function CustomerCatalog({ shopId: propShopId }) {
   const brands = useMemo(() => {
     const s = new Set();
     items.forEach((i) => {
-      if (!i.isHidden && !i.isPurchaseOnly && i.brandName) s.add(i.brandName);
+      if (!i.isHidden && !i.isPurchaseOnly && i.brandName) {
+        s.add(i.brandName);
+      }
     });
     return [...s].sort();
   }, [items]);
@@ -4672,7 +4879,12 @@ export default function CustomerCatalog({ shopId: propShopId }) {
     [items]
   );
 
-  const hasFilters = !!(search || selCat || selBrand || sortBy !== 'default');
+  const hasFilters = !!(
+    search ||
+    selCat ||
+    selBrand ||
+    sortBy !== 'default'
+  );
 
   const clearAll = useCallback(() => {
     setSearch('');
@@ -4732,6 +4944,7 @@ export default function CustomerCatalog({ shopId: propShopId }) {
     );
   }
 
+  // No shop selected
   if (!publicShopId) {
     return (
       <div
@@ -4752,18 +4965,31 @@ export default function CustomerCatalog({ shopId: propShopId }) {
         }
       >
         <GlobalStyles embedded={embedded} />
+
         <div style={{ textAlign: 'center', padding: 40 }}>
           <div style={{ fontSize: 60, marginBottom: 16 }}>🏪</div>
+
           <p
             style={{
               color: '#475569',
               fontSize: 16,
               fontWeight: 600,
-              marginBottom: 16,
+              marginBottom: 10,
             }}
           >
             {TEXT.noShop}
           </p>
+
+          <p
+            style={{
+              color: '#94a3b8',
+              fontSize: 13,
+              marginBottom: 18,
+            }}
+          >
+            {TEXT.selectShopDesc}
+          </p>
+
           <button
             onClick={() => setShowShopSelector(true)}
             style={{
@@ -4781,6 +5007,7 @@ export default function CustomerCatalog({ shopId: propShopId }) {
             🏪 {TEXT.selectShop}
           </button>
         </div>
+
         {showShopSelector && (
           <ShopSelectorModal
             currentShopId={publicShopId}
@@ -4973,7 +5200,8 @@ export default function CustomerCatalog({ shopId: propShopId }) {
                   position: 'relative',
                   background:
                     showSort || hasFilters ? '#eff6ff' : '#f1f5f9',
-                  color: showSort || hasFilters ? '#3b82f6' : '#374151',
+                  color:
+                    showSort || hasFilters ? '#3b82f6' : '#374151',
                 }}
               >
                 ⚙️
@@ -5029,8 +5257,12 @@ export default function CustomerCatalog({ shopId: propShopId }) {
                   outline: 'none',
                   boxSizing: 'border-box',
                 }}
-                onFocus={(e) => (e.target.style.borderColor = '#3b82f6')}
-                onBlur={(e) => (e.target.style.borderColor = '#cbd5e1')}
+                onFocus={(e) => {
+                  e.target.style.borderColor = '#3b82f6';
+                }}
+                onBlur={(e) => {
+                  e.target.style.borderColor = '#cbd5e1';
+                }}
                 placeholder={TEXT.search}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -5090,6 +5322,7 @@ export default function CustomerCatalog({ shopId: propShopId }) {
               >
                 {TEXT.all}
               </button>
+
               {cats.map((c) => (
                 <button
                   key={c}
@@ -5172,6 +5405,7 @@ export default function CustomerCatalog({ shopId: propShopId }) {
                   >
                     {TEXT.brands}:
                   </span>
+
                   <button
                     onClick={() => setSelBrand('')}
                     style={{
@@ -5189,6 +5423,7 @@ export default function CustomerCatalog({ shopId: propShopId }) {
                   >
                     {TEXT.all}
                   </button>
+
                   {brands.map((b) => (
                     <button
                       key={b}
@@ -5285,7 +5520,10 @@ export default function CustomerCatalog({ shopId: propShopId }) {
                 margin: 14,
               }}
             >
-              <div style={{ fontSize: 44, marginBottom: 10 }}>📦</div>
+              <div style={{ fontSize: 44, marginBottom: 10 }}>
+                {items.length === 0 ? '🏪' : '🔍'}
+              </div>
+
               <p
                 style={{
                   fontSize: 15,
@@ -5298,6 +5536,7 @@ export default function CustomerCatalog({ shopId: propShopId }) {
                   ? TEXT.noItemsRegistered
                   : TEXT.noResults}
               </p>
+
               <p
                 style={{
                   fontSize: 12,
@@ -5306,26 +5545,54 @@ export default function CustomerCatalog({ shopId: propShopId }) {
                 }}
               >
                 {items.length === 0
-                  ? `Shop ID: ${publicShopId} | UID: ${resolvedShopUid || 'not resolved'}`
+                  ? TEXT.selectShopDesc
                   : TEXT.tryAgain}
               </p>
-              {hasFilters && (
-                <button
-                  onClick={clearAll}
-                  style={{
-                    background: '#3b82f6',
-                    color: 'white',
-                    padding: '9px 18px',
-                    borderRadius: 9,
-                    fontSize: 12,
-                    fontWeight: 700,
-                    border: 'none',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {TEXT.clearSearch}
-                </button>
-              )}
+
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  justifyContent: 'center',
+                  flexWrap: 'wrap',
+                }}
+              >
+                {items.length === 0 && (
+                  <button
+                    onClick={() => setShowShopSelector(true)}
+                    style={{
+                      background: 'linear-gradient(135deg,#7c3aed,#3b82f6)',
+                      color: 'white',
+                      padding: '10px 20px',
+                      borderRadius: 10,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      border: 'none',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    🏪 {TEXT.selectShop}
+                  </button>
+                )}
+
+                {hasFilters && (
+                  <button
+                    onClick={clearAll}
+                    style={{
+                      background: '#3b82f6',
+                      color: 'white',
+                      padding: '10px 20px',
+                      borderRadius: 10,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      border: 'none',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {TEXT.clearSearch}
+                  </button>
+                )}
+              </div>
             </div>
           ) : (
             <div className="cc-grid">
@@ -5343,6 +5610,7 @@ export default function CustomerCatalog({ shopId: propShopId }) {
               ))}
             </div>
           )}
+
           <div style={{ height: 20 }} />
         </div>
       </div>
