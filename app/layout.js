@@ -2,14 +2,14 @@ import './globals.css';
 import { UserAuthContextProvider } from '@/context/UserContext';
 
 export const metadata = {
-  title: 'Weerakkodi POS',
-  description: 'POS App',
+  title:       'Weerakkodi POS',
+  description: 'POS & Inventory Management System',
 };
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
-      <body style={{ margin: 0, padding: 0 }}>
+    <html lang="si">
+      <body>
         <UserAuthContextProvider>
           {children}
         </UserAuthContextProvider>

@@ -1,14 +1,14 @@
 ﻿'use client';
 
 // src/components/VehicleExpenseTab.jsx
-// ═══════════════════════════════════════════════════════════════
-// v3.0 — Full Vehicle Expense Manager
+// ---------------------------------------------------------------
+// v3.0 � Full Vehicle Expense Manager
 // Multi-language (SI/EN) + Gallery/Camera Receipt
 // Next.js compatible
-// ═══════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { db } from '@/shared/firebase-config';
+import { db } from '@/lib/firebase';
 import { useUserAuth } from '@/context/UserContext';
 import {
   collection, addDoc, updateDoc, deleteDoc, doc,
@@ -16,9 +16,9 @@ import {
   serverTimestamp, Timestamp, increment
 } from 'firebase/firestore';
 
-/* ═══════════════════════════════════════════════════════════
+/* -----------------------------------------------------------
    HELPERS
-   ═══════════════════════════════════════════════════════════ */
+   ----------------------------------------------------------- */
 const toNum = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 const fmtC = v => toNum(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtQ = v => { const n = Math.round(toNum(v) * 100) / 100; return n % 1 === 0 ? String(n) : n.toFixed(2); };
@@ -100,84 +100,84 @@ const rangeEnd = f => {
   return Date.now() + 86400000;
 };
 
-const PLACEHOLDER_IMG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Crect width='60' height='60' fill='%23f1f5f9'/%3E%3Ctext x='50%25' y='54%25' text-anchor='middle' fill='%2394a3b8' font-size='24'%3E📦%3C/text%3E%3C/svg%3E";
+const PLACEHOLDER_IMG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Crect width='60' height='60' fill='%23f1f5f9'/%3E%3Ctext x='50%25' y='54%25' text-anchor='middle' fill='%2394a3b8' font-size='24'%3E??%3C/text%3E%3C/svg%3E";
 
-/* ═══════════════════════════════════════════════════════════
+/* -----------------------------------------------------------
    TRANSLATIONS
-   ═══════════════════════════════════════════════════════════ */
+   ----------------------------------------------------------- */
 const TRANSLATIONS = {
   si: {
-    pageTitle: 'වාහන වියදම් කළමනාකරණය',
-    total: 'මුළු වියදම්', entries: 'ඇතුළත් කිරීම්',
-    list: 'ලැයිස්තුව', analytics: 'විශ්ලේෂණ',
-    addExpense: 'වියදමක්', editExpense: 'වියදම සංස්කරණය',
-    newExpense: 'නව වියදමක්',
-    vehicle: 'වාහනය', selectVehicle: '-- තෝරන්න --',
-    date: 'දිනය', time: 'වේලාව',
-    expenseType: 'වියදම් වර්ගය',
-    amount: 'මුදල', description: 'විස්තරය',
-    paymentMethod: 'ගෙවීම් ක්‍රමය',
-    bankAccount: 'බැංකු ගිණුම', noBankAccounts: 'බැංකු ගිණුම් නොමැත.',
-    reference: 'යොමු අංකය', supplier: 'Supplier',
-    selectSupplier: 'Supplier තෝරන්න...',
-    notes: 'සටහන්', receipt: 'රිසිට්පත',
-    addReceipt: 'රිසිට්පත එක් කරන්න',
-    receiptSource: 'පින්තූරය කොතැනින් ගන්නද?',
-    gallery: 'Gallery / Folder තෝරන්න',
-    camera: 'Camera එකෙන් ගන්න',
-    expenseItems: 'වියදම් භාණ්ඩ',
-    addItem: 'භාණ්ඩයක්', itemsAutoNote: 'භාණ්ඩ එකතු කළොත් මුළු මුදල ස්වයංක්‍රීයව ගණනය වේ.',
-    addItemsPlaceholder: 'භාණ්ඩ එකතු කරන්න',
-    itemsTotal: 'භාණ්ඩ මුළු එකතුව',
-    qty: 'ප්‍රමාණය', unitPrice: 'ඒකක මිල', lineTotal: 'එකතුව',
-    save: 'සුරකින්න', cancel: 'අවලංගු', saving: 'සුරකිමින්...',
-    update: 'යාවත්කාලීන',
-    edit: 'සංස්කරණය', duplicate: 'අනුපිටපත්', delete: 'මකන්න',
-    viewReceipt: 'රිසිට්පත',
-    deleteConfirm: 'මෙම වියදම මකා දැමීමට අවශ්‍යද?',
-    noExpenses: 'වාහන වියදම් නොමැත', clearFilters: 'පෙරහන් ඉවත්',
-    today: 'අද', thisWeek: 'සතිය', thisMonth: 'මාසය',
-    lastMonth: 'පසු මාසය', thisYear: 'මේ වසර', allTime: 'සමස්ත',
-    search: 'සොයන්න...', allTypes: 'සියලුම වර්ග', allVehicles: 'සියලුම',
-    newest: 'අලුත්ම', oldest: 'පැරණිම', highest: 'වැඩිම', lowest: 'අඩුම',
+    pageTitle: '???? ?????? ?????????',
+    total: '???? ??????', entries: '?????? ??????',
+    list: '?????????', analytics: '????????',
+    addExpense: '???????', editExpense: '????? ????????',
+    newExpense: '?? ???????',
+    vehicle: '?????', selectVehicle: '-- ?????? --',
+    date: '????', time: '?????',
+    expenseType: '?????? ?????',
+    amount: '????', description: '???????',
+    paymentMethod: '?????? ??????',
+    bankAccount: '????? ?????', noBankAccounts: '????? ?????? ?????.',
+    reference: '???? ????', supplier: 'Supplier',
+    selectSupplier: 'Supplier ??????...',
+    notes: '?????', receipt: '????????',
+    addReceipt: '???????? ??? ?????',
+    receiptSource: '???????? ???????? ??????',
+    gallery: 'Gallery / Folder ??????',
+    camera: 'Camera ????? ????',
+    expenseItems: '?????? ?????',
+    addItem: '????????', itemsAutoNote: '????? ???? ????? ???? ???? ???????????? ???? ??.',
+    addItemsPlaceholder: '????? ???? ?????',
+    itemsTotal: '????? ???? ?????',
+    qty: '????????', unitPrice: '??? ???', lineTotal: '?????',
+    save: '????????', cancel: '??????', saving: '?????????...',
+    update: '??????????',
+    edit: '????????', duplicate: '?????????', delete: '?????',
+    viewReceipt: '????????',
+    deleteConfirm: '??? ????? ??? ?????? ????????',
+    noExpenses: '???? ?????? ?????', clearFilters: '?????? ????',
+    today: '??', thisWeek: '????', thisMonth: '????',
+    lastMonth: '??? ????', thisYear: '?? ???', allTime: '?????',
+    search: '??????...', allTypes: '?????? ????', allVehicles: '??????',
+    newest: '??????', oldest: '??????', highest: '?????', lowest: '????',
     exportCSV: 'CSV', print: 'Print',
-    byType: 'වර්ග අනුව', byVehicle: 'වාහන අනුව', byPayment: 'ගෙවීම් අනුව',
-    avgKmL: 'සාමාන්‍ය KM/L', fuelEfficiency: 'Fuel efficiency',
-    previous: 'පෙර', next: 'ඊළඟ',
-    categoryManage: 'වර්ග කළමනාකරණය', newCategoryName: 'නව වර්ග නම',
-    deleteCategoryConfirm: 'මෙම වර්ගය මකන්නද?',
-    categoryAdded: 'වර්ගය එක් විය!', categoryDeleted: 'වර්ගය මකා දැමිණි!',
-    supplierPicker: 'සැපයුම්කරු තෝරන්න',
-    searchSupplier: 'සැපයුම්කරු සොයන්න...',
-    newSupplier: 'නව සැපයුම්කරු',
-    supplierName: 'සැපයුම්කරු නම', companyName: 'ආයතනයේ නම',
-    phone: 'දුරකථන', saveSupplier: 'සැපයුම්කරු සුරකින්න',
-    supplierNameRequired: 'සැපයුම්කරු නම අවශ්‍යයි',
-    supplierAdded: 'සැපයුම්කරු එක් විය!',
-    noSuppliers: 'සැපයුම්කරුවන් නොමැත',
-    noMatchingSuppliers: 'ගැලපෙන සැපයුම්කරුවන් නොමැත',
-    searchItems: 'භාණ්ඩය සොයන්න...', noMatchingItems: 'ගැලපෙන භාණ්ඩ නොමැත',
-    noItems: 'භාණ්ඩ නොමැත', orTypeManually: 'හෝ අතින් ටයිප් කරන්න',
-    saved: 'සුරකින ලදී!', updated: 'යාවත්කාලීන විය!',
-    deleted: 'මකා දමන ලදී!', duplicated: 'අනුපිටපත් විය!',
-    imageTooLarge: '5MB ට වඩා විශාලයි', imageProcessFailed: 'පින්තූරය process කළ නොහැක',
-    selectVehicleError: 'වාහනය තෝරන්න', enterAmount: 'මුදල ඇතුළත් කරන්න',
-    selectBankError: 'බැංකු ගිණුම තෝරන්න',
-    loading: 'පූරණය වෙමින්...',
-    manualAmount: 'Manual Amount', itemsAutoAmount: 'භාණ්ඩවල එකතුව අනුව මුදල ස්වයංක්‍රීයව සැකසේ',
-    fuelTracking: 'Fuel Tracking', litres: 'ලීටර', pricePerLitre: 'ලීටර මිල',
+    byType: '???? ????', byVehicle: '???? ????', byPayment: '?????? ????',
+    avgKmL: '???????? KM/L', fuelEfficiency: 'Fuel efficiency',
+    previous: '???', next: '???',
+    categoryManage: '???? ?????????', newCategoryName: '?? ???? ??',
+    deleteCategoryConfirm: '??? ????? ???????',
+    categoryAdded: '????? ??? ???!', categoryDeleted: '????? ??? ??????!',
+    supplierPicker: '?????????? ??????',
+    searchSupplier: '?????????? ??????...',
+    newSupplier: '?? ??????????',
+    supplierName: '?????????? ??', companyName: '?????? ??',
+    phone: '??????', saveSupplier: '?????????? ????????',
+    supplierNameRequired: '?????????? ?? ????????',
+    supplierAdded: '?????????? ??? ???!',
+    noSuppliers: '????????????? ?????',
+    noMatchingSuppliers: '?????? ????????????? ?????',
+    searchItems: '?????? ??????...', noMatchingItems: '?????? ????? ?????',
+    noItems: '????? ?????', orTypeManually: '?? ????? ????? ?????',
+    saved: '?????? ???!', updated: '?????????? ???!',
+    deleted: '??? ??? ???!', duplicated: '????????? ???!',
+    imageTooLarge: '5MB ? ??? ???????', imageProcessFailed: '???????? process ?? ?????',
+    selectVehicleError: '????? ??????', enterAmount: '???? ?????? ?????',
+    selectBankError: '????? ????? ??????',
+    loading: '????? ??????...',
+    manualAmount: 'Manual Amount', itemsAutoAmount: '??????? ????? ???? ???? ???????????? ?????',
+    fuelTracking: 'Fuel Tracking', litres: '????', pricePerLitre: '???? ???',
     kmBefore: 'KM Before', kmAfter: 'KM After',
-    distanceDriven: 'දාවූ දුර', autoTotal: 'Auto Total',
+    distanceDriven: '???? ???', autoTotal: 'Auto Total',
     tyreTracking: 'Tyre Tracking', tyreBrand: 'Brand', tyrePosition: 'Position',
     installedDate: 'Installed Date', installedKm: 'Installed KM',
     currentKm: 'Current KM', expectedLifeKm: 'Expected Life KM',
-    usedKm: 'දාවූ KM', days: 'දින', remaining: 'ඉතිරි',
+    usedKm: '???? KM', days: '???', remaining: '?????',
     serviceTracking: 'Service Tracking', serviceKm: 'Service KM',
     nextServiceKm: 'Next Service KM', serviceDetails: 'Service Details',
     costPerKm: '/KM',
-    cash: '💵 මුදල්', bank: '🏦 බැංකු', card: '💳 කාඩ්',
-    cheque: '📝 චෙක්', credit: '📋 ණය',
-    unit: 'ඒකකය',
+    cash: '?? ?????', bank: '?? ?????', card: '?? ????',
+    cheque: '?? ????', credit: '?? ??',
+    unit: '????',
   },
   en: {
     pageTitle: 'Vehicle Expense Manager',
@@ -248,26 +248,26 @@ const TRANSLATIONS = {
     serviceTracking: 'Service Tracking', serviceKm: 'Service KM',
     nextServiceKm: 'Next Service KM', serviceDetails: 'Service Details',
     costPerKm: '/KM',
-    cash: '💵 Cash', bank: '🏦 Bank', card: '💳 Card',
-    cheque: '📝 Cheque', credit: '📋 Credit',
+    cash: '?? Cash', bank: '?? Bank', card: '?? Card',
+    cheque: '?? Cheque', credit: '?? Credit',
     unit: 'Unit',
   },
 };
 
-/* ═══════════════════════════════════════════════════════════
+/* -----------------------------------------------------------
    EXPENSE TYPE CONFIG
-   ═══════════════════════════════════════════════════════════ */
+   ----------------------------------------------------------- */
 const EXP_TYPES = {
-  fuel:     { label: 'ඩීසල් / Fuel',     labelEn: 'Fuel',         icon: '⛽', color: '#ea580c', bg: '#fff7ed', border: '#fdba74' },
-  tyre:     { label: 'ටයර් / Tyre',       labelEn: 'Tyre',         icon: '🛞', color: '#2563eb', bg: '#eff6ff', border: '#93c5fd' },
-  service:  { label: 'Service / Repair',  labelEn: 'Service',      icon: '🔧', color: '#7c3aed', bg: '#faf5ff', border: '#c4b5fd' },
-  oil:      { label: 'Oil / Lubricant',   labelEn: 'Oil',          icon: '🛢️', color: '#0891b2', bg: '#ecfeff', border: '#a5f3fc' },
-  battery:  { label: 'Battery',           labelEn: 'Battery',      icon: '🔋', color: '#059669', bg: '#ecfdf5', border: '#6ee7b7' },
-  insurance:{ label: 'Insurance',         labelEn: 'Insurance',    icon: '📋', color: '#0284c7', bg: '#f0f9ff', border: '#bae6fd' },
-  licence:  { label: 'Licence / Revenue', labelEn: 'Licence',      icon: '📄', color: '#65a30d', bg: '#f7fee7', border: '#d9f99d' },
-  washing:  { label: 'Washing',           labelEn: 'Washing',      icon: '🚿', color: '#0284c7', bg: '#f0f9ff', border: '#bae6fd' },
-  parking:  { label: 'Parking / Toll',    labelEn: 'Parking',      icon: '🅿️', color: '#9333ea', bg: '#fdf4ff', border: '#e9d5ff' },
-  other:    { label: 'වෙනත් / Other',    labelEn: 'Other',        icon: '📌', color: '#475569', bg: '#f8fafc', border: '#cbd5e1' },
+  fuel:     { label: '????? / Fuel',     labelEn: 'Fuel',         icon: '?', color: '#ea580c', bg: '#fff7ed', border: '#fdba74' },
+  tyre:     { label: '???? / Tyre',       labelEn: 'Tyre',         icon: '??', color: '#2563eb', bg: '#eff6ff', border: '#93c5fd' },
+  service:  { label: 'Service / Repair',  labelEn: 'Service',      icon: '??', color: '#7c3aed', bg: '#faf5ff', border: '#c4b5fd' },
+  oil:      { label: 'Oil / Lubricant',   labelEn: 'Oil',          icon: '???', color: '#0891b2', bg: '#ecfeff', border: '#a5f3fc' },
+  battery:  { label: 'Battery',           labelEn: 'Battery',      icon: '??', color: '#059669', bg: '#ecfdf5', border: '#6ee7b7' },
+  insurance:{ label: 'Insurance',         labelEn: 'Insurance',    icon: '??', color: '#0284c7', bg: '#f0f9ff', border: '#bae6fd' },
+  licence:  { label: 'Licence / Revenue', labelEn: 'Licence',      icon: '??', color: '#65a30d', bg: '#f7fee7', border: '#d9f99d' },
+  washing:  { label: 'Washing',           labelEn: 'Washing',      icon: '??', color: '#0284c7', bg: '#f0f9ff', border: '#bae6fd' },
+  parking:  { label: 'Parking / Toll',    labelEn: 'Parking',      icon: '???', color: '#9333ea', bg: '#fdf4ff', border: '#e9d5ff' },
+  other:    { label: '????? / Other',    labelEn: 'Other',        icon: '??', color: '#475569', bg: '#f8fafc', border: '#cbd5e1' },
 };
 const getExpMeta = (k, lang = 'si') => {
   const m = EXP_TYPES[k] || EXP_TYPES.other;
@@ -278,9 +278,9 @@ const DEFAULT_CATEGORIES = Object.entries(EXP_TYPES).map(([k, v]) => ({
   key: k, name: v.label, icon: v.icon, color: v.color,
 }));
 
-/* ═══════════════════════════════════════════════════════════
+/* -----------------------------------------------------------
    FUEL / TYRE STATS
-   ═══════════════════════════════════════════════════════════ */
+   ----------------------------------------------------------- */
 const fuelCalc = f => {
   const litres = toNum(f.fuelLitres), kmB = toNum(f.kmBefore), kmA = toNum(f.kmAfter);
   const kmDriven = Math.max(0, kmA - kmB);
@@ -298,31 +298,31 @@ const tyreCalc = f => {
   return { iKm, cKm, kmUsed, daysUsed, expectedKm, remainingKm };
 };
 
-/* ═══════════════════════════════════════════════════════════
+/* -----------------------------------------------------------
    PAYMENT METHODS
-   ═══════════════════════════════════════════════════════════ */
+   ----------------------------------------------------------- */
 const PAY_METHODS = [
-  { value: 'cash',   icon: '💵', needsBank: false },
-  { value: 'bank',   icon: '🏦', needsBank: true  },
-  { value: 'card',   icon: '💳', needsBank: true  },
-  { value: 'cheque', icon: '📝', needsBank: true  },
-  { value: 'credit', icon: '📋', needsBank: false },
+  { value: 'cash',   icon: '??', needsBank: false },
+  { value: 'bank',   icon: '??', needsBank: true  },
+  { value: 'card',   icon: '??', needsBank: true  },
+  { value: 'cheque', icon: '??', needsBank: true  },
+  { value: 'credit', icon: '??', needsBank: false },
 ];
 
 const getPayLabel = (value, lang) => {
   const map = {
-    cash:   { si: '💵 මුදල්',  en: '💵 Cash' },
-    bank:   { si: '🏦 බැංකු',  en: '🏦 Bank' },
-    card:   { si: '💳 කාඩ්',   en: '💳 Card' },
-    cheque: { si: '📝 චෙක්',   en: '📝 Cheque' },
-    credit: { si: '📋 ණය',     en: '📋 Credit' },
+    cash:   { si: '?? ?????',  en: '?? Cash' },
+    bank:   { si: '?? ?????',  en: '?? Bank' },
+    card:   { si: '?? ????',   en: '?? Card' },
+    cheque: { si: '?? ????',   en: '?? Cheque' },
+    credit: { si: '?? ??',     en: '?? Credit' },
   };
   return map[value]?.[lang] || map[value]?.en || value;
 };
 
-/* ═══════════════════════════════════════════════════════════
+/* -----------------------------------------------------------
    INITIAL FORM
-   ═══════════════════════════════════════════════════════════ */
+   ----------------------------------------------------------- */
 const INIT_FORM = {
   vehicleId: '', expenseType: 'fuel',
   expenseDate: '', expenseTime: '',
@@ -339,9 +339,9 @@ const INIT_FORM = {
   issueDate: '', expiryDate: '', referenceNo: '', company: '',
 };
 
-/* ═══════════════════════════════════════════════════════════
+/* -----------------------------------------------------------
    ITEM SEARCH DROPDOWN
-   ═══════════════════════════════════════════════════════════ */
+   ----------------------------------------------------------- */
 const ItemSearchDropdown = ({ inventoryItems, value, onSelect, onNameChange, currentName, t }) => {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -375,10 +375,10 @@ const ItemSearchDropdown = ({ inventoryItems, value, onSelect, onNameChange, cur
           <div>
             <div style={{ fontWeight: 700, fontSize: 13 }}>{selectedItem.name}</div>
             {selectedItem.sinhalaName && <div style={{ fontSize: 11, color: '#64748b' }}>{selectedItem.sinhalaName}</div>}
-            <div style={{ fontSize: 10, color: '#94a3b8' }}>{selectedItem.itemCode}{selectedItem.brandName ? ` • ${selectedItem.brandName}` : ''}</div>
+            <div style={{ fontSize: 10, color: '#94a3b8' }}>{selectedItem.itemCode}{selectedItem.brandName ? ` � ${selectedItem.brandName}` : ''}</div>
           </div>
         </div>
-        <button onClick={() => { onSelect(null); setSearch(''); }} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', cursor: 'pointer', fontWeight: 700, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+        <button onClick={() => { onSelect(null); setSearch(''); }} style={{ width: 28, height: 28, borderRadius: '50%', border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', cursor: 'pointer', fontWeight: 700, fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>?</button>
       </div>
     );
   }
@@ -386,18 +386,18 @@ const ItemSearchDropdown = ({ inventoryItems, value, onSelect, onNameChange, cur
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
       <div style={{ position: 'relative' }}>
-        <input value={open ? search : currentName || ''} onChange={e => { if (open) setSearch(e.target.value); else onNameChange(e.target.value); }} onFocus={() => { setSearch(''); setOpen(true); }} placeholder={`🔍 ${t.searchItems}`} style={ST.inpSm} />
-        {!open && <button onClick={() => { setOpen(true); setTimeout(() => inputRef.current?.focus(), 50); }} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 12 }}>▼</button>}
+        <input value={open ? search : currentName || ''} onChange={e => { if (open) setSearch(e.target.value); else onNameChange(e.target.value); }} onFocus={() => { setSearch(''); setOpen(true); }} placeholder={`?? ${t.searchItems}`} style={ST.inpSm} />
+        {!open && <button onClick={() => { setOpen(true); setTimeout(() => inputRef.current?.focus(), 50); }} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 12 }}>?</button>}
       </div>
       {open && (
         <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100, background: 'white', border: '2px solid #3b82f6', borderRadius: 12, boxShadow: '0 12px 36px rgba(0,0,0,.15)', maxHeight: 340, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           <div style={{ padding: 8, borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
-            <input autoFocus ref={inputRef} value={search} onChange={e => setSearch(e.target.value)} placeholder={`🔍 ${t.search}`} style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 14, outline: 'none', boxSizing: 'border-box' }} />
+            <input autoFocus ref={inputRef} value={search} onChange={e => setSearch(e.target.value)} placeholder={`?? ${t.search}`} style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 14, outline: 'none', boxSizing: 'border-box' }} />
           </div>
           <div style={{ overflowY: 'auto', flex: 1, maxHeight: 280 }}>
             {filtered.length === 0 ? (
               <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
-                <span style={{ fontSize: 24 }}>🔍</span>
+                <span style={{ fontSize: 24 }}>??</span>
                 <div>{search ? t.noMatchingItems : t.noItems}</div>
                 <div style={{ fontSize: 11, color: '#94a3b8' }}>{t.orTypeManually}</div>
               </div>
@@ -410,7 +410,7 @@ const ItemSearchDropdown = ({ inventoryItems, value, onSelect, onNameChange, cur
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</div>
                     {item.sinhalaName && <div style={{ fontSize: 11, color: '#64748b' }}>{item.sinhalaName}</div>}
-                    <div style={{ fontSize: 10, color: '#94a3b8' }}>{item.itemCode}{item.brandName ? ` • ${item.brandName}` : ''}{item.uomName ? ` • ${item.uomName}` : ''}</div>
+                    <div style={{ fontSize: 10, color: '#94a3b8' }}>{item.itemCode}{item.brandName ? ` � ${item.brandName}` : ''}{item.uomName ? ` � ${item.uomName}` : ''}</div>
                   </div>
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
                     {toNum(item.buyingPrice) > 0 && <div style={{ fontSize: 12, fontWeight: 700, color: '#059669' }}>Rs.{fmtC(item.buyingPrice)}</div>}
@@ -426,13 +426,13 @@ const ItemSearchDropdown = ({ inventoryItems, value, onSelect, onNameChange, cur
   );
 };
 
-/* ═══════════════════════════════════════════════════════════
+/* -----------------------------------------------------------
    MAIN COMPONENT
-   ═══════════════════════════════════════════════════════════ */
+   ----------------------------------------------------------- */
 export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: externalLang }) {
   const { user } = useUserAuth();
 
-  // ── Language ──
+  // -- Language --
   const [lang, setLang] = useState(externalLang || 'si');
 
   useEffect(() => {
@@ -460,7 +460,7 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
 
   const t = useMemo(() => TRANSLATIONS[lang] || TRANSLATIONS.si, [lang]);
 
-  // ── State ──
+  // -- State --
   const [vehicles, setVehicles] = useState(externalVehicles || []);
   const [expenses, setExpenses] = useState([]);
   const [bankAccounts, setBankAccounts] = useState([]);
@@ -526,7 +526,7 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
     return suppliers.filter(sup => `${sup.name || ''} ${sup.companyName || ''} ${sup.phone || ''}`.toLowerCase().includes(s));
   }, [suppliers, supplierSearch]);
 
-  // ── LOAD DATA ──
+  // -- LOAD DATA --
   useEffect(() => {
     if (!user?.uid) { setLoading(false); return; }
     const unsubs = [];
@@ -535,13 +535,13 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
     unsubs.push(onSnapshot(collection(db, `users/${user.uid}/bankAccounts`), s => setBankAccounts(s.docs.map(d => ({ id: d.id, ...d.data() })))));
     unsubs.push(onSnapshot(query(collection(db, 'suppliers'), where('uid', '==', user.uid)), s => { const list = s.docs.map(d => ({ id: d.id, ...d.data() })); list.sort((a, b) => (a.name || '').localeCompare(b.name || '')); setSuppliers(list); }));
     unsubs.push(onSnapshot(query(collection(db, 'items'), where('uid', '==', user.uid)), s => { const list = s.docs.map(d => ({ id: d.id, ...d.data() })); list.sort((a, b) => (a.name || '').localeCompare(b.name || '')); setInventoryItems(list); }));
-    unsubs.push(onSnapshot(query(collection(db, 'vehicleExpenseCategories'), where('uid', '==', user.uid)), s => { const custom = s.docs.map(d => ({ id: d.id, ...d.data(), isCustom: true })); setCategories([...DEFAULT_CATEGORIES, ...custom.map(c => ({ key: c.key || c.name, name: c.name, icon: c.icon || '📋', color: c.color || '#64748b', id: c.id, isCustom: true }))]); }, () => {}));
+    unsubs.push(onSnapshot(query(collection(db, 'vehicleExpenseCategories'), where('uid', '==', user.uid)), s => { const custom = s.docs.map(d => ({ id: d.id, ...d.data(), isCustom: true })); setCategories([...DEFAULT_CATEGORIES, ...custom.map(c => ({ key: c.key || c.name, name: c.name, icon: c.icon || '??', color: c.color || '#64748b', id: c.id, isCustom: true }))]); }, () => {}));
     return () => unsubs.forEach(f => typeof f === 'function' && f());
   }, [user, externalVehicles]);
 
   useEffect(() => { if (externalVehicles) setVehicles(externalVehicles); }, [externalVehicles]);
 
-  // ── FILTER ──
+  // -- FILTER --
   const filtered = useMemo(() => {
     let res = expenses.filter(e => {
       const ms = tsMs(e.timestamp || e.createdAt || e.expenseDate);
@@ -560,7 +560,7 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
     return res;
   }, [expenses, dateFilter, typeFilter, vehicleFilter, searchTerm, sortBy]);
 
-  // ── STATS ──
+  // -- STATS --
   const stats = useMemo(() => {
     const total = filtered.reduce((s, e) => s + toNum(e.amount), 0);
     const count = filtered.length;
@@ -580,39 +580,39 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
   useEffect(() => { setPage(1); }, [dateFilter, typeFilter, vehicleFilter, searchTerm, sortBy]);
   const clearFilters = () => { setSearchTerm(''); setTypeFilter('all'); setVehicleFilter('all'); setDateFilter('thisMonth'); setSortBy('newest'); setPage(1); };
 
-  // ── CATEGORY ──
-  const handleAddCategory = async () => { if (!newCatName.trim() || !user) return; try { await addDoc(collection(db, 'vehicleExpenseCategories'), { uid: user.uid, name: newCatName.trim(), key: newCatName.trim().toLowerCase().replace(/\s+/g, '_'), icon: '📋', color: '#64748b', createdAt: serverTimestamp() }); setNewCatName(''); showToast(`✅ ${t.categoryAdded}`); } catch (e) { showToast(`❌ ${e.message}`); } };
-  const handleDeleteCategory = async id => { if (!window.confirm(t.deleteCategoryConfirm)) return; try { await deleteDoc(doc(db, 'vehicleExpenseCategories', id)); showToast(`✅ ${t.categoryDeleted}`); } catch (e) { showToast(`❌ ${e.message}`); } };
+  // -- CATEGORY --
+  const handleAddCategory = async () => { if (!newCatName.trim() || !user) return; try { await addDoc(collection(db, 'vehicleExpenseCategories'), { uid: user.uid, name: newCatName.trim(), key: newCatName.trim().toLowerCase().replace(/\s+/g, '_'), icon: '??', color: '#64748b', createdAt: serverTimestamp() }); setNewCatName(''); showToast(`? ${t.categoryAdded}`); } catch (e) { showToast(`? ${e.message}`); } };
+  const handleDeleteCategory = async id => { if (!window.confirm(t.deleteCategoryConfirm)) return; try { await deleteDoc(doc(db, 'vehicleExpenseCategories', id)); showToast(`? ${t.categoryDeleted}`); } catch (e) { showToast(`? ${e.message}`); } };
 
-  // ── RECEIPT ──
+  // -- RECEIPT --
   const handleReceiptFile = async e => {
     const f = e.target.files?.[0]; if (!f) return;
-    if (f.size > 5 * 1024 * 1024) { showToast(`⚠️ ${t.imageTooLarge}`); return; }
+    if (f.size > 5 * 1024 * 1024) { showToast(`?? ${t.imageTooLarge}`); return; }
     const c = await compressImage(f);
     if (c) { setField('receipt', c); setShowReceiptSource(false); }
-    else showToast(`❌ ${t.imageProcessFailed}`);
+    else showToast(`? ${t.imageProcessFailed}`);
     if (receiptBrowseRef.current) receiptBrowseRef.current.value = '';
     if (receiptCameraRef.current) receiptCameraRef.current.value = '';
   };
 
-  // ── SUPPLIER ──
+  // -- SUPPLIER --
   const openSupplierPicker = () => { setSupplierSearch(''); setShowNewSupplier(false); setNewSupplier({ name: '', companyName: '', phone: '' }); setShowSupplierModal(true); };
   const handleSelectSupplier = sup => { setForm(p => ({ ...p, expenseBy: sup?.name || '', expenseBySupplierId: sup?.id || '' })); setShowSupplierModal(false); };
   const handleClearSupplier = () => setForm(p => ({ ...p, expenseBy: '', expenseBySupplierId: '' }));
   const handleCreateSupplier = async () => {
-    if (!user) return; if (!newSupplier.name.trim()) { showToast(`⚠️ ${t.supplierNameRequired}`); return; }
+    if (!user) return; if (!newSupplier.name.trim()) { showToast(`?? ${t.supplierNameRequired}`); return; }
     setCreatingSupplier(true);
     try {
       const payload = { uid: user.uid, name: newSupplier.name.trim(), companyName: newSupplier.companyName.trim(), phone: newSupplier.phone.trim(), email: '', city: '', address: '', openingBalance: 0, balance: 0, currentBalance: 0, createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
       const ref = await addDoc(collection(db, 'suppliers'), payload);
       setForm(p => ({ ...p, expenseBy: payload.name, expenseBySupplierId: ref.id }));
       setShowSupplierModal(false); setShowNewSupplier(false); setNewSupplier({ name: '', companyName: '', phone: '' });
-      showToast(`✅ ${t.supplierAdded}`);
-    } catch (e) { showToast(`❌ ${e.message}`); }
+      showToast(`? ${t.supplierAdded}`);
+    } catch (e) { showToast(`? ${e.message}`); }
     finally { setCreatingSupplier(false); }
   };
 
-  // ── ITEMS ──
+  // -- ITEMS --
   const addItemRow = () => setForm(p => ({ ...p, expenseItems: [...(p.expenseItems || []), { itemId: '', itemName: '', qty: '1', unitPrice: '', unit: '', itemImage: '' }] }));
   const removeItemRow = i => setForm(p => ({ ...p, expenseItems: (p.expenseItems || []).filter((_, j) => j !== i) }));
   const updateItemRow = (i, patch) => setForm(p => ({ ...p, expenseItems: (p.expenseItems || []).map((r, j) => j === i ? { ...r, ...patch } : r) }));
@@ -622,24 +622,24 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
     updateItemRow(idx, { itemId: item.id, itemName: item.name || '', unitPrice: toNum(item.buyingPrice) > 0 ? String(item.buyingPrice) : '', unit: item.uomName || '', itemImage: img || '' });
   };
 
-  // ── RESET ──
+  // -- RESET --
   const resetForm = () => { setForm({ ...INIT_FORM, expenseDate: todayStr(), expenseTime: nowHHMM(), installedDate: todayStr() }); setEditingId(null); setShowForm(false); setShowReceiptSource(false); if (receiptBrowseRef.current) receiptBrowseRef.current.value = ''; if (receiptCameraRef.current) receiptCameraRef.current.value = ''; };
 
-  // ── EDIT ──
+  // -- EDIT --
   const handleEdit = exp => {
     setForm({ ...INIT_FORM, ...exp, expenseDate: toDateStr(exp.expenseDate) || todayStr(), expenseTime: exp.expenseTime || nowHHMM(), installedDate: toDateStr(exp.installedDate) || todayStr(), amount: exp.amount !== undefined ? String(exp.amount) : '', fuelLitres: exp.fuelLitres !== undefined ? String(exp.fuelLitres) : '', pricePerLitre: exp.pricePerLitre !== undefined ? String(exp.pricePerLitre) : '', kmBefore: exp.kmBefore !== undefined ? String(exp.kmBefore) : '', kmAfter: exp.kmAfter !== undefined ? String(exp.kmAfter) : '', installedKm: exp.installedKm !== undefined ? String(exp.installedKm) : '', currentKm: exp.currentKm !== undefined ? String(exp.currentKm) : '', expectedLifeKm: exp.expectedLifeKm !== undefined ? String(exp.expectedLifeKm) : '', tyreQty: exp.tyreQty !== undefined ? String(exp.tyreQty) : '1', serviceKm: exp.serviceKm !== undefined ? String(exp.serviceKm) : '', nextServiceKm: exp.nextServiceKm !== undefined ? String(exp.nextServiceKm) : '', expenseItems: Array.isArray(exp.expenseItems) ? exp.expenseItems.map(r => ({ itemId: r.itemId || '', itemName: r.itemName || '', qty: String(r.qty ?? 1), unitPrice: String(r.unitPrice ?? ''), unit: r.unit || '', itemImage: r.itemImage || '' })) : [] });
     setEditingId(exp.id); setShowReceiptSource(false); setShowForm(true);
   };
 
-  // ── SAVE ──
+  // -- SAVE --
   const handleSave = async () => {
     if (!user?.uid) return;
-    if (!form.vehicleId) return showToast(`❌ ${t.selectVehicleError}`);
+    if (!form.vehicleId) return showToast(`? ${t.selectVehicleError}`);
     const meta = getExpMeta(form.expenseType, lang);
     let amount = hasItems ? itemsTotal : toNum(form.amount);
     if (form.expenseType === 'fuel' && amount <= 0) amount = fs.autoAmt;
-    if (amount <= 0) return showToast(`❌ ${t.enterAmount}`);
-    if (needsBank && !form.bankAccountId) return showToast(`❌ ${t.selectBankError}`);
+    if (amount <= 0) return showToast(`? ${t.enterAmount}`);
+    if (needsBank && !form.bankAccountId) return showToast(`? ${t.selectBankError}`);
     setSaving(true);
     try {
       const selectedVehicle = vehicles.find(v => v.id === form.vehicleId);
@@ -649,27 +649,27 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
       const payload = { ...form, expenseDate: dateStr, expenseTime: timeStr, installedDate: typeof form.installedDate === 'string' ? form.installedDate : todayStr(), amount, uid: user.uid, vehicleNo: selectedVehicle?.vehicleNo || '', vehicleType: selectedVehicle?.vehicleType || '', expenseTypeLabel: meta.label, kmDriven: form.expenseType === 'fuel' ? fs.kmDriven : 0, kmPerLitre: form.expenseType === 'fuel' ? fs.kmPerLitre : 0, kmUsed: form.expenseType === 'tyre' ? ts.kmUsed : 0, daysUsed: form.expenseType === 'tyre' ? ts.daysUsed : 0, remainingKm: form.expenseType === 'tyre' ? ts.remainingKm : 0, serviceRemainingKm: form.expenseType === 'service' ? Math.max(0, toNum(form.nextServiceKm) - toNum(form.currentKm)) : 0, expenseItems: normalizedItems, expenseItemsCount: normalizedItems.length, amountSource: normalizedItems.length ? 'items' : 'manual', timestamp: txTs, createdAt: editingId ? form.createdAt : serverTimestamp(), updatedAt: editingId ? serverTimestamp() : null };
       Object.keys(payload).forEach(k => { if (payload[k] === undefined || payload[k] === null) delete payload[k]; });
       let expenseRef;
-      if (editingId) { delete payload.createdAt; payload.updatedAt = serverTimestamp(); await updateDoc(doc(db, `users/${user.uid}/vehicleExpenses`, editingId), payload); expenseRef = { id: editingId }; showToast(`✅ ${t.updated}`); }
-      else { payload.createdAt = serverTimestamp(); expenseRef = await addDoc(collection(db, `users/${user.uid}/vehicleExpenses`), payload); showToast(`✅ ${t.saved}`); }
+      if (editingId) { delete payload.createdAt; payload.updatedAt = serverTimestamp(); await updateDoc(doc(db, `users/${user.uid}/vehicleExpenses`, editingId), payload); expenseRef = { id: editingId }; showToast(`? ${t.updated}`); }
+      else { payload.createdAt = serverTimestamp(); expenseRef = await addDoc(collection(db, `users/${user.uid}/vehicleExpenses`), payload); showToast(`? ${t.saved}`); }
       if (!editingId && form.paymentMethod === 'cash') { await addDoc(collection(db, `users/${user.uid}/cashTransactions`), { type: 'out', source: 'vehicleExpense', category: form.expenseType === 'fuel' ? 'vehicleFuel' : form.expenseType === 'tyre' ? 'vehicleTyre' : form.expenseType === 'service' ? 'vehicleService' : 'vehicleOther', amount, expenseId: expenseRef.id, expenseType: form.expenseType, vehicleId: form.vehicleId, vehicleNo: selectedVehicle?.vehicleNo || '', paymentMethod: 'cash', description: form.description || `${meta.icon} ${meta.displayLabel} - ${selectedVehicle?.vehicleNo || ''}`, date: dateStr, time: timeStr, timestamp: txTs, createdAt: serverTimestamp(), uid: user.uid, expenseBy: form.expenseBy || '', expenseBySupplierId: form.expenseBySupplierId || '', expenseItems: normalizedItems }); }
       if (!editingId && form.paymentMethod === 'bank' && form.bankAccountId) { const bankRef = doc(db, `users/${user.uid}/bankAccounts`, form.bankAccountId); await updateDoc(bankRef, { currentBalance: increment(-amount), liveBalance: increment(-amount), updatedAt: serverTimestamp() }); await addDoc(collection(db, `users/${user.uid}/bankTransactions`), { type: 'expense', source: 'vehicleExpense', category: 'vehicleExpense', accountId: form.bankAccountId, amount, description: form.description || `${meta.icon} ${meta.displayLabel} - ${selectedVehicle?.vehicleNo || ''}`, reference: `VEXP-${expenseRef.id.slice(-6).toUpperCase()}`, date: txTs, createdAt: serverTimestamp() }); }
       resetForm();
-    } catch (err) { console.error(err); showToast(`❌ ${err.message}`); }
+    } catch (err) { console.error(err); showToast(`? ${err.message}`); }
     setSaving(false);
   };
 
-  // ── DELETE ──
+  // -- DELETE --
   const handleDelete = async id => {
     if (!window.confirm(t.deleteConfirm)) return;
     try {
       await deleteDoc(doc(db, `users/${user.uid}/vehicleExpenses`, id));
       try { const q2 = query(collection(db, `users/${user.uid}/cashTransactions`), where('expenseId', '==', id), where('source', '==', 'vehicleExpense')); const snap = await getDocs(q2); await Promise.all(snap.docs.map(d => deleteDoc(doc(db, `users/${user.uid}/cashTransactions`, d.id)))); } catch {}
       if (expandedId === id) setExpandedId(null);
-      showToast(`✅ ${t.deleted}`);
-    } catch (e) { showToast(`❌ ${e.message}`); }
+      showToast(`? ${t.deleted}`);
+    } catch (e) { showToast(`? ${e.message}`); }
   };
 
-  // ── DUPLICATE ──
+  // -- DUPLICATE --
   const handleDuplicate = async exp => {
     try {
       const meta = getExpMeta(exp.expenseType, lang);
@@ -679,11 +679,11 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
       delete data.id;
       const ref = await addDoc(collection(db, `users/${user.uid}/vehicleExpenses`), data);
       if (exp.paymentMethod === 'cash') { await addDoc(collection(db, `users/${user.uid}/cashTransactions`), { type: 'out', source: 'vehicleExpense', category: exp.expenseType === 'fuel' ? 'vehicleFuel' : 'vehicleOther', amount: toNum(exp.amount), expenseId: ref.id, vehicleId: exp.vehicleId, vehicleNo: exp.vehicleNo || '', paymentMethod: 'cash', description: `${meta.icon} ${meta.displayLabel} - ${exp.vehicleNo || ''}`, date: dateStr, time: timeStr, timestamp: txTs, createdAt: serverTimestamp(), uid: user.uid }); }
-      showToast(`✅ ${t.duplicated}`);
-    } catch (e) { showToast(`❌ ${e.message}`); }
+      showToast(`? ${t.duplicated}`);
+    } catch (e) { showToast(`? ${e.message}`); }
   };
 
-  // ── EXPORT ──
+  // -- EXPORT --
   const exportCSV = () => {
     const hdr = ['Date', 'Time', 'Vehicle', 'Type', 'Amount', 'Description', 'Payment', 'Supplier', 'Notes'];
     const rows = filtered.map(e => [toDateStr(e.expenseDate) || '', e.expenseTime || '', e.vehicleNo || '', e.expenseType || '', e.amount || 0, (e.description || '').replace(/,/g, ';'), e.paymentMethod || '', e.expenseBy || '', (e.notes || '').replace(/,/g, ';')]);
@@ -695,13 +695,13 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
   const handlePrint = () => {
     const el = printRef.current; if (!el) return;
     const w = window.open('', '_blank'); if (!w) return;
-    w.document.write(`<html><head><title>🚛 ${t.pageTitle}</title><style>body{font-family:Arial;padding:20px;font-size:12px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:6px}th{background:#f0f0f0}h1{font-size:18px}.total{font-size:16px;font-weight:bold;margin:10px 0}</style></head><body><h1>🚛 ${t.pageTitle}</h1><div class="total">${t.total}: Rs.${fmtC(stats.total)} (${stats.count})</div>${el.innerHTML}</body></html>`);
+    w.document.write(`<html><head><title>?? ${t.pageTitle}</title><style>body{font-family:Arial;padding:20px;font-size:12px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:6px}th{background:#f0f0f0}h1{font-size:18px}.total{font-size:16px;font-weight:bold;margin:10px 0}</style></head><body><h1>?? ${t.pageTitle}</h1><div class="total">${t.total}: Rs.${fmtC(stats.total)} (${stats.count})</div>${el.innerHTML}</body></html>`);
     w.document.close(); w.onafterprint = () => w.close(); setTimeout(() => { w.focus(); w.print(); }, 500);
   };
 
-  /* ════════════════════════════════════════════════════════
+  /* --------------------------------------------------------
      LOADING
-     ════════════════════════════════════════════════════════ */
+     -------------------------------------------------------- */
   if (loading) return (
     <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '40vh' }}>
       <div style={{ width: 44, height: 44, border: '4px solid #e2e8f0', borderTopColor: '#ef4444', borderRadius: '50%', animation: 'spin .8s linear infinite' }} />
@@ -710,9 +710,9 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
     </div>
   );
 
-  /* ════════════════════════════════════════════════════════
+  /* --------------------------------------------------------
      RENDER
-     ════════════════════════════════════════════════════════ */
+     -------------------------------------------------------- */
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', padding: '0 8px 80px', fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', background: '#f8fafc', minHeight: '100vh' }}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}@media print{.noPrint{display:none!important}}`}</style>
@@ -721,7 +721,7 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
       {/* HEADER */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid #e2e8f0' }} className="noPrint">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 30 }}>🚛</span>
+          <span style={{ fontSize: 30 }}>??</span>
           <div>
             <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#1e293b' }}>{t.pageTitle}</h1>
             <p style={{ margin: '3px 0 0', fontSize: 12, color: '#64748b' }}>{t.total}: Rs.{fmtC(stats.total)} ({stats.count} {t.entries})</p>
@@ -729,25 +729,25 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <div style={{ display: 'flex', background: '#f1f5f9', borderRadius: 10, padding: 3 }}>
-            {[['list', '📄', t.list], ['analytics', '📊', t.analytics]].map(([k, ico, lb]) => (
+            {[['list', '??', t.list], ['analytics', '??', t.analytics]].map(([k, ico, lb]) => (
               <button key={k} onClick={() => setMainTab(k)} style={{ padding: '8px 16px', border: 'none', borderRadius: 8, background: mainTab === k ? 'white' : 'transparent', color: mainTab === k ? '#1e293b' : '#64748b', fontWeight: mainTab === k ? 600 : 500, fontSize: 13, cursor: 'pointer', boxShadow: mainTab === k ? '0 1px 3px rgba(0,0,0,.1)' : 'none' }}>{ico} {lb}</button>
             ))}
           </div>
-          <button onClick={() => setShowCategoryModal(true)} style={{ width: 38, height: 38, borderRadius: 8, border: '1px solid #e2e8f0', background: 'white', fontSize: 16, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>⚙️</button>
-          <button onClick={() => { setForm({ ...INIT_FORM, expenseDate: todayStr(), expenseTime: nowHHMM(), installedDate: todayStr() }); setEditingId(null); setShowReceiptSource(false); setShowForm(true); }} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#dc2626,#ef4444)', color: 'white', fontWeight: 700, fontSize: 14, cursor: 'pointer', whiteSpace: 'nowrap' }}>➕ {t.addExpense}</button>
+          <button onClick={() => setShowCategoryModal(true)} style={{ width: 38, height: 38, borderRadius: 8, border: '1px solid #e2e8f0', background: 'white', fontSize: 16, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>??</button>
+          <button onClick={() => { setForm({ ...INIT_FORM, expenseDate: todayStr(), expenseTime: nowHHMM(), installedDate: todayStr() }); setEditingId(null); setShowReceiptSource(false); setShowForm(true); }} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#dc2626,#ef4444)', color: 'white', fontWeight: 700, fontSize: 14, cursor: 'pointer', whiteSpace: 'nowrap' }}>? {t.addExpense}</button>
         </div>
       </div>
 
       {/* STAT CARDS */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 10, marginBottom: 14 }} className="noPrint">
         <div style={{ padding: 16, borderRadius: 14, background: 'linear-gradient(135deg,#dc2626,#ef4444)', color: 'white' }}>
-          <div style={{ fontSize: 11, opacity: .8 }}>💸 {t.total}</div>
+          <div style={{ fontSize: 11, opacity: .8 }}>?? {t.total}</div>
           <div style={{ fontSize: 24, fontWeight: 900, marginTop: 4 }}>Rs.{fmtC(stats.total)}</div>
           <div style={{ fontSize: 11, opacity: .7, marginTop: 2 }}>{stats.count} {t.entries}</div>
         </div>
         {stats.avgKmL > 0 && (
           <div style={{ padding: 16, borderRadius: 14, background: 'linear-gradient(135deg,#ea580c,#f97316)', color: 'white' }}>
-            <div style={{ fontSize: 11, opacity: .8 }}>⛽ {t.avgKmL}</div>
+            <div style={{ fontSize: 11, opacity: .8 }}>? {t.avgKmL}</div>
             <div style={{ fontSize: 24, fontWeight: 900, marginTop: 4 }}>{fmtQ(stats.avgKmL)}</div>
             <div style={{ fontSize: 11, opacity: .7, marginTop: 2 }}>{t.fuelEfficiency}</div>
           </div>
@@ -774,20 +774,20 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 14px', background: 'white', borderRadius: 10, border: '1px solid #e2e8f0' }}>
             <div style={{ position: 'relative', flex: 2, minWidth: 160 }}>
-              <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 14, pointerEvents: 'none' }}>🔍</span>
+              <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 14, pointerEvents: 'none' }}>??</span>
               <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder={t.search} style={{ width: '100%', padding: '9px 30px 9px 34px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 14, outline: 'none', boxSizing: 'border-box', background: '#f8fafc' }} />
-              {searchTerm && <button onClick={() => setSearchTerm('')} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#94a3b8' }}>✕</button>}
+              {searchTerm && <button onClick={() => setSearchTerm('')} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#94a3b8' }}>?</button>}
             </div>
-            <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} style={ST.sel}><option value="all">📌 {t.allTypes}</option>{Object.entries(EXP_TYPES).map(([k, m]) => <option key={k} value={k}>{m.icon} {(lang === 'en' ? m.labelEn : m.label).split('/')[0].trim()}</option>)}</select>
-            <select value={vehicleFilter} onChange={e => setVehicleFilter(e.target.value)} style={ST.sel}><option value="all">🚛 {t.allVehicles}</option>{vehicles.map(v => <option key={v.id} value={v.id}>{v.vehicleNo}</option>)}</select>
-            <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={ST.sel}><option value="newest">⬇️ {t.newest}</option><option value="oldest">⬆️ {t.oldest}</option><option value="highest">💰 {t.highest}</option><option value="lowest">💲 {t.lowest}</option></select>
-            <button onClick={clearFilters} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #d1d5db', background: '#f8fafc', color: '#64748b', fontSize: 14, cursor: 'pointer' }}>🔄</button>
+            <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} style={ST.sel}><option value="all">?? {t.allTypes}</option>{Object.entries(EXP_TYPES).map(([k, m]) => <option key={k} value={k}>{m.icon} {(lang === 'en' ? m.labelEn : m.label).split('/')[0].trim()}</option>)}</select>
+            <select value={vehicleFilter} onChange={e => setVehicleFilter(e.target.value)} style={ST.sel}><option value="all">?? {t.allVehicles}</option>{vehicles.map(v => <option key={v.id} value={v.id}>{v.vehicleNo}</option>)}</select>
+            <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={ST.sel}><option value="newest">?? {t.newest}</option><option value="oldest">?? {t.oldest}</option><option value="highest">?? {t.highest}</option><option value="lowest">?? {t.lowest}</option></select>
+            <button onClick={clearFilters} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #d1d5db', background: '#f8fafc', color: '#64748b', fontSize: 14, cursor: 'pointer' }}>??</button>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>📋 {filtered.length} {t.entries} • Rs.{fmtC(stats.total)}</span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>?? {filtered.length} {t.entries} � Rs.{fmtC(stats.total)}</span>
             <div style={{ display: 'flex', gap: 6 }}>
-              <button onClick={exportCSV} style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #16a34a', background: '#f0fdf4', color: '#166534', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>📥 {t.exportCSV}</button>
-              <button onClick={handlePrint} style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #6366f1', background: '#eef2ff', color: '#4338ca', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>🖨️ {t.print}</button>
+              <button onClick={exportCSV} style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #16a34a', background: '#f0fdf4', color: '#166534', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>?? {t.exportCSV}</button>
+              <button onClick={handlePrint} style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #6366f1', background: '#eef2ff', color: '#4338ca', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>??? {t.print}</button>
             </div>
           </div>
         </div>
@@ -797,19 +797,19 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
       {mainTab === 'analytics' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {stats.typeBreak.length > 0 && (
-            <div style={ST.card}><h3 style={ST.cardH}>📊 {t.byType}</h3>
+            <div style={ST.card}><h3 style={ST.cardH}>?? {t.byType}</h3>
               {stats.typeBreak.map(([type, data]) => { const m = getExpMeta(type, lang); const pct = stats.total > 0 ? (data.total / stats.total * 100) : 0; return (<div key={type} style={{ marginBottom: 10 }}><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}><span style={{ fontSize: 13, fontWeight: 600 }}>{m.icon} {m.displayLabel}</span><span style={{ fontSize: 13, fontWeight: 700, color: m.color }}>Rs.{fmtC(data.total)} <span style={{ fontSize: 11, color: '#94a3b8' }}>({data.count})</span></span></div><div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}><div style={{ width: `${pct}%`, height: '100%', background: m.color, borderRadius: 6 }} /></div></div>); })}
             </div>
           )}
           {stats.vehicleBreak.length > 0 && (
-            <div style={ST.card}><h3 style={ST.cardH}>🚛 {t.byVehicle}</h3>
-              {stats.vehicleBreak.map(([v, data]) => { const pct = stats.total > 0 ? (data.total / stats.total * 100) : 0; return (<div key={v} style={{ marginBottom: 10 }}><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}><span style={{ fontSize: 13, fontWeight: 600 }}>🚛 {v}</span><span style={{ fontSize: 13, fontWeight: 700, color: '#1e40af' }}>Rs.{fmtC(data.total)}</span></div><div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}><div style={{ width: `${pct}%`, height: '100%', background: '#3b82f6', borderRadius: 6 }} /></div></div>); })}
+            <div style={ST.card}><h3 style={ST.cardH}>?? {t.byVehicle}</h3>
+              {stats.vehicleBreak.map(([v, data]) => { const pct = stats.total > 0 ? (data.total / stats.total * 100) : 0; return (<div key={v} style={{ marginBottom: 10 }}><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}><span style={{ fontSize: 13, fontWeight: 600 }}>?? {v}</span><span style={{ fontSize: 13, fontWeight: 700, color: '#1e40af' }}>Rs.{fmtC(data.total)}</span></div><div style={{ height: 8, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden' }}><div style={{ width: `${pct}%`, height: '100%', background: '#3b82f6', borderRadius: 6 }} /></div></div>); })}
             </div>
           )}
           {stats.payBreak.length > 0 && (
-            <div style={ST.card}><h3 style={ST.cardH}>💳 {t.byPayment}</h3>
+            <div style={ST.card}><h3 style={ST.cardH}>?? {t.byPayment}</h3>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))', gap: 10 }}>
-                {stats.payBreak.map(([pay, data]) => { const pm = PAY_METHODS.find(p => p.value === pay) || { icon: '💵' }; return (<div key={pay} style={{ padding: 14, background: '#f8fafc', borderRadius: 10, border: '1px solid #e2e8f0', textAlign: 'center' }}><div style={{ fontSize: 24 }}>{pm.icon}</div><div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{getPayLabel(pay, lang)}</div><div style={{ fontSize: 18, fontWeight: 700, marginTop: 4 }}>Rs.{fmtC(data.total)}</div></div>); })}
+                {stats.payBreak.map(([pay, data]) => { const pm = PAY_METHODS.find(p => p.value === pay) || { icon: '??' }; return (<div key={pay} style={{ padding: 14, background: '#f8fafc', borderRadius: 10, border: '1px solid #e2e8f0', textAlign: 'center' }}><div style={{ fontSize: 24 }}>{pm.icon}</div><div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{getPayLabel(pay, lang)}</div><div style={{ fontSize: 18, fontWeight: 700, marginTop: 4 }}>Rs.{fmtC(data.total)}</div></div>); })}
               </div>
             </div>
           )}
@@ -821,7 +821,7 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
         <div ref={printRef}>
           {!filtered.length ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 20px', background: 'white', borderRadius: 14, border: '1px solid #e2e8f0' }}>
-              <span style={{ fontSize: 56 }}>🚛</span>
+              <span style={{ fontSize: 56 }}>??</span>
               <p style={{ color: '#94a3b8', marginTop: 12 }}>{t.noExpenses}</p>
               <button onClick={clearFilters} style={{ marginTop: 16, padding: '10px 20px', borderRadius: 8, border: '1px solid #3b82f6', background: '#eff6ff', color: '#2563eb', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>{t.clearFilters}</button>
             </div>
@@ -843,66 +843,66 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
                           <div style={{ fontWeight: 700, fontSize: 15, color: '#0f172a' }}>{m.displayLabel}</div>
                           {exp.description && <div style={{ fontSize: 13, color: '#64748b', marginTop: 1 }}>{String(exp.description)}</div>}
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4, alignItems: 'center' }}>
-                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f0fdf4', color: '#166534', fontWeight: 500 }}>📅 {displayDate}</span>
-                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f1f5f9', color: '#475569' }}>{pmInfo?.icon || '💵'} {getPayLabel(exp.paymentMethod, lang)}</span>
-                            <span style={{ fontSize: 12, color: '#475569', fontWeight: 700 }}>🚛 {String(exp.vehicleNo || '-')}</span>
-                            {exp.expenseBy && <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#ecfeff', color: '#155e75', border: '1px solid #a5f3fc' }}>👤 {String(exp.expenseBy)}</span>}
-                            {itemCount > 0 && <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f5f3ff', color: '#6d28d9', border: '1px solid #ddd6fe' }}>📦 {itemCount}</span>}
-                            {exp.receipt && <span style={{ fontSize: 12, color: '#16a34a' }}>📷</span>}
-                            {exp.expenseType === 'fuel' && toNum(exp.kmPerLitre) > 0 && <span style={{ fontSize: 11, fontWeight: 800, color: '#16a34a', background: '#f0fdf4', padding: '2px 8px', borderRadius: 6 }}>🏆 {fmtQ(exp.kmPerLitre)} KM/L</span>}
-                            {exp.expenseType === 'tyre' && toNum(exp.kmUsed) > 0 && <span style={{ fontSize: 11, fontWeight: 800, color: '#2563eb', background: '#eff6ff', padding: '2px 8px', borderRadius: 6 }}>📏 {fmtQ(exp.kmUsed)} KM</span>}
+                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f0fdf4', color: '#166534', fontWeight: 500 }}>?? {displayDate}</span>
+                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f1f5f9', color: '#475569' }}>{pmInfo?.icon || '??'} {getPayLabel(exp.paymentMethod, lang)}</span>
+                            <span style={{ fontSize: 12, color: '#475569', fontWeight: 700 }}>?? {String(exp.vehicleNo || '-')}</span>
+                            {exp.expenseBy && <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#ecfeff', color: '#155e75', border: '1px solid #a5f3fc' }}>?? {String(exp.expenseBy)}</span>}
+                            {itemCount > 0 && <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, background: '#f5f3ff', color: '#6d28d9', border: '1px solid #ddd6fe' }}>?? {itemCount}</span>}
+                            {exp.receipt && <span style={{ fontSize: 12, color: '#16a34a' }}>??</span>}
+                            {exp.expenseType === 'fuel' && toNum(exp.kmPerLitre) > 0 && <span style={{ fontSize: 11, fontWeight: 800, color: '#16a34a', background: '#f0fdf4', padding: '2px 8px', borderRadius: 6 }}>?? {fmtQ(exp.kmPerLitre)} KM/L</span>}
+                            {exp.expenseType === 'tyre' && toNum(exp.kmUsed) > 0 && <span style={{ fontSize: 11, fontWeight: 800, color: '#2563eb', background: '#eff6ff', padding: '2px 8px', borderRadius: 6 }}>?? {fmtQ(exp.kmUsed)} KM</span>}
                           </div>
                         </div>
                       </div>
-                      <div style={{ textAlign: 'right' }}><div style={{ fontWeight: 900, fontSize: 20, color: '#dc2626' }}>Rs.{fmtC(exp.amount)}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{isExpanded ? '🔼' : '🔽'}</div></div>
+                      <div style={{ textAlign: 'right' }}><div style={{ fontWeight: 900, fontSize: 20, color: '#dc2626' }}>Rs.{fmtC(exp.amount)}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{isExpanded ? '??' : '??'}</div></div>
                     </div>
 
                     {isExpanded && (
                       <div style={{ padding: '12px 16px', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
-                        {exp.notes && <div style={{ display: 'flex', gap: 8, fontSize: 13, color: '#334155', marginBottom: 6 }}><span style={{ fontWeight: 600, color: '#64748b' }}>📝 {t.notes}:</span><span>{String(exp.notes)}</span></div>}
-                        {exp.reference && <div style={{ display: 'flex', gap: 8, fontSize: 13, color: '#334155', marginBottom: 6 }}><span style={{ fontWeight: 600, color: '#64748b' }}>🔖 {t.reference}:</span><span>{String(exp.reference)}</span></div>}
+                        {exp.notes && <div style={{ display: 'flex', gap: 8, fontSize: 13, color: '#334155', marginBottom: 6 }}><span style={{ fontWeight: 600, color: '#64748b' }}>?? {t.notes}:</span><span>{String(exp.notes)}</span></div>}
+                        {exp.reference && <div style={{ display: 'flex', gap: 8, fontSize: 13, color: '#334155', marginBottom: 6 }}><span style={{ fontWeight: 600, color: '#64748b' }}>?? {t.reference}:</span><span>{String(exp.reference)}</span></div>}
 
                         {exp.expenseType === 'fuel' && (
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 10 }}>
-                            {[{ l: `⛽ ${t.litres}`, v: `${fmtQ(exp.fuelLitres)} L`, c: '#ea580c' }, { l: `📏 KM`, v: `${fmtQ(exp.kmDriven)} KM`, c: '#2563eb' }, { l: '🏆 KM/L', v: fmtQ(exp.kmPerLitre), c: '#16a34a' }, { l: `💰 ${t.costPerKm}`, v: toNum(exp.kmDriven) > 0 ? `Rs.${fmtC(toNum(exp.amount) / toNum(exp.kmDriven))}` : '-', c: '#7c3aed' }].map(card => (<div key={card.l} style={{ background: 'white', padding: '10px 12px', borderRadius: 10, textAlign: 'center', border: '1px solid #e2e8f0' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{card.l}</div><div style={{ fontSize: 15, fontWeight: 900, color: card.c, marginTop: 4 }}>{card.v}</div></div>))}
+                            {[{ l: `? ${t.litres}`, v: `${fmtQ(exp.fuelLitres)} L`, c: '#ea580c' }, { l: `?? KM`, v: `${fmtQ(exp.kmDriven)} KM`, c: '#2563eb' }, { l: '?? KM/L', v: fmtQ(exp.kmPerLitre), c: '#16a34a' }, { l: `?? ${t.costPerKm}`, v: toNum(exp.kmDriven) > 0 ? `Rs.${fmtC(toNum(exp.amount) / toNum(exp.kmDriven))}` : '-', c: '#7c3aed' }].map(card => (<div key={card.l} style={{ background: 'white', padding: '10px 12px', borderRadius: 10, textAlign: 'center', border: '1px solid #e2e8f0' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{card.l}</div><div style={{ fontSize: 15, fontWeight: 900, color: card.c, marginTop: 4 }}>{card.v}</div></div>))}
                           </div>
                         )}
 
                         {exp.expenseType === 'tyre' && (
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 10 }}>
-                            {[{ l: `🛞 ${t.tyrePosition}`, v: String(exp.tyrePosition || '-'), c: '#2563eb' }, { l: `📏 ${t.usedKm}`, v: `${fmtQ(exp.kmUsed)} KM`, c: '#2563eb' }, { l: `📅 ${t.days}`, v: String(toNum(exp.daysUsed)), c: '#16a34a' }, { l: `🎯 ${t.remaining}`, v: toNum(exp.expectedLifeKm) > 0 ? `${fmtQ(exp.remainingKm)} KM` : '-', c: toNum(exp.remainingKm) <= 5000 ? '#dc2626' : '#7c3aed' }].map(card => (<div key={card.l} style={{ background: 'white', padding: '10px 12px', borderRadius: 10, textAlign: 'center', border: '1px solid #e2e8f0' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{card.l}</div><div style={{ fontSize: 14, fontWeight: 900, color: card.c, marginTop: 4 }}>{card.v}</div></div>))}
+                            {[{ l: `?? ${t.tyrePosition}`, v: String(exp.tyrePosition || '-'), c: '#2563eb' }, { l: `?? ${t.usedKm}`, v: `${fmtQ(exp.kmUsed)} KM`, c: '#2563eb' }, { l: `?? ${t.days}`, v: String(toNum(exp.daysUsed)), c: '#16a34a' }, { l: `?? ${t.remaining}`, v: toNum(exp.expectedLifeKm) > 0 ? `${fmtQ(exp.remainingKm)} KM` : '-', c: toNum(exp.remainingKm) <= 5000 ? '#dc2626' : '#7c3aed' }].map(card => (<div key={card.l} style={{ background: 'white', padding: '10px 12px', borderRadius: 10, textAlign: 'center', border: '1px solid #e2e8f0' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{card.l}</div><div style={{ fontSize: 14, fontWeight: 900, color: card.c, marginTop: 4 }}>{card.v}</div></div>))}
                           </div>
                         )}
 
                         {exp.expenseType === 'service' && (
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 10 }}>
-                            {[{ l: `🔧 ${t.serviceKm}`, v: fmtQ(exp.serviceKm), c: '#7c3aed' }, { l: `➡️ ${t.nextServiceKm}`, v: fmtQ(exp.nextServiceKm), c: '#2563eb' }, { l: `📏 ${t.remaining}`, v: toNum(exp.nextServiceKm) > 0 && toNum(exp.currentKm) > 0 ? fmtQ(toNum(exp.nextServiceKm) - toNum(exp.currentKm)) : '-', c: '#16a34a' }].map(card => (<div key={card.l} style={{ background: 'white', padding: '10px 12px', borderRadius: 10, textAlign: 'center', border: '1px solid #e2e8f0' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{card.l}</div><div style={{ fontSize: 15, fontWeight: 900, color: card.c, marginTop: 4 }}>{card.v}</div></div>))}
+                            {[{ l: `?? ${t.serviceKm}`, v: fmtQ(exp.serviceKm), c: '#7c3aed' }, { l: `?? ${t.nextServiceKm}`, v: fmtQ(exp.nextServiceKm), c: '#2563eb' }, { l: `?? ${t.remaining}`, v: toNum(exp.nextServiceKm) > 0 && toNum(exp.currentKm) > 0 ? fmtQ(toNum(exp.nextServiceKm) - toNum(exp.currentKm)) : '-', c: '#16a34a' }].map(card => (<div key={card.l} style={{ background: 'white', padding: '10px 12px', borderRadius: 10, textAlign: 'center', border: '1px solid #e2e8f0' }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{card.l}</div><div style={{ fontSize: 15, fontWeight: 900, color: card.c, marginTop: 4 }}>{card.v}</div></div>))}
                           </div>
                         )}
 
                         {itemCount > 0 && (
                           <div style={{ marginTop: 10 }}>
-                            <div style={{ fontWeight: 600, color: '#64748b', marginBottom: 8 }}>📦 {t.expenseItems}</div>
+                            <div style={{ fontWeight: 600, color: '#64748b', marginBottom: 8 }}>?? {t.expenseItems}</div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                              {exp.expenseItems.map((row, idx) => { const rowImg = row.itemImage || getItemImageUrl(inventoryItems.find(i => i.id === row.itemId)) || null; return (<div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'white', border: '1px solid #e2e8f0' }}><img src={rowImg || PLACEHOLDER_IMG} alt="" style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', border: '1px solid #e2e8f0' }} onError={e => { e.target.src = PLACEHOLDER_IMG; }} /><div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 13 }}>{String(row.itemName || '')}{row.unit ? <small style={{ color: '#64748b', marginLeft: 6 }}>({String(row.unit)})</small> : null}</div><div style={{ fontSize: 12, color: '#64748b' }}>{toNum(row.qty || 1)} × Rs.{fmtC(row.unitPrice)}</div></div><div style={{ fontWeight: 800, fontSize: 14 }}>Rs.{fmtC(row.lineTotal || toNum(row.qty || 1) * toNum(row.unitPrice))}</div></div>); })}
+                              {exp.expenseItems.map((row, idx) => { const rowImg = row.itemImage || getItemImageUrl(inventoryItems.find(i => i.id === row.itemId)) || null; return (<div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'white', border: '1px solid #e2e8f0' }}><img src={rowImg || PLACEHOLDER_IMG} alt="" style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', border: '1px solid #e2e8f0' }} onError={e => { e.target.src = PLACEHOLDER_IMG; }} /><div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 13 }}>{String(row.itemName || '')}{row.unit ? <small style={{ color: '#64748b', marginLeft: 6 }}>({String(row.unit)})</small> : null}</div><div style={{ fontSize: 12, color: '#64748b' }}>{toNum(row.qty || 1)} � Rs.{fmtC(row.unitPrice)}</div></div><div style={{ fontWeight: 800, fontSize: 14 }}>Rs.{fmtC(row.lineTotal || toNum(row.qty || 1) * toNum(row.unitPrice))}</div></div>); })}
                             </div>
                           </div>
                         )}
 
                         <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-                          {exp.receipt && <button onClick={() => setViewReceipt(exp.receipt)} style={{ padding: '6px 12px', fontSize: 12, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>📷 {t.viewReceipt}</button>}
-                          <button onClick={() => handleEdit(exp)} style={{ padding: '6px 12px', fontSize: 12, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>✏️ {t.edit}</button>
-                          <button onClick={() => handleDuplicate(exp)} style={{ padding: '6px 12px', fontSize: 12, background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>📋 {t.duplicate}</button>
-                          <button onClick={() => handleDelete(exp.id)} style={{ padding: '6px 12px', fontSize: 12, background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>🗑️ {t.delete}</button>
+                          {exp.receipt && <button onClick={() => setViewReceipt(exp.receipt)} style={{ padding: '6px 12px', fontSize: 12, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>?? {t.viewReceipt}</button>}
+                          <button onClick={() => handleEdit(exp)} style={{ padding: '6px 12px', fontSize: 12, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>?? {t.edit}</button>
+                          <button onClick={() => handleDuplicate(exp)} style={{ padding: '6px 12px', fontSize: 12, background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>?? {t.duplicate}</button>
+                          <button onClick={() => handleDelete(exp.id)} style={{ padding: '6px 12px', fontSize: 12, background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>??? {t.delete}</button>
                         </div>
                       </div>
                     )}
 
                     {!isExpanded && (
                       <div style={{ display: 'flex', gap: 4, padding: '6px 16px 10px', justifyContent: 'flex-end' }} className="noPrint">
-                        <button onClick={e => { e.stopPropagation(); handleEdit(exp); }} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #e2e8f0', background: 'white', cursor: 'pointer', fontSize: 12 }}>✏️</button>
-                        <button onClick={e => { e.stopPropagation(); handleDuplicate(exp); }} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #e2e8f0', background: 'white', cursor: 'pointer', fontSize: 12 }}>📋</button>
-                        <button onClick={e => { e.stopPropagation(); handleDelete(exp.id); }} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #fca5a5', background: '#fef2f2', cursor: 'pointer', fontSize: 12 }}>🗑️</button>
+                        <button onClick={e => { e.stopPropagation(); handleEdit(exp); }} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #e2e8f0', background: 'white', cursor: 'pointer', fontSize: 12 }}>??</button>
+                        <button onClick={e => { e.stopPropagation(); handleDuplicate(exp); }} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #e2e8f0', background: 'white', cursor: 'pointer', fontSize: 12 }}>??</button>
+                        <button onClick={e => { e.stopPropagation(); handleDelete(exp.id); }} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #fca5a5', background: '#fef2f2', cursor: 'pointer', fontSize: 12 }}>???</button>
                       </div>
                     )}
                   </div>
@@ -911,9 +911,9 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
 
               {totalPages > 1 && (
                 <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 16, padding: '12px 16px', background: 'white', borderRadius: 10, border: '1px solid #e2e8f0', marginTop: 8 }} className="noPrint">
-                  <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #d1d5db', background: 'white', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: page === 1 ? .4 : 1 }}>◀ {t.previous}</button>
+                  <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #d1d5db', background: 'white', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: page === 1 ? .4 : 1 }}>? {t.previous}</button>
                   <span style={{ fontSize: 13, color: '#475569', fontWeight: 600 }}>{page}/{totalPages}</span>
-                  <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #d1d5db', background: 'white', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: page === totalPages ? .4 : 1 }}>{t.next} ▶</button>
+                  <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #d1d5db', background: 'white', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: page === totalPages ? .4 : 1 }}>{t.next} ?</button>
                 </div>
               )}
             </>
@@ -921,25 +921,25 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
         </div>
       )}
 
-      {/* ══ FORM MODAL ══ */}
+      {/* -- FORM MODAL -- */}
       {showForm && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(4px)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <div style={{ background: 'white', borderRadius: 18, width: '100%', maxWidth: 760, maxHeight: '94vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 22px', background: 'linear-gradient(135deg,#dc2626,#ef4444)', color: 'white' }}>
-              <h3 style={{ margin: 0, fontSize: 18 }}>{editingId ? `✏️ ${t.editExpense}` : `➕ ${t.newExpense}`}</h3>
-              <button onClick={resetForm} style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,.2)', border: 'none', fontSize: 18, cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+              <h3 style={{ margin: 0, fontSize: 18 }}>{editingId ? `?? ${t.editExpense}` : `? ${t.newExpense}`}</h3>
+              <button onClick={resetForm} style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,.2)', border: 'none', fontSize: 18, cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>?</button>
             </div>
             <div style={{ padding: 22, overflowY: 'auto', flex: 1 }}>
               {/* Vehicle / Date / Time */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
-                <div><label style={ST.formLabel}>🚛 {t.vehicle} *</label><select value={form.vehicleId} onChange={e => setField('vehicleId', e.target.value)} style={ST.sel}><option value="">{t.selectVehicle}</option>{vehicles.map(v => <option key={v.id} value={v.id}>{v.vehicleNo}</option>)}</select></div>
-                <div><label style={ST.formLabel}>📅 {t.date}</label><input type="date" value={form.expenseDate} onChange={e => setField('expenseDate', e.target.value)} style={ST.inp} /></div>
-                <div><label style={ST.formLabel}>🕐 {t.time}</label><input type="time" value={form.expenseTime} onChange={e => setField('expenseTime', e.target.value)} style={ST.inp} /></div>
+                <div><label style={ST.formLabel}>?? {t.vehicle} *</label><select value={form.vehicleId} onChange={e => setField('vehicleId', e.target.value)} style={ST.sel}><option value="">{t.selectVehicle}</option>{vehicles.map(v => <option key={v.id} value={v.id}>{v.vehicleNo}</option>)}</select></div>
+                <div><label style={ST.formLabel}>?? {t.date}</label><input type="date" value={form.expenseDate} onChange={e => setField('expenseDate', e.target.value)} style={ST.inp} /></div>
+                <div><label style={ST.formLabel}>?? {t.time}</label><input type="time" value={form.expenseTime} onChange={e => setField('expenseTime', e.target.value)} style={ST.inp} /></div>
               </div>
 
               {/* Expense type */}
               <div style={{ marginBottom: 16 }}>
-                <label style={ST.formLabel}>📌 {t.expenseType} *</label>
+                <label style={ST.formLabel}>?? {t.expenseType} *</label>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 6 }}>
                   {Object.entries(EXP_TYPES).map(([k, m]) => (<button key={k} type="button" onClick={() => setField('expenseType', k)} style={{ padding: '10px 6px', borderRadius: 10, cursor: 'pointer', fontWeight: 600, fontSize: 11, textAlign: 'center', border: form.expenseType === k ? `2px solid ${m.color}` : '1px solid #e2e8f0', background: form.expenseType === k ? `${m.color}12` : 'white', color: form.expenseType === k ? m.color : '#475569' }}><div style={{ fontSize: 22, marginBottom: 2 }}>{m.icon}</div><div style={{ lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{(lang === 'en' ? m.labelEn : m.label).split('/')[0].trim()}</div></button>))}
                 </div>
@@ -948,12 +948,12 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
               {/* FUEL */}
               {form.expenseType === 'fuel' && (
                 <div style={{ background: '#fff7ed', border: '2px solid #fdba74', borderRadius: 14, padding: 16, marginBottom: 14 }}>
-                  <div style={{ fontSize: 15, fontWeight: 800, color: '#ea580c', marginBottom: 12 }}>⛽ {t.fuelTracking}</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: '#ea580c', marginBottom: 12 }}>? {t.fuelTracking}</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
                     {[['fuelLitres', t.litres], ['pricePerLitre', t.pricePerLitre], ['kmBefore', t.kmBefore], ['kmAfter', t.kmAfter]].map(([field, label]) => (<div key={field}><label style={ST.formLabelSm}>{label}</label><input type="number" step="0.01" value={form[field]} onChange={e => setField(field, e.target.value)} style={ST.inpSm} /></div>))}
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
-                    {[{ l: `📏 ${t.distanceDriven}`, v: `${fmtQ(fs.kmDriven)} KM`, c: '#ea580c' }, { l: '🏆 KM/L', v: fmtQ(fs.kmPerLitre), c: '#16a34a' }, { l: `💰 ${t.autoTotal}`, v: `Rs.${fmtC(fs.autoAmt)}`, c: '#2563eb' }].map(x => (<div key={x.l} style={{ background: 'white', borderRadius: 10, padding: 12, textAlign: 'center' }}><div style={{ fontSize: 11, color: '#64748b', fontWeight: 700 }}>{x.l}</div><div style={{ fontSize: 18, fontWeight: 900, color: x.c, marginTop: 4 }}>{x.v}</div></div>))}
+                    {[{ l: `?? ${t.distanceDriven}`, v: `${fmtQ(fs.kmDriven)} KM`, c: '#ea580c' }, { l: '?? KM/L', v: fmtQ(fs.kmPerLitre), c: '#16a34a' }, { l: `?? ${t.autoTotal}`, v: `Rs.${fmtC(fs.autoAmt)}`, c: '#2563eb' }].map(x => (<div key={x.l} style={{ background: 'white', borderRadius: 10, padding: 12, textAlign: 'center' }}><div style={{ fontSize: 11, color: '#64748b', fontWeight: 700 }}>{x.l}</div><div style={{ fontSize: 18, fontWeight: 900, color: x.c, marginTop: 4 }}>{x.v}</div></div>))}
                   </div>
                 </div>
               )}
@@ -961,7 +961,7 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
               {/* TYRE */}
               {form.expenseType === 'tyre' && (
                 <div style={{ background: '#eff6ff', border: '2px solid #93c5fd', borderRadius: 14, padding: 16, marginBottom: 14 }}>
-                  <div style={{ fontSize: 15, fontWeight: 800, color: '#2563eb', marginBottom: 12 }}>🛞 {t.tyreTracking}</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: '#2563eb', marginBottom: 12 }}>?? {t.tyreTracking}</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
                     <div><label style={ST.formLabelSm}>{t.tyreBrand}</label><input value={form.tyreBrand} onChange={e => setField('tyreBrand', e.target.value)} style={ST.inpSm} /></div>
                     <div><label style={ST.formLabelSm}>{t.tyrePosition}</label><select value={form.tyrePosition} onChange={e => setField('tyrePosition', e.target.value)} style={{ ...ST.inpSm, cursor: 'pointer' }}><option>Front-Left</option><option>Front-Right</option><option>Rear-Left</option><option>Rear-Right</option><option>Spare</option><option>All</option></select></div>
@@ -971,7 +971,7 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
                     {[['installedKm', t.installedKm], ['currentKm', t.currentKm], ['expectedLifeKm', t.expectedLifeKm]].map(([field, label]) => (<div key={field}><label style={ST.formLabelSm}>{label}</label><input type="number" value={form[field]} onChange={e => setField(field, e.target.value)} style={ST.inpSm} /></div>))}
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
-                    {[{ l: `📏 ${t.usedKm}`, v: `${fmtQ(ts.kmUsed)} KM`, c: '#2563eb' }, { l: `📅 ${t.days}`, v: String(ts.daysUsed), c: '#16a34a' }, { l: `🎯 ${t.remaining}`, v: toNum(form.expectedLifeKm) > 0 ? fmtQ(ts.remainingKm) : '-', c: ts.remainingKm <= 5000 && toNum(form.expectedLifeKm) > 0 ? '#dc2626' : '#7c3aed' }].map(x => (<div key={x.l} style={{ background: 'white', borderRadius: 10, padding: 12, textAlign: 'center' }}><div style={{ fontSize: 11, color: '#64748b', fontWeight: 700 }}>{x.l}</div><div style={{ fontSize: 18, fontWeight: 900, color: x.c, marginTop: 4 }}>{x.v}</div></div>))}
+                    {[{ l: `?? ${t.usedKm}`, v: `${fmtQ(ts.kmUsed)} KM`, c: '#2563eb' }, { l: `?? ${t.days}`, v: String(ts.daysUsed), c: '#16a34a' }, { l: `?? ${t.remaining}`, v: toNum(form.expectedLifeKm) > 0 ? fmtQ(ts.remainingKm) : '-', c: ts.remainingKm <= 5000 && toNum(form.expectedLifeKm) > 0 ? '#dc2626' : '#7c3aed' }].map(x => (<div key={x.l} style={{ background: 'white', borderRadius: 10, padding: 12, textAlign: 'center' }}><div style={{ fontSize: 11, color: '#64748b', fontWeight: 700 }}>{x.l}</div><div style={{ fontSize: 18, fontWeight: 900, color: x.c, marginTop: 4 }}>{x.v}</div></div>))}
                   </div>
                 </div>
               )}
@@ -979,7 +979,7 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
               {/* SERVICE */}
               {form.expenseType === 'service' && (
                 <div style={{ background: '#faf5ff', border: '2px solid #c4b5fd', borderRadius: 14, padding: 16, marginBottom: 14 }}>
-                  <div style={{ fontSize: 15, fontWeight: 800, color: '#7c3aed', marginBottom: 12 }}>🔧 {t.serviceTracking}</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: '#7c3aed', marginBottom: 12 }}>?? {t.serviceTracking}</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
                     {[['serviceKm', t.serviceKm], ['nextServiceKm', t.nextServiceKm], ['currentKm', t.currentKm]].map(([field, label]) => (<div key={field}><label style={ST.formLabelSm}>{label}</label><input type="number" value={form[field]} onChange={e => setField(field, e.target.value)} style={ST.inpSm} /></div>))}
                   </div>
@@ -989,17 +989,17 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
 
               {/* Amount */}
               <div style={{ marginBottom: 14 }}>
-                <label style={ST.formLabel}>💰 {t.amount} *</label>
+                <label style={ST.formLabel}>?? {t.amount} *</label>
                 <input type="number" value={hasItems ? itemsTotal.toFixed(2) : form.amount} onChange={e => !hasItems && setField('amount', e.target.value)} style={{ width: '100%', padding: 16, borderRadius: 14, border: '2px solid #ef4444', fontSize: 28, fontWeight: 900, textAlign: 'center', boxSizing: 'border-box', color: '#dc2626', background: hasItems ? '#fef7ed' : '#fef2f2', outline: 'none', opacity: hasItems ? .85 : 1 }} placeholder={form.expenseType === 'fuel' ? `Auto: ${fmtC(fs.autoAmt)}` : '0.00'} readOnly={hasItems} />
-                <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>{hasItems ? `ℹ️ ${t.itemsAutoAmount}` : form.expenseType === 'fuel' && fs.autoAmt > 0 ? `ℹ️ Auto: ${fmtQ(fs.litres)}L × Rs.${fmtC(form.pricePerLitre)} = Rs.${fmtC(fs.autoAmt)}` : `✍️ ${t.manualAmount}`}</div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>{hasItems ? `?? ${t.itemsAutoAmount}` : form.expenseType === 'fuel' && fs.autoAmt > 0 ? `?? Auto: ${fmtQ(fs.litres)}L � Rs.${fmtC(form.pricePerLitre)} = Rs.${fmtC(fs.autoAmt)}` : `?? ${t.manualAmount}`}</div>
               </div>
 
               {/* Description */}
-              <div style={{ marginBottom: 14 }}><label style={ST.formLabel}>📝 {t.description}</label><input value={form.description} onChange={e => setField('description', e.target.value)} style={ST.inp} /></div>
+              <div style={{ marginBottom: 14 }}><label style={ST.formLabel}>?? {t.description}</label><input value={form.description} onChange={e => setField('description', e.target.value)} style={ST.inp} /></div>
 
               {/* Payment */}
               <div style={{ marginBottom: 14 }}>
-                <label style={ST.formLabel}>💳 {t.paymentMethod}</label>
+                <label style={ST.formLabel}>?? {t.paymentMethod}</label>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {PAY_METHODS.map(pm => (<button key={pm.value} onClick={() => setForm(p => ({ ...p, paymentMethod: pm.value, bankAccountId: pm.needsBank ? p.bankAccountId : '' }))} style={{ flex: 1, padding: '10px 6px', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 12, minWidth: 70, border: form.paymentMethod === pm.value ? '2px solid #3b82f6' : '1px solid #e2e8f0', background: form.paymentMethod === pm.value ? '#eff6ff' : 'white', color: form.paymentMethod === pm.value ? '#3b82f6' : '#64748b' }}>{getPayLabel(pm.value, lang)}</button>))}
                 </div>
@@ -1008,10 +1008,10 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
               {/* Bank */}
               {needsBank && (
                 <div style={{ marginBottom: 14, padding: 16, borderRadius: 12, background: 'linear-gradient(135deg,#eff6ff,#dbeafe)', border: '2px solid #93c5fd' }}>
-                  <label style={{ ...ST.formLabel, color: '#1e40af' }}>🏦 {t.bankAccount} *</label>
-                  {!activeBanks.length ? (<div style={{ padding: 14, borderRadius: 10, background: '#fef3c7', border: '1px solid #fcd34d', color: '#92400e', fontSize: 13 }}>⚠️ {t.noBankAccounts}</div>) : (
+                  <label style={{ ...ST.formLabel, color: '#1e40af' }}>?? {t.bankAccount} *</label>
+                  {!activeBanks.length ? (<div style={{ padding: 14, borderRadius: 10, background: '#fef3c7', border: '1px solid #fcd34d', color: '#92400e', fontSize: 13 }}>?? {t.noBankAccounts}</div>) : (
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 8, marginTop: 8 }}>
-                      {activeBanks.map(acc => { const isSel = form.bankAccountId === acc.id; return (<button key={acc.id} onClick={() => setField('bankAccountId', acc.id)} style={{ padding: '12px 14px', borderRadius: 12, cursor: 'pointer', textAlign: 'left', border: isSel ? '2px solid #2563eb' : '1px solid #cbd5e1', background: isSel ? 'linear-gradient(135deg,#2563eb,#3b82f6)' : 'white', color: isSel ? 'white' : '#1e293b' }}><div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>🏦 {String((acc.bankName || '').split('(')[0].trim())}</div><div style={{ fontSize: 12, opacity: isSel ? .9 : .7, marginBottom: 6 }}>{String(acc.accountName || '-')}</div><div style={{ fontSize: 16, fontWeight: 900 }}>Rs.{fmtC(toNum(acc.currentBalance))}</div></button>); })}
+                      {activeBanks.map(acc => { const isSel = form.bankAccountId === acc.id; return (<button key={acc.id} onClick={() => setField('bankAccountId', acc.id)} style={{ padding: '12px 14px', borderRadius: 12, cursor: 'pointer', textAlign: 'left', border: isSel ? '2px solid #2563eb' : '1px solid #cbd5e1', background: isSel ? 'linear-gradient(135deg,#2563eb,#3b82f6)' : 'white', color: isSel ? 'white' : '#1e293b' }}><div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>?? {String((acc.bankName || '').split('(')[0].trim())}</div><div style={{ fontSize: 12, opacity: isSel ? .9 : .7, marginBottom: 6 }}>{String(acc.accountName || '-')}</div><div style={{ fontSize: 16, fontWeight: 900 }}>Rs.{fmtC(toNum(acc.currentBalance))}</div></button>); })}
                     </div>
                   )}
                 </div>
@@ -1019,49 +1019,49 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
 
               {/* Reference / Supplier */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-                <div><label style={ST.formLabelSm}>🔖 {t.reference}</label><input value={form.reference} onChange={e => setField('reference', e.target.value)} style={ST.inpSm} /></div>
+                <div><label style={ST.formLabelSm}>?? {t.reference}</label><input value={form.reference} onChange={e => setField('reference', e.target.value)} style={ST.inpSm} /></div>
                 <div>
-                  <label style={ST.formLabelSm}>👤 {t.supplier}</label>
-                  <button type="button" onClick={openSupplierPicker} style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #e2e8f0', background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, cursor: 'pointer', fontSize: 14 }}><span style={{ color: form.expenseBy ? '#0f172a' : '#94a3b8', fontWeight: form.expenseBy ? 700 : 500 }}>{form.expenseBy || t.selectSupplier}</span><span style={{ color: '#64748b' }}>▼</span></button>
-                  {form.expenseBy && (<div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}><span style={{ padding: '6px 10px', borderRadius: 999, background: '#ecfeff', color: '#155e75', border: '1px solid #a5f3fc', fontSize: 12, fontWeight: 700 }}>👤 {String(form.expenseBy)}</span><button onClick={handleClearSupplier} style={{ padding: '6px 10px', borderRadius: 999, border: '1px solid #e2e8f0', background: 'white', color: '#64748b', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>✕</button></div>)}
+                  <label style={ST.formLabelSm}>?? {t.supplier}</label>
+                  <button type="button" onClick={openSupplierPicker} style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #e2e8f0', background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, cursor: 'pointer', fontSize: 14 }}><span style={{ color: form.expenseBy ? '#0f172a' : '#94a3b8', fontWeight: form.expenseBy ? 700 : 500 }}>{form.expenseBy || t.selectSupplier}</span><span style={{ color: '#64748b' }}>?</span></button>
+                  {form.expenseBy && (<div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}><span style={{ padding: '6px 10px', borderRadius: 999, background: '#ecfeff', color: '#155e75', border: '1px solid #a5f3fc', fontSize: 12, fontWeight: 700 }}>?? {String(form.expenseBy)}</span><button onClick={handleClearSupplier} style={{ padding: '6px 10px', borderRadius: 999, border: '1px solid #e2e8f0', background: 'white', color: '#64748b', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>?</button></div>)}
                 </div>
               </div>
 
               {/* Notes */}
-              <div style={{ marginBottom: 14 }}><label style={ST.formLabelSm}>📋 {t.notes}</label><textarea value={form.notes} onChange={e => setField('notes', e.target.value)} rows={2} style={{ ...ST.inpSm, resize: 'vertical', fontFamily: 'inherit' }} /></div>
+              <div style={{ marginBottom: 14 }}><label style={ST.formLabelSm}>?? {t.notes}</label><textarea value={form.notes} onChange={e => setField('notes', e.target.value)} rows={2} style={{ ...ST.inpSm, resize: 'vertical', fontFamily: 'inherit' }} /></div>
 
               {/* Items */}
               <div style={{ marginBottom: 16, padding: 14, borderRadius: 12, background: '#fafafc', border: '1px solid #e2e8f0' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
-                  <label style={ST.formLabel}>📦 {t.expenseItems}</label>
-                  <button onClick={addItemRow} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #22c55e', background: '#f0fdf4', color: '#166534', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>➕ {t.addItem}</button>
+                  <label style={ST.formLabel}>?? {t.expenseItems}</label>
+                  <button onClick={addItemRow} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #22c55e', background: '#f0fdf4', color: '#166534', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>? {t.addItem}</button>
                 </div>
                 <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>{t.itemsAutoNote}</div>
                 {!(form.expenseItems || []).length ? (
-                  <div style={{ padding: 18, borderRadius: 12, border: '1px dashed #cbd5e1', background: 'white', textAlign: 'center' }}><div style={{ fontSize: 28 }}>📦</div><div style={{ fontSize: 12, color: '#64748b' }}>{t.addItemsPlaceholder}</div></div>
+                  <div style={{ padding: 18, borderRadius: 12, border: '1px dashed #cbd5e1', background: 'white', textAlign: 'center' }}><div style={{ fontSize: 28 }}>??</div><div style={{ fontSize: 12, color: '#64748b' }}>{t.addItemsPlaceholder}</div></div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {(form.expenseItems || []).map((row, idx) => { const rowImg = row.itemImage || null; return (<div key={idx} style={{ padding: 12, borderRadius: 12, background: 'white', border: '1px solid #e2e8f0' }}>{rowImg && <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 8 }}><img src={rowImg} alt="" style={{ width: 80, height: 60, borderRadius: 10, objectFit: 'cover', border: '2px solid #e2e8f0' }} onError={e => { e.target.style.display = 'none'; }} /></div>}<div style={{ marginBottom: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}><div style={{ flex: 1 }}><ItemSearchDropdown inventoryItems={inventoryItems} value={row.itemId || ''} currentName={row.itemName || ''} onSelect={item => handleSelectInventoryItem(idx, item)} onNameChange={v => updateItemRow(idx, { itemName: v })} t={t} /></div><button onClick={() => removeItemRow(idx)} style={{ width: 40, height: 40, borderRadius: 8, border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', cursor: 'pointer', fontWeight: 700, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>✕</button></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}><div><label style={ST.formLabelSm}>{t.qty}</label><input type="number" min="0" step="0.01" value={row.qty || ''} onChange={e => updateItemRow(idx, { qty: e.target.value })} style={ST.inpSm} /></div><div><label style={ST.formLabelSm}>{t.unitPrice}</label><input type="number" min="0" step="0.01" value={row.unitPrice || ''} onChange={e => updateItemRow(idx, { unitPrice: e.target.value })} style={ST.inpSm} /></div><div><label style={ST.formLabelSm}>{t.lineTotal}</label><div style={{ padding: 10, borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0', fontWeight: 800, textAlign: 'right', fontSize: 13 }}>Rs.{fmtC(toNum(row.qty || 1) * toNum(row.unitPrice))}</div></div></div>{row.unit && <div style={{ marginTop: 6, fontSize: 11, color: '#64748b' }}>📏 {String(row.unit)}</div>}</div>); })}
+                    {(form.expenseItems || []).map((row, idx) => { const rowImg = row.itemImage || null; return (<div key={idx} style={{ padding: 12, borderRadius: 12, background: 'white', border: '1px solid #e2e8f0' }}>{rowImg && <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 8 }}><img src={rowImg} alt="" style={{ width: 80, height: 60, borderRadius: 10, objectFit: 'cover', border: '2px solid #e2e8f0' }} onError={e => { e.target.style.display = 'none'; }} /></div>}<div style={{ marginBottom: 8, display: 'flex', gap: 8, alignItems: 'flex-start' }}><div style={{ flex: 1 }}><ItemSearchDropdown inventoryItems={inventoryItems} value={row.itemId || ''} currentName={row.itemName || ''} onSelect={item => handleSelectInventoryItem(idx, item)} onNameChange={v => updateItemRow(idx, { itemName: v })} t={t} /></div><button onClick={() => removeItemRow(idx)} style={{ width: 40, height: 40, borderRadius: 8, border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', cursor: 'pointer', fontWeight: 700, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>?</button></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}><div><label style={ST.formLabelSm}>{t.qty}</label><input type="number" min="0" step="0.01" value={row.qty || ''} onChange={e => updateItemRow(idx, { qty: e.target.value })} style={ST.inpSm} /></div><div><label style={ST.formLabelSm}>{t.unitPrice}</label><input type="number" min="0" step="0.01" value={row.unitPrice || ''} onChange={e => updateItemRow(idx, { unitPrice: e.target.value })} style={ST.inpSm} /></div><div><label style={ST.formLabelSm}>{t.lineTotal}</label><div style={{ padding: 10, borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0', fontWeight: 800, textAlign: 'right', fontSize: 13 }}>Rs.{fmtC(toNum(row.qty || 1) * toNum(row.unitPrice))}</div></div></div>{row.unit && <div style={{ marginTop: 6, fontSize: 11, color: '#64748b' }}>?? {String(row.unit)}</div>}</div>); })}
                   </div>
                 )}
-                <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: '#fff7ed', border: '1px solid #fdba74', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 800, color: '#9a3412' }}><span>📦 {t.itemsTotal}</span><span>Rs.{fmtC(itemsTotal)}</span></div>
+                <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: '#fff7ed', border: '1px solid #fdba74', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 800, color: '#9a3412' }}><span>?? {t.itemsTotal}</span><span>Rs.{fmtC(itemsTotal)}</span></div>
               </div>
 
-              {/* Receipt — Gallery / Camera */}
+              {/* Receipt � Gallery / Camera */}
               <div style={{ marginBottom: 16 }}>
-                <label style={ST.formLabel}>📷 {t.receipt}</label>
+                <label style={ST.formLabel}>?? {t.receipt}</label>
                 <input type="file" accept="image/*" ref={receiptBrowseRef} onChange={handleReceiptFile} style={{ display: 'none' }} />
                 <input type="file" accept="image/*" capture="environment" ref={receiptCameraRef} onChange={handleReceiptFile} style={{ display: 'none' }} />
                 {form.receipt ? (
-                  <div style={{ position: 'relative' }}><img src={form.receipt} alt="Receipt" style={{ width: '100%', height: 140, objectFit: 'cover', borderRadius: 10, border: '2px solid #16a34a' }} /><button onClick={() => { setField('receipt', null); setShowReceiptSource(false); }} style={{ position: 'absolute', top: 6, right: 6, background: 'rgba(239,68,68,.9)', color: 'white', border: 'none', borderRadius: '50%', width: 28, height: 28, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button></div>
+                  <div style={{ position: 'relative' }}><img src={form.receipt} alt="Receipt" style={{ width: '100%', height: 140, objectFit: 'cover', borderRadius: 10, border: '2px solid #16a34a' }} /><button onClick={() => { setField('receipt', null); setShowReceiptSource(false); }} style={{ position: 'absolute', top: 6, right: 6, background: 'rgba(239,68,68,.9)', color: 'white', border: 'none', borderRadius: '50%', width: 28, height: 28, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>?</button></div>
                 ) : (
                   <>
-                    <button onClick={() => setShowReceiptSource(p => !p)} style={{ width: '100%', padding: 14, border: '2px dashed #cbd5e1', borderRadius: 10, background: '#f8fafc', color: '#64748b', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>📷 {t.addReceipt}</button>
+                    <button onClick={() => setShowReceiptSource(p => !p)} style={{ width: '100%', padding: 14, border: '2px dashed #cbd5e1', borderRadius: 10, background: '#f8fafc', color: '#64748b', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>?? {t.addReceipt}</button>
                     {showReceiptSource && (
                       <div style={{ marginTop: 10, padding: 14, borderRadius: 12, background: '#f8fafc', border: '2px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#334155', textAlign: 'center' }}>📂 {t.receiptSource}</p>
-                        <button onClick={() => receiptBrowseRef.current?.click()} style={{ width: '100%', padding: 13, borderRadius: 10, border: '2px solid #3b82f6', background: '#eff6ff', color: '#1d4ed8', fontWeight: 700, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}><span style={{ fontSize: 22 }}>🖼️</span>{t.gallery}</button>
-                        <button onClick={() => receiptCameraRef.current?.click()} style={{ width: '100%', padding: 13, borderRadius: 10, border: '2px solid #16a34a', background: '#f0fdf4', color: '#15803d', fontWeight: 700, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}><span style={{ fontSize: 22 }}>📷</span>{t.camera}</button>
+                        <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#334155', textAlign: 'center' }}>?? {t.receiptSource}</p>
+                        <button onClick={() => receiptBrowseRef.current?.click()} style={{ width: '100%', padding: 13, borderRadius: 10, border: '2px solid #3b82f6', background: '#eff6ff', color: '#1d4ed8', fontWeight: 700, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}><span style={{ fontSize: 22 }}>???</span>{t.gallery}</button>
+                        <button onClick={() => receiptCameraRef.current?.click()} style={{ width: '100%', padding: 13, borderRadius: 10, border: '2px solid #16a34a', background: '#f0fdf4', color: '#15803d', fontWeight: 700, fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}><span style={{ fontSize: 22 }}>??</span>{t.camera}</button>
                         <button onClick={() => setShowReceiptSource(false)} style={{ width: '100%', padding: 10, borderRadius: 10, border: 'none', background: '#e2e8f0', color: '#475569', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>{t.cancel}</button>
                       </div>
                     )}
@@ -1072,63 +1072,63 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
               {/* Save / Cancel */}
               <div style={{ display: 'flex', gap: 10 }}>
                 <button onClick={resetForm} style={{ flex: 1, padding: 14, background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 10, fontWeight: 700, fontSize: 15, cursor: 'pointer' }}>{t.cancel}</button>
-                <button onClick={handleSave} disabled={saving} style={{ flex: 2, padding: 14, background: saving ? '#94a3b8' : 'linear-gradient(135deg,#dc2626,#ef4444)', color: 'white', border: 'none', borderRadius: 10, fontWeight: 900, fontSize: 16, cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? .6 : 1 }}>{saving ? `⏳ ${t.saving}` : editingId ? `✅ ${t.update}` : `💾 ${t.save}`}</button>
+                <button onClick={handleSave} disabled={saving} style={{ flex: 2, padding: 14, background: saving ? '#94a3b8' : 'linear-gradient(135deg,#dc2626,#ef4444)', color: 'white', border: 'none', borderRadius: 10, fontWeight: 900, fontSize: 16, cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? .6 : 1 }}>{saving ? `? ${t.saving}` : editingId ? `? ${t.update}` : `?? ${t.save}`}</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* ══ SUPPLIER MODAL ══ */}
+      {/* -- SUPPLIER MODAL -- */}
       {showSupplierModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(4px)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <div style={{ background: 'white', borderRadius: 18, width: '100%', maxWidth: 520, maxHeight: '94vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 22px', background: 'linear-gradient(135deg,#0f766e,#14b8a6)', color: 'white' }}><h3 style={{ margin: 0, fontSize: 17 }}>👤 {t.supplierPicker}</h3><button onClick={() => setShowSupplierModal(false)} style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,.2)', border: 'none', fontSize: 18, cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 22px', background: 'linear-gradient(135deg,#0f766e,#14b8a6)', color: 'white' }}><h3 style={{ margin: 0, fontSize: 17 }}>?? {t.supplierPicker}</h3><button onClick={() => setShowSupplierModal(false)} style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,.2)', border: 'none', fontSize: 18, cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>?</button></div>
             <div style={{ padding: 22, overflowY: 'auto', flex: 1 }}>
               <input value={supplierSearch} onChange={e => setSupplierSearch(e.target.value)} placeholder={t.searchSupplier} style={{ ...ST.inpSm, marginBottom: 12 }} />
-              <button onClick={() => setShowNewSupplier(p => !p)} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #22c55e', background: '#f0fdf4', color: '#166534', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 12 }}>➕ {t.newSupplier}</button>
+              <button onClick={() => setShowNewSupplier(p => !p)} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #22c55e', background: '#f0fdf4', color: '#166534', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 12 }}>? {t.newSupplier}</button>
               {showNewSupplier && (
                 <div style={{ padding: 14, borderRadius: 12, background: '#f0fdfa', border: '1px solid #99f6e4', marginBottom: 12 }}>
                   <div style={{ display: 'grid', gap: 8 }}>
                     <input value={newSupplier.name} onChange={e => setNewSupplier(p => ({ ...p, name: e.target.value }))} placeholder={t.supplierName} style={ST.inpSm} />
                     <input value={newSupplier.companyName} onChange={e => setNewSupplier(p => ({ ...p, companyName: e.target.value }))} placeholder={t.companyName} style={ST.inpSm} />
                     <input value={newSupplier.phone} onChange={e => setNewSupplier(p => ({ ...p, phone: e.target.value }))} placeholder={t.phone} style={ST.inpSm} />
-                    <button onClick={handleCreateSupplier} disabled={creatingSupplier} style={{ padding: 14, background: creatingSupplier ? '#94a3b8' : 'linear-gradient(135deg,#0f766e,#14b8a6)', color: 'white', border: 'none', borderRadius: 10, fontWeight: 900, cursor: creatingSupplier ? 'not-allowed' : 'pointer', opacity: creatingSupplier ? .7 : 1 }}>{creatingSupplier ? `⏳ ${t.saving}` : `✅ ${t.saveSupplier}`}</button>
+                    <button onClick={handleCreateSupplier} disabled={creatingSupplier} style={{ padding: 14, background: creatingSupplier ? '#94a3b8' : 'linear-gradient(135deg,#0f766e,#14b8a6)', color: 'white', border: 'none', borderRadius: 10, fontWeight: 900, cursor: creatingSupplier ? 'not-allowed' : 'pointer', opacity: creatingSupplier ? .7 : 1 }}>{creatingSupplier ? `? ${t.saving}` : `? ${t.saveSupplier}`}</button>
                   </div>
                 </div>
               )}
               <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
-                {!supplierListFiltered.length ? (<div style={{ padding: 18, borderRadius: 12, border: '1px dashed #cbd5e1', background: 'white', textAlign: 'center' }}><div style={{ fontSize: 28 }}>👤</div><div style={{ fontSize: 13, color: '#64748b' }}>{supplierSearch ? t.noMatchingSuppliers : t.noSuppliers}</div></div>) : supplierListFiltered.map(sup => { const isS = form.expenseBySupplierId === sup.id; return (<button key={sup.id} onClick={() => handleSelectSupplier(sup)} style={{ width: '100%', padding: '12px 14px', borderRadius: 12, border: `1px solid ${isS ? '#14b8a6' : '#e2e8f0'}`, background: isS ? '#f0fdfa' : 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center', textAlign: 'left', cursor: 'pointer', marginBottom: 8 }}><div><div style={{ fontWeight: 700, fontSize: 14 }}>{String(sup.name || '')}</div>{sup.companyName && <div style={{ fontSize: 12, color: '#64748b' }}>{String(sup.companyName)}</div>}{sup.phone && <div style={{ fontSize: 11, color: '#94a3b8' }}>{String(sup.phone)}</div>}</div>{isS && <div style={{ color: '#0f766e', fontWeight: 800 }}>✓</div>}</button>); })}
+                {!supplierListFiltered.length ? (<div style={{ padding: 18, borderRadius: 12, border: '1px dashed #cbd5e1', background: 'white', textAlign: 'center' }}><div style={{ fontSize: 28 }}>??</div><div style={{ fontSize: 13, color: '#64748b' }}>{supplierSearch ? t.noMatchingSuppliers : t.noSuppliers}</div></div>) : supplierListFiltered.map(sup => { const isS = form.expenseBySupplierId === sup.id; return (<button key={sup.id} onClick={() => handleSelectSupplier(sup)} style={{ width: '100%', padding: '12px 14px', borderRadius: 12, border: `1px solid ${isS ? '#14b8a6' : '#e2e8f0'}`, background: isS ? '#f0fdfa' : 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center', textAlign: 'left', cursor: 'pointer', marginBottom: 8 }}><div><div style={{ fontWeight: 700, fontSize: 14 }}>{String(sup.name || '')}</div>{sup.companyName && <div style={{ fontSize: 12, color: '#64748b' }}>{String(sup.companyName)}</div>}{sup.phone && <div style={{ fontSize: 11, color: '#94a3b8' }}>{String(sup.phone)}</div>}</div>{isS && <div style={{ color: '#0f766e', fontWeight: 800 }}>?</div>}</button>); })}
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* ══ CATEGORY MODAL ══ */}
+      {/* -- CATEGORY MODAL -- */}
       {showCategoryModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(4px)', zIndex: 10001, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <div style={{ background: 'white', borderRadius: 18, width: '100%', maxWidth: 420, maxHeight: '94vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 22px', background: '#f8fafc', color: '#1e293b' }}><h3 style={{ margin: 0, fontSize: 17 }}>⚙️ {t.categoryManage}</h3><button onClick={() => setShowCategoryModal(false)} style={{ width: 36, height: 36, borderRadius: '50%', background: '#e2e8f0', border: 'none', fontSize: 18, cursor: 'pointer', color: '#64748b', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 22px', background: '#f8fafc', color: '#1e293b' }}><h3 style={{ margin: 0, fontSize: 17 }}>?? {t.categoryManage}</h3><button onClick={() => setShowCategoryModal(false)} style={{ width: 36, height: 36, borderRadius: '50%', background: '#e2e8f0', border: 'none', fontSize: 18, cursor: 'pointer', color: '#64748b', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>?</button></div>
             <div style={{ padding: 22, overflowY: 'auto', flex: 1 }}>
               <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
                 <input value={newCatName} onChange={e => setNewCatName(e.target.value)} placeholder={t.newCategoryName} onKeyDown={e => e.key === 'Enter' && handleAddCategory()} style={{ flex: 1, padding: 12, borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 14, boxSizing: 'border-box' }} />
-                <button onClick={handleAddCategory} style={{ padding: '12px 16px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: 8, fontWeight: 700, cursor: 'pointer' }}>➕</button>
+                <button onClick={handleAddCategory} style={{ padding: '12px 16px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: 8, fontWeight: 700, cursor: 'pointer' }}>?</button>
               </div>
               <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
-                {categories.map((cat, idx) => (<div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 4px', borderBottom: '1px solid #f1f5f9' }}><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ fontSize: 20 }}>{cat.icon}</span><span style={{ fontSize: 14, fontWeight: 600, color: '#334155' }}>{String(cat.name)}</span></div><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><div style={{ width: 12, height: 12, borderRadius: '50%', background: cat.color }} />{cat.isCustom && <button onClick={() => handleDeleteCategory(cat.id)} style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 8px', fontSize: 12, cursor: 'pointer', fontWeight: 700 }}>🗑️</button>}</div></div>))}
+                {categories.map((cat, idx) => (<div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 4px', borderBottom: '1px solid #f1f5f9' }}><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ fontSize: 20 }}>{cat.icon}</span><span style={{ fontSize: 14, fontWeight: 600, color: '#334155' }}>{String(cat.name)}</span></div><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><div style={{ width: 12, height: 12, borderRadius: '50%', background: cat.color }} />{cat.isCustom && <button onClick={() => handleDeleteCategory(cat.id)} style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 8px', fontSize: 12, cursor: 'pointer', fontWeight: 700 }}>???</button>}</div></div>))}
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* ══ RECEIPT VIEWER ══ */}
+      {/* -- RECEIPT VIEWER -- */}
       {viewReceipt && (
         <div onClick={() => setViewReceipt(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.92)', zIndex: 10002, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
           <div onClick={e => e.stopPropagation()} style={{ position: 'relative' }}>
             <img src={viewReceipt} alt="Receipt" style={{ maxWidth: '92vw', maxHeight: '85vh', objectFit: 'contain', borderRadius: 12 }} />
-            <button onClick={() => setViewReceipt(null)} style={{ position: 'absolute', top: -14, right: -14, background: '#ef4444', color: 'white', border: '3px solid white', borderRadius: '50%', width: 38, height: 38, fontSize: 18, cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+            <button onClick={() => setViewReceipt(null)} style={{ position: 'absolute', top: -14, right: -14, background: '#ef4444', color: 'white', border: '3px solid white', borderRadius: '50%', width: 38, height: 38, fontSize: 18, cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>?</button>
           </div>
         </div>
       )}
@@ -1136,9 +1136,9 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
   );
 }
 
-/* ═══════════════════════════════════════
+/* ---------------------------------------
    STYLES
-   ═══════════════════════════════════════ */
+   --------------------------------------- */
 const ST = {
   inp: { width: '100%', padding: 12, borderRadius: 10, border: '1px solid #e2e8f0', fontSize: 15, boxSizing: 'border-box', background: 'white', outline: 'none' },
   inpSm: { width: '100%', padding: 10, borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 14, boxSizing: 'border-box', outline: 'none' },
