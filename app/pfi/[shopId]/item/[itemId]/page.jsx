@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 
-export default async function CustomerCatalogItemPage({ params }) {
-  const { shopId, itemId } = await params;
-  redirect(/pfi/?highlight=);
+export default function CustomerCatalogItemPage({ params }) {
+  const { shopId, itemId } = params;
+  redirect(`/pfi/${shopId}?highlight=${itemId}`);
 }
