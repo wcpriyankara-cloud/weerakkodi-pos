@@ -4,17 +4,69 @@
 import React, { useState, useEffect } from 'react';
 import Sidebar from './Sidebar';
 
+/* ═══════════════════════════════════════
+   WHATSAPP HELP BUTTON
+   ═══════════════════════════════════════ */
+function WhatsAppHelpButton() {
+  const phone = '94787666999';
+  const message = encodeURIComponent(
+    'Hello, Weerakkodi POS app සඳහා උදව් අවශ්‍යයි.'
+  );
+  const whatsappUrl = `https://wa.me/${phone}?text=${message}`;
+
+  return (
+    <a
+      href={whatsappUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label="WhatsApp Help"
+      title="WhatsApp Help"
+      style={{
+        position: 'fixed',
+        right: 18,
+        bottom: 18,
+        zIndex: 9999,
+        textDecoration: 'none',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          background: 'linear-gradient(135deg, #25D366, #128C7E)',
+          color: 'white',
+          padding: '12px 16px',
+          borderRadius: 999,
+          boxShadow: '0 10px 25px rgba(0,0,0,0.22)',
+          fontWeight: 800,
+          fontSize: 14,
+          border: '1px solid rgba(255,255,255,0.15)',
+        }}
+      >
+        <span style={{ fontSize: 22, lineHeight: 1 }}>💬</span>
+        <span>WhatsApp Help</span>
+      </div>
+    </a>
+  );
+}
+
+const isValidLang = (value) => value === 'si' || value === 'en';
+
 export default function DashboardShell({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [lang, setLang] = useState('si');
   const [isMobile, setIsMobile] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
-  // Load saved language + collapse state
+  // Load saved values
   useEffect(() => {
+    setMounted(true);
+
     try {
       const savedLang = localStorage.getItem('language');
-      if (savedLang) setLang(savedLang);
+      if (isValidLang(savedLang)) setLang(savedLang);
     } catch {}
 
     try {
@@ -23,19 +75,27 @@ export default function DashboardShell({ children }) {
     } catch {}
   }, []);
 
-  // Save language
+  // Save language + notify app
   useEffect(() => {
+    if (!mounted) return;
+
     try {
       localStorage.setItem('language', lang);
     } catch {}
-  }, [lang]);
 
-  // Save collapse state
+    window.dispatchEvent(
+      new CustomEvent('app-language-change', { detail: lang })
+    );
+  }, [lang, mounted]);
+
+  // Save collapse state only for desktop
   useEffect(() => {
+    if (!mounted || isMobile) return;
+
     try {
       localStorage.setItem('sidebarCollapsed', String(collapsed));
     } catch {}
-  }, [collapsed]);
+  }, [collapsed, isMobile, mounted]);
 
   // Responsive check
   useEffect(() => {
@@ -43,9 +103,9 @@ export default function DashboardShell({ children }) {
       const mobile = window.innerWidth <= 900;
       setIsMobile(mobile);
 
-      // mobile වලදී sidebar collapsed concept disable
-      if (mobile) {
-        setCollapsed(false);
+      // desktop mode එකට ගියාම mobile drawer close කරන්න
+      if (!mobile) {
+        setSidebarOpen(false);
       }
     };
 
@@ -54,7 +114,7 @@ export default function DashboardShell({ children }) {
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  const contentMarginLeft = isMobile ? 0 : (collapsed ? 70 : 280);
+  const contentMarginLeft = !isMobile ? (collapsed ? 70 : 280) : 0;
 
   return (
     <div
@@ -67,7 +127,7 @@ export default function DashboardShell({ children }) {
         isOpen={isMobile ? sidebarOpen : true}
         onClose={() => setSidebarOpen(false)}
         isCollapsed={isMobile ? false : collapsed}
-        toggleCollapse={() => setCollapsed((p) => !p)}
+        toggleCollapse={() => setCollapsed((prev) => !prev)}
         lang={lang}
         setLang={setLang}
       />
@@ -166,6 +226,8 @@ export default function DashboardShell({ children }) {
           {children}
         </main>
       </div>
+
+      <WhatsAppHelpButton />
     </div>
   );
 }
