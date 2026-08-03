@@ -1,5 +1,7 @@
 'use client';
 
+// components/Sidebar.jsx
+
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -7,56 +9,56 @@ import { useUserAuth } from '@/context/UserContext';
 
 const TEXT = {
   si: {
-    appName: 'Weerakkodi POS',
-    dashboard: 'Dashboard',
-    sales: 'විකුණුම්',
-    operations: 'මෙහෙයුම්',
-    management: 'කළමනාකරණය',
-    reports: 'වාර්තා',
-    pos: 'POS',
-    invoices: 'ඉන්වොයිස්',
-    items: 'භාණ්ඩ',
-    purchases: 'ගැනුම්',
-    customers: 'පාරිභෝගිකයින්',
-    suppliers: 'සැපයුම්කරුවන්',
-    vehicleIncome: 'වාහන ආදායම්',
+    appName:         'Weerakkodi POS',
+    dashboard:       'Dashboard',
+    sales:           'විකුණුම්',
+    operations:      'මෙහෙයුම්',
+    management:      'කළමනාකරණය',
+    pos:             'POS',
+    invoices:        'ඉන්වොයිස්',
+    catalog:         'Catalog',
+    items:           'භාණ්ඩ',
+    purchases:       'ගැනුම්',
+    customers:       'පාරිභෝගිකයින්',
+    suppliers:       'සැපයුම්කරුවන්',
+    vehicleIncome:   'වාහන ආදායම්',
     vehicleExpenses: 'වාහන වියදම්',
-    orders: 'ඇණවුම්',
-    returns: 'ආපසු භාර',
-    shops: 'වෙළඳසැල්',
-    approved: 'අනුමත',
-    language: 'භාෂාව',
-    logout: 'Logout',
-    collapse: 'හකුළන්න',
-    expand: 'විහිදුවන්න',
-    english: 'English',
-    sinhala: 'සිංහල',
+    orders:          'ඇණවුම්',
+    returns:         'ආපසු භාර',
+    shops:           'වෙළඳසැල්',
+    approved:        'අනුමත',
+    language:        'භාෂාව',
+    logout:          'Logout',
+    collapse:        'හකුළන්න',
+    expand:          'විහිදුවන්න',
+    english:         'English',
+    sinhala:         'සිංහල',
   },
   en: {
-    appName: 'Weerakkodi POS',
-    dashboard: 'Dashboard',
-    sales: 'Sales',
-    operations: 'Operations',
-    management: 'Management',
-    reports: 'Reports',
-    pos: 'POS',
-    invoices: 'Invoices',
-    items: 'Items',
-    purchases: 'Purchases',
-    customers: 'Customers',
-    suppliers: 'Suppliers',
-    vehicleIncome: 'Vehicle Income',
+    appName:         'Weerakkodi POS',
+    dashboard:       'Dashboard',
+    sales:           'Sales',
+    operations:      'Operations',
+    management:      'Management',
+    pos:             'POS',
+    invoices:        'Invoices',
+    catalog:         'Catalog',
+    items:           'Items',
+    purchases:       'Purchases',
+    customers:       'Customers',
+    suppliers:       'Suppliers',
+    vehicleIncome:   'Vehicle Income',
     vehicleExpenses: 'Vehicle Expenses',
-    orders: 'Orders',
-    returns: 'Returns',
-    shops: 'Shops',
-    approved: 'Approved',
-    language: 'Language',
-    logout: 'Logout',
-    collapse: 'Collapse',
-    expand: 'Expand',
-    english: 'English',
-    sinhala: 'Sinhala',
+    orders:          'Orders',
+    returns:         'Returns',
+    shops:           'Shops',
+    approved:        'Approved',
+    language:        'Language',
+    logout:          'Logout',
+    collapse:        'Collapse',
+    expand:          'Expand',
+    english:         'English',
+    sinhala:         'Sinhala',
   },
 };
 
@@ -71,20 +73,21 @@ function getMenu(t) {
     {
       section: t.sales,
       items: [
-        { href: '/pos', label: t.pos, icon: '🖥️' },
-        { href: '/invoice-list', label: t.invoices, icon: '🧾' },
-        { href: '/customer-orders', label: t.orders, icon: '🛒' },
-        { href: '/return', label: t.returns, icon: '🔄' },
-        { href: '/approved', label: t.approved, icon: '✅' },
+        { href: '/pos',             label: t.pos,      icon: '🖥️' },
+        { href: '/invoice-list',    label: t.invoices, icon: '🧾' },
+        { href: '/pfi',             label: t.catalog,  icon: '🛍️' },
+        { href: '/customer-orders', label: t.orders,   icon: '🛒' },
+        { href: '/return',          label: t.returns,  icon: '🔄' },
+        { href: '/approved',        label: t.approved, icon: '✅' },
       ],
     },
     {
       section: t.operations,
       items: [
-        { href: '/items', label: t.items, icon: '📦' },
-        { href: '/purchases', label: t.purchases, icon: '📥' },
-        { href: '/vehicle-income', label: t.vehicleIncome, icon: '🚛' },
-        { href: '/vehicle-expenses', label: t.vehicleExpenses, icon: '💸' },
+        { href: '/items',             label: t.items,           icon: '📦' },
+        { href: '/purchases',         label: t.purchases,       icon: '📥' },
+        { href: '/vehicle-income',    label: t.vehicleIncome,   icon: '🚛' },
+        { href: '/vehicle-expenses',  label: t.vehicleExpenses, icon: '💸' },
       ],
     },
     {
@@ -92,7 +95,7 @@ function getMenu(t) {
       items: [
         { href: '/customers', label: t.customers, icon: '👥' },
         { href: '/suppliers', label: t.suppliers, icon: '🏭' },
-        { href: '/shops', label: t.shops, icon: '🏪' },
+        { href: '/shops',     label: t.shops,     icon: '🏪' },
       ],
     },
   ];
@@ -133,12 +136,7 @@ function SidebarItem({ item, active, collapsed, onClick }) {
         {item.icon}
       </span>
       {!collapsed && (
-        <span
-          style={{
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}
-        >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {item.label}
         </span>
       )}
@@ -158,7 +156,7 @@ export default function Sidebar({
   const { user, logOut } = useUserAuth();
   const [isMobile, setIsMobile] = useState(false);
 
-  const t = TEXT[lang] || TEXT.si;
+  const t    = TEXT[lang] || TEXT.si;
   const menu = useMemo(() => getMenu(t), [t]);
 
   useEffect(() => {
@@ -168,11 +166,8 @@ export default function Sidebar({
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  const sidebarWidth = isMobile ? 280 : (isCollapsed ? 70 : 280);
-
-  const handleNavigate = () => {
-    if (isMobile) onClose?.();
-  };
+  const sidebarWidth  = isMobile ? 280 : (isCollapsed ? 70 : 280);
+  const handleNavigate = () => { if (isMobile) onClose?.(); };
 
   const handleLangChange = (nextLang) => {
     if (nextLang !== 'si' && nextLang !== 'en') return;
@@ -180,12 +175,8 @@ export default function Sidebar({
   };
 
   const handleLogout = async () => {
-    try {
-      await logOut?.();
-      onClose?.();
-    } catch (e) {
-      console.error('Logout error:', e);
-    }
+    try { await logOut?.(); onClose?.(); }
+    catch (e) { console.error('Logout error:', e); }
   };
 
   return (
@@ -195,8 +186,7 @@ export default function Sidebar({
         <div
           onClick={onClose}
           style={{
-            position: 'fixed',
-            inset: 0,
+            position: 'fixed', inset: 0,
             background: 'rgba(15,23,42,0.45)',
             backdropFilter: 'blur(2px)',
             zIndex: 199,
@@ -206,21 +196,16 @@ export default function Sidebar({
 
       <aside
         style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: sidebarWidth,
-          height: '100vh',
+          position: 'fixed', top: 0, left: 0,
+          width: sidebarWidth, height: '100vh',
           background: 'linear-gradient(180deg,#0f172a 0%, #111827 100%)',
-          color: 'white',
-          zIndex: 200,
+          color: 'white', zIndex: 200,
           transform: isMobile
             ? (isOpen ? 'translateX(0)' : 'translateX(-100%)')
             : 'translateX(0)',
           transition: 'transform 0.3s ease, width 0.3s ease',
           boxShadow: '8px 0 30px rgba(0,0,0,0.18)',
-          display: 'flex',
-          flexDirection: 'column',
+          display: 'flex', flexDirection: 'column',
           overflow: 'hidden',
         }}
       >
@@ -229,32 +214,17 @@ export default function Sidebar({
           style={{
             padding: isCollapsed && !isMobile ? '18px 10px' : '18px 16px',
             borderBottom: '1px solid rgba(255,255,255,0.08)',
-            display: 'flex',
-            alignItems: 'center',
+            display: 'flex', alignItems: 'center',
             justifyContent: isCollapsed && !isMobile ? 'center' : 'space-between',
-            gap: 10,
-            minHeight: 72,
+            gap: 10, minHeight: 72,
           }}
         >
           {!(isCollapsed && !isMobile) && (
             <div style={{ minWidth: 0 }}>
-              <div
-                style={{
-                  fontSize: 18,
-                  fontWeight: 900,
-                  color: '#ffffff',
-                  whiteSpace: 'nowrap',
-                }}
-              >
+              <div style={{ fontSize: 18, fontWeight: 900, color: '#ffffff', whiteSpace: 'nowrap' }}>
                 🏪 {t.appName}
               </div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: '#94a3b8',
-                  marginTop: 2,
-                }}
-              >
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
                 Admin Panel
               </div>
             </div>
@@ -269,17 +239,13 @@ export default function Sidebar({
               onClick={toggleCollapse}
               title={isCollapsed ? t.expand : t.collapse}
               style={{
-                width: 34,
-                height: 34,
-                borderRadius: 10,
+                width: 34, height: 34, borderRadius: 10,
                 border: '1px solid rgba(255,255,255,0.12)',
                 background: 'rgba(255,255,255,0.06)',
-                color: 'white',
-                cursor: 'pointer',
-                flexShrink: 0,
+                color: 'white', cursor: 'pointer', flexShrink: 0,
               }}
             >
-              {isCollapsed ? '»' : '«'}
+              {isCollapsed ? '>>' : '<<'}
             </button>
           )}
 
@@ -287,17 +253,13 @@ export default function Sidebar({
             <button
               onClick={onClose}
               style={{
-                width: 34,
-                height: 34,
-                borderRadius: 10,
+                width: 34, height: 34, borderRadius: 10,
                 border: '1px solid rgba(255,255,255,0.12)',
                 background: 'rgba(255,255,255,0.06)',
-                color: 'white',
-                cursor: 'pointer',
-                flexShrink: 0,
+                color: 'white', cursor: 'pointer', flexShrink: 0,
               }}
             >
-              ✕
+              X
             </button>
           )}
         </div>
@@ -311,9 +273,7 @@ export default function Sidebar({
         >
           <div
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
+              display: 'flex', alignItems: 'center', gap: 10,
               justifyContent: isCollapsed && !isMobile ? 'center' : 'flex-start',
             }}
           >
@@ -322,9 +282,7 @@ export default function Sidebar({
                 src={user.photoURL}
                 alt={user.displayName || 'User'}
                 style={{
-                  width: 38,
-                  height: 38,
-                  borderRadius: '50%',
+                  width: 38, height: 38, borderRadius: '50%',
                   objectFit: 'cover',
                   border: '2px solid rgba(255,255,255,0.18)',
                   flexShrink: 0,
@@ -333,14 +291,10 @@ export default function Sidebar({
             ) : (
               <div
                 style={{
-                  width: 38,
-                  height: 38,
-                  borderRadius: '50%',
+                  width: 38, height: 38, borderRadius: '50%',
                   background: 'linear-gradient(135deg,#3b82f6,#8b5cf6)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontWeight: 800,
+                  display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', fontWeight: 800,
                   flexShrink: 0,
                 }}
               >
@@ -352,24 +306,17 @@ export default function Sidebar({
               <div style={{ minWidth: 0 }}>
                 <div
                   style={{
-                    fontSize: 13,
-                    fontWeight: 800,
-                    color: '#f8fafc',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
+                    fontSize: 13, fontWeight: 800, color: '#f8fafc',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}
                 >
                   {user?.displayName || 'User'}
                 </div>
                 <div
                   style={{
-                    fontSize: 11,
-                    color: '#94a3b8',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    maxWidth: 180,
+                    fontSize: 11, color: '#94a3b8',
+                    overflow: 'hidden', textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap', maxWidth: 180,
                   }}
                 >
                   {user?.email || ''}
@@ -380,31 +327,20 @@ export default function Sidebar({
         </div>
 
         {/* Menu */}
-        <div
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            padding: 12,
-          }}
-        >
+        <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
           {menu.map((group) => (
             <div key={group.section} style={{ marginBottom: 16 }}>
               {!(isCollapsed && !isMobile) && (
                 <div
                   style={{
-                    fontSize: 11,
-                    color: '#64748b',
-                    fontWeight: 800,
-                    textTransform: 'uppercase',
-                    letterSpacing: 0.8,
-                    padding: '6px 10px',
-                    marginBottom: 6,
+                    fontSize: 11, color: '#64748b', fontWeight: 800,
+                    textTransform: 'uppercase', letterSpacing: 0.8,
+                    padding: '6px 10px', marginBottom: 6,
                   }}
                 >
                   {group.section}
                 </div>
               )}
-
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {group.items.map((item) => (
                   <SidebarItem
@@ -425,9 +361,7 @@ export default function Sidebar({
           style={{
             padding: 12,
             borderTop: '1px solid rgba(255,255,255,0.08)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
+            display: 'flex', flexDirection: 'column', gap: 10,
           }}
         >
           {/* Language */}
@@ -440,22 +374,14 @@ export default function Sidebar({
             }}
           >
             {!(isCollapsed && !isMobile) && (
-              <div
-                style={{
-                  fontSize: 11,
-                  color: '#94a3b8',
-                  fontWeight: 700,
-                  marginBottom: 8,
-                }}
-              >
+              <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 700, marginBottom: 8 }}>
                 {t.language}
               </div>
             )}
 
             <div
               style={{
-                display: 'flex',
-                gap: 6,
+                display: 'flex', gap: 6,
                 flexDirection: isCollapsed && !isMobile ? 'column' : 'row',
               }}
             >
@@ -470,13 +396,11 @@ export default function Sidebar({
                     ? '1px solid #3b82f6'
                     : '1px solid rgba(255,255,255,0.08)',
                   background: lang === 'si' ? '#1d4ed8' : 'rgba(255,255,255,0.04)',
-                  color: 'white',
-                  cursor: 'pointer',
-                  fontWeight: 700,
-                  fontSize: 12,
+                  color: 'white', cursor: 'pointer',
+                  fontWeight: 700, fontSize: 12,
                 }}
               >
-                {isCollapsed && !isMobile ? 'සි' : t.sinhala}
+                {isCollapsed && !isMobile ? 'si' : t.sinhala}
               </button>
 
               <button
@@ -490,10 +414,8 @@ export default function Sidebar({
                     ? '1px solid #3b82f6'
                     : '1px solid rgba(255,255,255,0.08)',
                   background: lang === 'en' ? '#1d4ed8' : 'rgba(255,255,255,0.04)',
-                  color: 'white',
-                  cursor: 'pointer',
-                  fontWeight: 700,
-                  fontSize: 12,
+                  color: 'white', cursor: 'pointer',
+                  fontWeight: 700, fontSize: 12,
                 }}
               >
                 EN
@@ -511,14 +433,10 @@ export default function Sidebar({
               borderRadius: 12,
               border: '1px solid rgba(239,68,68,0.35)',
               background: 'rgba(239,68,68,0.12)',
-              color: '#fecaca',
-              cursor: 'pointer',
-              fontWeight: 800,
-              fontSize: 13,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: isCollapsed && !isMobile ? 'center' : 'center',
-              gap: 8,
+              color: '#fecaca', cursor: 'pointer',
+              fontWeight: 800, fontSize: 13,
+              display: 'flex', alignItems: 'center',
+              justifyContent: 'center', gap: 8,
             }}
           >
             <span>🚪</span>
