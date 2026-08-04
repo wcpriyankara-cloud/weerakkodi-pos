@@ -2,7 +2,7 @@
 
 // app/(protected)/stock-adjustment/page.jsx
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { db } from '@/lib/firebase';
 import {
   collection, query, where, onSnapshot,
@@ -10,30 +10,135 @@ import {
   getDocs, writeBatch,
 } from 'firebase/firestore';
 import { useUserAuth } from '@/context/UserContext';
+import { useLang } from '@/hooks/useLang';
+
+/* ═══════════════════════════════════════
+   TRANSLATIONS
+═══════════════════════════════════════ */
+const TEXT = {
+  si: {
+    pageTitle:        '📦 Stock & Price Adjustment',
+    searchLabel:      '🔍 භාණ්ඩය සොයන්න',
+    searchPlaceholder:'නම, කේතය හෝ බාර්කෝඩ් ටයිප් කරන්න...',
+    noResults:        'ප්‍රතිඵල නොමැත',
+    selectPrompt:     'Edit කිරීමට ඉහත Search Box එකෙන් Item එකක් තෝරන්න',
+    editTitle:        'Edit:',
+    fieldsChanged:    'field(s) changed',
+    syncBtn:          '🔄 Sync Missing History',
+    syncing:          '⏳ Syncing...',
+    syncConfirm:      'මෙමගින් දැනට History නොමැති නමුත් Stock ඇති Items සඳහා History සටහන් සාදනු ඇත. ඉදිරියට යන්නද?',
+    syncDone:         'Items සඳහා History සාදන ලදී.',
+    syncNone:         'යාවත්කාලීන කිරීමට Items නොමැත.',
+    generalInfo:      '📋 සාමාන්‍ය තොරතුරු',
+    discountReceived: 'ලැබුණු වට්ටම %',
+    expiryDate:       '📅 කල් ඉකුත් දිනය',
+    racks:            '📍 රාක්ක',
+    quantity:         '📦 ප්‍රමාණය (Stock)',
+    added:            'Added',
+    reduced:          'Reduced',
+    retailPricing:    '🏪 සිල්ලර මිල ගණන්',
+    wholesalePricing: '🏭 තොග මිල ගණන්',
+    loosePricing:     '📦 ලූස් මිල ගණන්',
+    looseItem:        'LOOSE ITEM',
+    sellingPrice:     'විකුණුම් මිල (Rs.)',
+    sellingDiscount:  'විකුණුම් වට්ටම %',
+    yourPrice:        'ඔබේ මිල ✨ Auto',
+    loosePrice:       'ලූස් මිල (Rs.)',
+    looseDiscount:    'ලූස් වට්ටම %',
+    yourLoosePrice:   'ලූස් ඔබේ මිල ✨ Auto',
+    saving:           '⏳ සුරකිමින්...',
+    noChanges:        '✅ වෙනස්කම් නැත',
+    saveChanges:      '💾 වෙනස්කම් සුරකින්න',
+    reset:            '🔄 Reset',
+    saveSuccess:      'Item සාර්ථකව යාවත්කාලීන කරන ලදී!',
+    selectItemError:  'කරුණාකර Item එකක් තෝරන්න',
+    historyTitle:     '🕒 Stock Adjustment ඉතිහාසය',
+    noAdjustments:    'Adjustments නොමැත',
+    date:             'දිනය',
+    item:             'භාණ්ඩය',
+    type:             'වර්ගය',
+    qtyLabel:         'ප්‍රමාණය',
+    reason:           'හේතුව',
+    stock:            'Stock',
+    code:             'Code',
+    items:            'items',
+    confirmTitle:     '⚠️ තහවුරු කරන්න',
+    confirmYes:       'ඔව්, ඉදිරියට යන්න',
+    confirmNo:        'අවලංගු',
+  },
+  en: {
+    pageTitle:        '📦 Stock & Price Adjustment',
+    searchLabel:      '🔍 Search Item',
+    searchPlaceholder:'Type name, code or barcode...',
+    noResults:        'No results',
+    selectPrompt:     'Select an item from the search box above to edit',
+    editTitle:        'Edit:',
+    fieldsChanged:    'field(s) changed',
+    syncBtn:          '🔄 Sync Missing History',
+    syncing:          '⏳ Syncing...',
+    syncConfirm:      'This will create history records for items with stock but no history. Continue?',
+    syncDone:         'History created for items.',
+    syncNone:         'No items to update.',
+    generalInfo:      '📋 General Information',
+    discountReceived: 'Discount Received %',
+    expiryDate:       '📅 Expiry Date',
+    racks:            '📍 Racks',
+    quantity:         '📦 Quantity (Stock)',
+    added:            'Added',
+    reduced:          'Reduced',
+    retailPricing:    '🏪 Retail Pricing',
+    wholesalePricing: '🏭 Wholesale Pricing',
+    loosePricing:     '📦 Loose Pricing',
+    looseItem:        'LOOSE ITEM',
+    sellingPrice:     'Selling Price (Rs.)',
+    sellingDiscount:  'Selling Discount %',
+    yourPrice:        'Your Price ✨ Auto',
+    loosePrice:       'Loose Price (Rs.)',
+    looseDiscount:    'Loose Discount %',
+    yourLoosePrice:   'Your Loose Price ✨ Auto',
+    saving:           '⏳ Saving...',
+    noChanges:        '✅ No Changes',
+    saveChanges:      '💾 Save Changes',
+    reset:            '🔄 Reset',
+    saveSuccess:      'Item updated successfully!',
+    selectItemError:  'Please select an item',
+    historyTitle:     '🕒 Stock Adjustment History',
+    noAdjustments:    'No adjustments yet',
+    date:             'Date',
+    item:             'Item',
+    type:             'Type',
+    qtyLabel:         'Qty',
+    reason:           'Reason',
+    stock:            'Stock',
+    code:             'Code',
+    items:            'items',
+    confirmTitle:     '⚠️ Confirm',
+    confirmYes:       'Yes, Continue',
+    confirmNo:        'Cancel',
+  },
+};
 
 /* ═══════════════════════════════════════
    TOAST
 ═══════════════════════════════════════ */
 function Toast({ message, type, onClose }) {
   useEffect(() => {
-    const t = setTimeout(onClose, 3000);
-    return () => clearTimeout(t);
+    const timer = setTimeout(onClose, 3000);
+    return () => clearTimeout(timer);
   }, [onClose]);
 
   return (
-    <div
-      style={{
-        position: 'fixed', top: 20, left: '50%',
-        transform: 'translateX(-50%)',
-        background: type === 'error' ? '#dc2626' : '#16a34a',
-        color: 'white', padding: '12px 22px',
-        borderRadius: 12, fontWeight: 700,
-        fontSize: 14, zIndex: 9999,
-        boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
-        animation: 'fadeIn 0.3s ease',
-        maxWidth: 360, textAlign: 'center',
-      }}
-    >
+    <div style={{
+      position: 'fixed', top: 20, left: '50%',
+      transform: 'translateX(-50%)',
+      background: type === 'error' ? '#dc2626' : '#16a34a',
+      color: 'white', padding: '12px 22px',
+      borderRadius: 12, fontWeight: 700,
+      fontSize: 14, zIndex: 9999,
+      boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+      animation: 'fadeIn 0.3s ease',
+      maxWidth: 360, textAlign: 'center',
+    }}>
       {message}
       <style>{`
         @keyframes fadeIn {
@@ -48,7 +153,7 @@ function Toast({ message, type, onClose }) {
 /* ═══════════════════════════════════════
    CONFIRM MODAL
 ═══════════════════════════════════════ */
-function ConfirmModal({ message, onConfirm, onCancel }) {
+function ConfirmModal({ message, onConfirm, onCancel, t }) {
   return (
     <div
       style={{
@@ -69,7 +174,7 @@ function ConfirmModal({ message, onConfirm, onCancel }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ fontSize: 20, marginBottom: 14, color: '#1e293b', fontWeight: 700 }}>
-          ⚠️ Confirm
+          {t.confirmTitle}
         </div>
         <p style={{ color: '#475569', fontSize: 14, lineHeight: 1.6, marginBottom: 20 }}>
           {message}
@@ -84,7 +189,7 @@ function ConfirmModal({ message, onConfirm, onCancel }) {
               fontWeight: 700, fontSize: 14, cursor: 'pointer',
             }}
           >
-            අවලංගු
+            {t.confirmNo}
           </button>
           <button
             onClick={onConfirm}
@@ -95,7 +200,7 @@ function ConfirmModal({ message, onConfirm, onCancel }) {
               fontWeight: 700, fontSize: 14, cursor: 'pointer',
             }}
           >
-            ඔව්, ඉදිරියට යන්න
+            {t.confirmYes}
           </button>
         </div>
       </div>
@@ -108,6 +213,8 @@ function ConfirmModal({ message, onConfirm, onCancel }) {
 ═══════════════════════════════════════ */
 export default function StockAdjustmentPage() {
   const { user } = useUserAuth();
+  const { lang } = useLang();
+  const t = useMemo(() => TEXT[lang] || TEXT.si, [lang]);
 
   const [items,       setItems]       = useState([]);
   const [adjustments, setAdjustments] = useState([]);
@@ -226,11 +333,13 @@ export default function StockAdjustmentPage() {
   }, [user, loadHistory]);
 
   /* ── Filtered items ── */
-  const filteredItems = items.filter((item) =>
-    item.name?.toLowerCase().includes(searchText.toLowerCase()) ||
-    item.code?.toLowerCase().includes(searchText.toLowerCase()) ||
-    item.barcode?.toLowerCase().includes(searchText.toLowerCase())
-  );
+  const filteredItems = useMemo(() =>
+    items.filter((item) =>
+      item.name?.toLowerCase().includes(searchText.toLowerCase()) ||
+      item.code?.toLowerCase().includes(searchText.toLowerCase()) ||
+      item.barcode?.toLowerCase().includes(searchText.toLowerCase())
+    ),
+  [items, searchText]);
 
   /* ── Handlers ── */
   const handleSelectItem = (item) => {
@@ -286,7 +395,7 @@ export default function StockAdjustmentPage() {
   /* ── Save ── */
   const handleSaveEdit = async () => {
     if (!selectedItem || !editData) {
-      showToast('කරුණාකර Item එකක් තෝරන්න', 'error');
+      showToast(t.selectItemError, 'error');
       return;
     }
 
@@ -296,8 +405,7 @@ export default function StockAdjustmentPage() {
       const itemRef = doc(db, 'items', selectedItem);
 
       const toNum = (val) =>
-        val !== '' && val !== undefined && val !== null
-          ? parseFloat(val) : '';
+        val !== '' && val !== undefined && val !== null ? parseFloat(val) : '';
 
       const newStock = parseFloat(editData.stock) || 0;
 
@@ -329,19 +437,19 @@ export default function StockAdjustmentPage() {
 
       if (diff !== 0) {
         await addDoc(collection(db, 'stockAdjustments'), {
-          uid:      user.uid,
-          itemId:   selectedItem,
-          itemName: item?.name || 'Unknown',
-          type:     diff > 0 ? 'add' : 'reduce',
-          qty:      Math.abs(diff),
-          reason:   'Direct Edit (Stock Adjusted)',
-          date:     new Date().toISOString().split('T')[0],
+          uid:       user.uid,
+          itemId:    selectedItem,
+          itemName:  item?.name || 'Unknown',
+          type:      diff > 0 ? 'add' : 'reduce',
+          qty:       Math.abs(diff),
+          reason:    'Direct Edit (Stock Adjusted)',
+          date:      new Date().toISOString().split('T')[0],
           createdAt: serverTimestamp(),
         });
         setTimeout(() => loadHistory(), 500);
       }
 
-      showToast('Item සාර්ථකව යාවත්කාලීන කරන ලදී!');
+      showToast(t.saveSuccess);
     } catch (e) {
       console.error(e);
       showToast('Error: ' + e.message, 'error');
@@ -352,15 +460,13 @@ export default function StockAdjustmentPage() {
 
   /* ── Sync ── */
   const handleSyncMissingHistory = async () => {
-    const confirmed = await showConfirm(
-      'මෙමගින් දැනට History නොමැති නමුත් Stock ඇති Items සඳහා History සටහන් සාදනු ඇත. ඉදිරියට යන්නද?'
-    );
+    const confirmed = await showConfirm(t.syncConfirm);
     if (!confirmed) return;
 
     setIsSyncing(true);
     try {
-      const batch      = writeBatch(db);
-      let   count      = 0;
+      const batch       = writeBatch(db);
+      let   count       = 0;
       const existingIds = new Set(adjustments.map((a) => a.itemId));
 
       items.forEach((item) => {
@@ -368,13 +474,13 @@ export default function StockAdjustmentPage() {
         if (actualStock > 0 && !existingIds.has(item.id)) {
           const ref = doc(collection(db, 'stockAdjustments'));
           batch.set(ref, {
-            uid:      user.uid,
-            itemId:   item.id,
-            itemName: item.name || 'Unknown',
-            type:     'add',
-            qty:      actualStock,
-            reason:   'Bulk Import (System Synced)',
-            date:     new Date().toISOString().split('T')[0],
+            uid:       user.uid,
+            itemId:    item.id,
+            itemName:  item.name || 'Unknown',
+            type:      'add',
+            qty:       actualStock,
+            reason:    'Bulk Import (System Synced)',
+            date:      new Date().toISOString().split('T')[0],
             createdAt: serverTimestamp(),
           });
           count++;
@@ -383,10 +489,10 @@ export default function StockAdjustmentPage() {
 
       if (count > 0) {
         await batch.commit();
-        showToast(`Items ${count} ක් සඳහා History සාදන ලදී.`);
+        showToast(`${count} ${t.syncDone}`);
         loadHistory();
       } else {
-        showToast('යාවත්කාලීන කිරීමට Items නොමැත.', 'error');
+        showToast(t.syncNone, 'error');
       }
     } catch (err) {
       console.error(err);
@@ -397,17 +503,16 @@ export default function StockAdjustmentPage() {
   };
 
   /* ── Changed fields ── */
-  const getChangedFields = () => {
+  const changedFields = useMemo(() => {
     if (!editData || !originalData) return [];
     return Object.keys(editData).filter(
       (key) => String(editData[key]) !== String(originalData[key])
     );
-  };
-  const changedFields = getChangedFields();
+  }, [editData, originalData]);
 
-  /* ─────────────────────────────
+  /* ═══════════════════════════════════════
      STYLES
-  ───────────────────────────── */
+  ═══════════════════════════════════════ */
   const cardStyle = {
     background: 'white', padding: 20, borderRadius: 12,
     boxShadow: '0 2px 8px rgba(0,0,0,0.06)', marginBottom: 20,
@@ -435,7 +540,6 @@ export default function StockAdjustmentPage() {
     width: '100%', padding: '9px 10px', borderRadius: 6,
     border: '1px solid #cbd5e1', fontSize: 14,
     boxSizing: 'border-box', outline: 'none',
-    transition: 'border 0.2s',
   };
 
   const autoInputStyle = {
@@ -453,9 +557,7 @@ export default function StockAdjustmentPage() {
     };
   };
 
-  /* ─────────────────────────────
-     LOADING
-  ───────────────────────────── */
+  /* ── Loading ── */
   if (loading) {
     return (
       <div style={{ textAlign: 'center', padding: 50 }}>
@@ -470,33 +572,22 @@ export default function StockAdjustmentPage() {
     );
   }
 
-  /* ─────────────────────────────
+  /* ═══════════════════════════════════════
      RENDER
-  ───────────────────────────── */
+  ═══════════════════════════════════════ */
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: 20 }}>
 
-      {/* Toast */}
       {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onClose={() => setToast(null)}
-        />
+        <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
       )}
 
-      {/* Confirm Modal */}
       {confirm && (
         <ConfirmModal
           message={confirm.message}
-          onConfirm={() => {
-            confirm.resolve(true);
-            setConfirm(null);
-          }}
-          onCancel={() => {
-            confirm.resolve(false);
-            setConfirm(null);
-          }}
+          t={t}
+          onConfirm={() => { confirm.resolve(true); setConfirm(null); }}
+          onCancel={() => { confirm.resolve(false); setConfirm(null); }}
         />
       )}
 
@@ -506,9 +597,7 @@ export default function StockAdjustmentPage() {
         alignItems: 'center', marginBottom: 20,
         flexWrap: 'wrap', gap: 10,
       }}>
-        <h2 style={{ color: '#1e293b', margin: 0 }}>
-          📦 Stock & Price Adjustment
-        </h2>
+        <h2 style={{ color: '#1e293b', margin: 0 }}>{t.pageTitle}</h2>
         <button
           onClick={handleSyncMissingHistory}
           disabled={isSyncing}
@@ -518,15 +607,15 @@ export default function StockAdjustmentPage() {
             fontSize: 13, cursor: isSyncing ? 'not-allowed' : 'pointer',
           }}
         >
-          {isSyncing ? '⏳ Syncing...' : '🔄 Sync Missing History'}
+          {isSyncing ? t.syncing : t.syncBtn}
         </button>
       </div>
 
-      {/* Search & Select */}
+      {/* Search */}
       <div style={cardStyle}>
         <div style={{ position: 'relative' }} ref={dropdownRef}>
           <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 5, fontSize: 15 }}>
-            🔍 Search & Select Item
+            {t.searchLabel}
           </label>
 
           <div style={{ position: 'relative' }}>
@@ -546,7 +635,7 @@ export default function StockAdjustmentPage() {
                 }
               }}
               onFocus={() => setIsDropdownOpen(true)}
-              placeholder="Item name, code or barcode type කරන්න..."
+              placeholder={t.searchPlaceholder}
               style={{
                 width: '100%', padding: '12px 40px 12px 14px',
                 borderRadius: 8, fontSize: 14,
@@ -565,12 +654,11 @@ export default function StockAdjustmentPage() {
                   color: '#94a3b8', padding: 0,
                 }}
               >
-                ✕
+                X
               </button>
             )}
           </div>
 
-          {/* Selected badge */}
           {selectedItem && (() => {
             const si = items.find((i) => i.id === selectedItem);
             return (
@@ -580,14 +668,13 @@ export default function StockAdjustmentPage() {
                 fontSize: 13, color: '#166534',
                 display: 'inline-flex', alignItems: 'center', gap: 8,
               }}>
-                ✅ <strong>{si?.name}</strong>
-                {si?.code && <span style={{ color: '#64748b' }}>| Code: {si.code}</span>}
-                <span>| Stock: <strong>{getActualStock(si)}</strong></span>
+                <strong>{si?.name}</strong>
+                {si?.code && <span style={{ color: '#64748b' }}>| {t.code}: {si.code}</span>}
+                <span>| {t.stock}: <strong>{getActualStock(si)}</strong></span>
               </div>
             );
           })()}
 
-          {/* Dropdown */}
           {isDropdownOpen && (
             <div style={{
               position: 'absolute', top: '100%', left: 0, right: 0,
@@ -597,11 +684,8 @@ export default function StockAdjustmentPage() {
               maxHeight: 280, overflowY: 'auto', marginTop: 4,
             }}>
               {filteredItems.length === 0 ? (
-                <div style={{
-                  padding: '20px 12px', textAlign: 'center',
-                  color: '#94a3b8', fontSize: 14,
-                }}>
-                  🔍 "{searchText}" සඳහා ප්‍රතිඵල නොමැත
+                <div style={{ padding: '20px 12px', textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>
+                  🔍 "{searchText}" — {t.noResults}
                 </div>
               ) : filteredItems.map((item, idx) => {
                 const stk = getActualStock(item);
@@ -613,25 +697,15 @@ export default function StockAdjustmentPage() {
                       padding: '10px 14px', cursor: 'pointer',
                       display: 'flex', justifyContent: 'space-between',
                       alignItems: 'center',
-                      borderBottom: idx < filteredItems.length - 1
-                        ? '1px solid #f1f5f9' : 'none',
+                      borderBottom: idx < filteredItems.length - 1 ? '1px solid #f1f5f9' : 'none',
                       background: selectedItem === item.id ? '#eff6ff' : 'white',
                     }}
-                    onMouseEnter={(e) =>
-                      (e.currentTarget.style.background = '#f8fafc')
-                    }
-                    onMouseLeave={(e) =>
-                      (e.currentTarget.style.background =
-                        selectedItem === item.id ? '#eff6ff' : 'white')
-                    }
+                    onMouseEnter={(e) => (e.currentTarget.style.background = '#f8fafc')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = selectedItem === item.id ? '#eff6ff' : 'white')}
                   >
                     <div>
                       <div style={{ fontWeight: 600, fontSize: 14 }}>{item.name}</div>
-                      {item.code && (
-                        <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>
-                          Code: {item.code}
-                        </div>
-                      )}
+                      {item.code && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{t.code}: {item.code}</div>}
                     </div>
                     <span style={{
                       padding: '3px 10px', borderRadius: 12,
@@ -639,7 +713,7 @@ export default function StockAdjustmentPage() {
                       background: stk > 0 ? '#dcfce7' : '#fee2e2',
                       color:      stk > 0 ? '#166534' : '#991b1b',
                     }}>
-                      Stock: {stk}
+                      {t.stock}: {stk}
                     </span>
                   </div>
                 );
@@ -650,7 +724,7 @@ export default function StockAdjustmentPage() {
                   fontSize: 12, color: '#94a3b8', textAlign: 'center',
                   borderTop: '1px solid #e2e8f0',
                 }}>
-                  📋 {filteredItems.length} / {items.length} items
+                  {filteredItems.length} / {items.length} {t.items}
                 </div>
               )}
             </div>
@@ -666,7 +740,7 @@ export default function StockAdjustmentPage() {
             alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8,
           }}>
             <h3 style={{ margin: 0, color: '#1e293b' }}>
-              ✏️ Edit: {items.find((i) => i.id === selectedItem)?.name}
+              ✏️ {t.editTitle} {items.find((i) => i.id === selectedItem)?.name}
             </h3>
             {changedFields.length > 0 && (
               <span style={{
@@ -674,50 +748,29 @@ export default function StockAdjustmentPage() {
                 borderRadius: 20, fontSize: 12, fontWeight: 'bold',
                 color: '#92400e',
               }}>
-                ⚡ {changedFields.length} field(s) changed
+                ⚡ {changedFields.length} {t.fieldsChanged}
               </span>
             )}
           </div>
 
-          {/* Section 1 — General Info */}
+          {/* General Info */}
           <div style={sectionStyle}>
-            <div style={sectionTitleStyle}>📋 General Information</div>
+            <div style={sectionTitleStyle}>{t.generalInfo}</div>
             <div style={fieldRowStyle}>
-
               <div style={fieldStyle}>
-                <label style={labelStyle}>Discount Received %</label>
-                <input
-                  type="number" step="0.01" min="0"
-                  value={editData.discountReceived}
-                  onChange={(e) => handleEditChange('discountReceived', e.target.value)}
-                  style={getFieldInputStyle('discountReceived')}
-                  placeholder="0"
-                />
+                <label style={labelStyle}>{t.discountReceived}</label>
+                <input type="number" step="0.01" min="0" value={editData.discountReceived} onChange={(e) => handleEditChange('discountReceived', e.target.value)} style={getFieldInputStyle('discountReceived')} placeholder="0" />
               </div>
-
               <div style={fieldStyle}>
-                <label style={labelStyle}>📅 Expiry Date</label>
-                <input
-                  type="date"
-                  value={editData.expiryDate}
-                  onChange={(e) => handleEditChange('expiryDate', e.target.value)}
-                  style={getFieldInputStyle('expiryDate')}
-                />
+                <label style={labelStyle}>{t.expiryDate}</label>
+                <input type="date" value={editData.expiryDate} onChange={(e) => handleEditChange('expiryDate', e.target.value)} style={getFieldInputStyle('expiryDate')} />
               </div>
-
               <div style={fieldStyle}>
-                <label style={labelStyle}>📍 Racks</label>
-                <input
-                  type="text"
-                  value={editData.racks}
-                  onChange={(e) => handleEditChange('racks', e.target.value)}
-                  style={getFieldInputStyle('racks')}
-                  placeholder="e.g. A1, B2"
-                />
+                <label style={labelStyle}>{t.racks}</label>
+                <input type="text" value={editData.racks} onChange={(e) => handleEditChange('racks', e.target.value)} style={getFieldInputStyle('racks')} placeholder="A1, B2" />
               </div>
-
               <div style={fieldStyle}>
-                <label style={labelStyle}>📦 Quantity (Stock)</label>
+                <label style={labelStyle}>{t.quantity}</label>
                 <input
                   type="number" min="0" step="1"
                   value={editData.stock}
@@ -725,24 +778,21 @@ export default function StockAdjustmentPage() {
                   style={{
                     ...getFieldInputStyle('stock'),
                     fontWeight: 'bold', fontSize: 16,
-                    border: changedFields.includes('stock')
-                      ? '2px solid #ef4444' : '2px solid #3b82f6',
-                    background: changedFields.includes('stock')
-                      ? '#fef2f2' : '#eff6ff',
+                    border: changedFields.includes('stock') ? '2px solid #ef4444' : '2px solid #3b82f6',
+                    background: changedFields.includes('stock') ? '#fef2f2' : '#eff6ff',
                   }}
                   placeholder="0"
                 />
                 {changedFields.includes('stock') && (
                   <div style={{
                     marginTop: 4, fontSize: 12, fontWeight: 'bold',
-                    color: (parseFloat(editData.stock) || 0) >= (originalData?._stock || 0)
-                      ? '#16a34a' : '#dc2626',
+                    color: (parseFloat(editData.stock) || 0) >= (originalData?._stock || 0) ? '#16a34a' : '#dc2626',
                   }}>
                     {(() => {
                       const diff = (parseFloat(editData.stock) || 0) - (originalData?._stock || 0);
                       return diff > 0
-                        ? `📈 +${diff} (Added)`
-                        : `📉 ${diff} (Reduced)`;
+                        ? `📈 +${diff} (${t.added})`
+                        : `📉 ${diff} (${t.reduced})`;
                     })()}
                   </div>
                 )}
@@ -750,146 +800,89 @@ export default function StockAdjustmentPage() {
             </div>
           </div>
 
-          {/* Section 2 — Retail Pricing */}
+          {/* Retail */}
           <div style={{ ...sectionStyle, border: '1px solid #bfdbfe', background: '#f0f9ff' }}>
-            <div style={sectionTitleStyle}>🏪 Retail Pricing</div>
+            <div style={sectionTitleStyle}>{t.retailPricing}</div>
             <div style={fieldRowStyle}>
               <div style={fieldStyle}>
-                <label style={labelStyle}>Selling Price (Rs.)</label>
-                <input
-                  type="number" step="0.01" min="0"
-                  value={editData.retailSellingPrice}
-                  onChange={(e) => handleEditChange('retailSellingPrice', e.target.value)}
-                  style={getFieldInputStyle('retailSellingPrice')}
-                  placeholder="0.00"
-                />
+                <label style={labelStyle}>{t.sellingPrice}</label>
+                <input type="number" step="0.01" min="0" value={editData.retailSellingPrice} onChange={(e) => handleEditChange('retailSellingPrice', e.target.value)} style={getFieldInputStyle('retailSellingPrice')} placeholder="0.00" />
               </div>
               <div style={fieldStyle}>
-                <label style={labelStyle}>Selling Discount %</label>
-                <input
-                  type="number" step="0.01" min="0" max="100"
-                  value={editData.retailSellingDiscount}
-                  onChange={(e) => handleEditChange('retailSellingDiscount', e.target.value)}
-                  style={getFieldInputStyle('retailSellingDiscount')}
-                  placeholder="0"
-                />
+                <label style={labelStyle}>{t.sellingDiscount}</label>
+                <input type="number" step="0.01" min="0" max="100" value={editData.retailSellingDiscount} onChange={(e) => handleEditChange('retailSellingDiscount', e.target.value)} style={getFieldInputStyle('retailSellingDiscount')} placeholder="0" />
               </div>
               <div style={fieldStyle}>
-                <label style={{ ...labelStyle, color: '#166534' }}>Your Price ✨ Auto</label>
-                <input
-                  type="text" readOnly
-                  value={editData.retailYourPrice ? `Rs. ${editData.retailYourPrice}` : ''}
-                  style={autoInputStyle}
-                />
+                <label style={{ ...labelStyle, color: '#166534' }}>{t.yourPrice}</label>
+                <input type="text" readOnly value={editData.retailYourPrice ? `Rs. ${editData.retailYourPrice}` : ''} style={autoInputStyle} />
               </div>
             </div>
           </div>
 
-          {/* Section 3 — Wholesale Pricing */}
+          {/* Wholesale */}
           <div style={{ ...sectionStyle, border: '1px solid #c4b5fd', background: '#f5f3ff' }}>
-            <div style={sectionTitleStyle}>🏭 Wholesale Pricing</div>
+            <div style={sectionTitleStyle}>{t.wholesalePricing}</div>
             <div style={fieldRowStyle}>
               <div style={fieldStyle}>
-                <label style={labelStyle}>Selling Price (Rs.)</label>
-                <input
-                  type="number" step="0.01" min="0"
-                  value={editData.wholesaleSellingPrice}
-                  onChange={(e) => handleEditChange('wholesaleSellingPrice', e.target.value)}
-                  style={getFieldInputStyle('wholesaleSellingPrice')}
-                  placeholder="0.00"
-                />
+                <label style={labelStyle}>{t.sellingPrice}</label>
+                <input type="number" step="0.01" min="0" value={editData.wholesaleSellingPrice} onChange={(e) => handleEditChange('wholesaleSellingPrice', e.target.value)} style={getFieldInputStyle('wholesaleSellingPrice')} placeholder="0.00" />
               </div>
               <div style={fieldStyle}>
-                <label style={labelStyle}>Selling Discount %</label>
-                <input
-                  type="number" step="0.01" min="0" max="100"
-                  value={editData.wholesaleSellingDiscount}
-                  onChange={(e) => handleEditChange('wholesaleSellingDiscount', e.target.value)}
-                  style={getFieldInputStyle('wholesaleSellingDiscount')}
-                  placeholder="0"
-                />
+                <label style={labelStyle}>{t.sellingDiscount}</label>
+                <input type="number" step="0.01" min="0" max="100" value={editData.wholesaleSellingDiscount} onChange={(e) => handleEditChange('wholesaleSellingDiscount', e.target.value)} style={getFieldInputStyle('wholesaleSellingDiscount')} placeholder="0" />
               </div>
               <div style={fieldStyle}>
-                <label style={{ ...labelStyle, color: '#166534' }}>Your Price ✨ Auto</label>
-                <input
-                  type="text" readOnly
-                  value={editData.wholesaleYourPrice ? `Rs. ${editData.wholesaleYourPrice}` : ''}
-                  style={autoInputStyle}
-                />
+                <label style={{ ...labelStyle, color: '#166534' }}>{t.yourPrice}</label>
+                <input type="text" readOnly value={editData.wholesaleYourPrice ? `Rs. ${editData.wholesaleYourPrice}` : ''} style={autoInputStyle} />
               </div>
             </div>
           </div>
 
-          {/* Section 4 — Loose Pricing */}
+          {/* Loose */}
           {hasLoosePrice && (
             <div style={{ ...sectionStyle, border: '2px solid #fbbf24', background: '#fffbeb' }}>
               <div style={sectionTitleStyle}>
-                📦 Loose Pricing
-                <span style={{
-                  padding: '2px 8px', background: '#fbbf24',
-                  color: '#78350f', borderRadius: 12,
-                  fontSize: 11, fontWeight: 'bold',
-                }}>
-                  LOOSE ITEM
+                {t.loosePricing}
+                <span style={{ padding: '2px 8px', background: '#fbbf24', color: '#78350f', borderRadius: 12, fontSize: 11, fontWeight: 'bold' }}>
+                  {t.looseItem}
                 </span>
               </div>
               <div style={fieldRowStyle}>
                 <div style={fieldStyle}>
-                  <label style={labelStyle}>Selling Price Loose (Rs.)</label>
-                  <input
-                    type="number" step="0.01" min="0"
-                    value={editData.retailSellingPriceLoose}
-                    onChange={(e) => handleEditChange('retailSellingPriceLoose', e.target.value)}
-                    style={getFieldInputStyle('retailSellingPriceLoose')}
-                    placeholder="0.00"
-                  />
+                  <label style={labelStyle}>{t.loosePrice}</label>
+                  <input type="number" step="0.01" min="0" value={editData.retailSellingPriceLoose} onChange={(e) => handleEditChange('retailSellingPriceLoose', e.target.value)} style={getFieldInputStyle('retailSellingPriceLoose')} placeholder="0.00" />
                 </div>
                 <div style={fieldStyle}>
-                  <label style={labelStyle}>Loose Discount %</label>
-                  <input
-                    type="number" step="0.01" min="0" max="100"
-                    value={editData.retailSellingLooseDiscount}
-                    onChange={(e) => handleEditChange('retailSellingLooseDiscount', e.target.value)}
-                    style={getFieldInputStyle('retailSellingLooseDiscount')}
-                    placeholder="0"
-                  />
+                  <label style={labelStyle}>{t.looseDiscount}</label>
+                  <input type="number" step="0.01" min="0" max="100" value={editData.retailSellingLooseDiscount} onChange={(e) => handleEditChange('retailSellingLooseDiscount', e.target.value)} style={getFieldInputStyle('retailSellingLooseDiscount')} placeholder="0" />
                 </div>
                 <div style={fieldStyle}>
-                  <label style={{ ...labelStyle, color: '#166634' }}>Your Loose Price ✨ Auto</label>
-                  <input
-                    type="text" readOnly
-                    value={editData.retailYourLoosePrice ? `Rs. ${editData.retailYourLoosePrice}` : ''}
-                    style={autoInputStyle}
-                  />
+                  <label style={{ ...labelStyle, color: '#166534' }}>{t.yourLoosePrice}</label>
+                  <input type="text" readOnly value={editData.retailYourLoosePrice ? `Rs. ${editData.retailYourLoosePrice}` : ''} style={autoInputStyle} />
                 </div>
               </div>
             </div>
           )}
 
-          {/* Action Buttons */}
+          {/* Buttons */}
           <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
             <button
               onClick={handleSaveEdit}
               disabled={isSaving || changedFields.length === 0}
               style={{
                 flex: 1, padding: 14,
-                background: isSaving
-                  ? '#94a3b8'
-                  : changedFields.length === 0
-                    ? '#cbd5e1'
-                    : '#22c55e',
+                background: isSaving ? '#94a3b8' : changedFields.length === 0 ? '#cbd5e1' : '#22c55e',
                 color: 'white', border: 'none', borderRadius: 10,
                 fontWeight: 'bold', fontSize: 16,
                 cursor: isSaving || changedFields.length === 0 ? 'not-allowed' : 'pointer',
               }}
             >
               {isSaving
-                ? '⏳ Saving...'
+                ? t.saving
                 : changedFields.length === 0
-                  ? '✅ No Changes'
-                  : `💾 Save ${changedFields.length} Change(s)`}
+                  ? t.noChanges
+                  : `${t.saveChanges} (${changedFields.length})`}
             </button>
-
             <button
               onClick={handleResetForm}
               disabled={changedFields.length === 0}
@@ -902,7 +895,7 @@ export default function StockAdjustmentPage() {
                 cursor: changedFields.length === 0 ? 'not-allowed' : 'pointer',
               }}
             >
-              🔄 Reset
+              {t.reset}
             </button>
           </div>
         </div>
@@ -910,29 +903,21 @@ export default function StockAdjustmentPage() {
 
       {/* Prompt */}
       {!editData && !selectedItem && (
-        <div style={{
-          ...cardStyle, textAlign: 'center', padding: 40,
-          color: '#94a3b8', fontSize: 15,
-        }}>
-          ☝️ Edit කිරීමට ඉහත Search Box එකෙන් Item එකක් තෝරන්න
+        <div style={{ ...cardStyle, textAlign: 'center', padding: 40, color: '#94a3b8', fontSize: 15 }}>
+          ☝️ {t.selectPrompt}
         </div>
       )}
 
-      {/* History Table */}
-      <h3 style={{ color: '#64748b', marginTop: 30 }}>
-        🕒 Stock Adjustment History
-      </h3>
+      {/* History */}
+      <h3 style={{ color: '#64748b', marginTop: 30 }}>{t.historyTitle}</h3>
       <div style={{
         background: 'white', borderRadius: 12,
         overflow: 'auto', boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
       }}>
-        <table style={{
-          width: '100%', borderCollapse: 'collapse',
-          fontSize: 14, minWidth: 500,
-        }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, minWidth: 500 }}>
           <thead>
             <tr style={{ background: '#f8fafc', textAlign: 'left' }}>
-              {['Date', 'Item', 'Type', 'Qty', 'Reason'].map((h) => (
+              {[t.date, t.item, t.type, t.qtyLabel, t.reason].map((h) => (
                 <th key={h} style={{ padding: 12 }}>{h}</th>
               ))}
             </tr>
@@ -941,7 +926,7 @@ export default function StockAdjustmentPage() {
             {adjustments.length === 0 ? (
               <tr>
                 <td colSpan={5} style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>
-                  No adjustments yet
+                  {t.noAdjustments}
                 </td>
               </tr>
             ) : adjustments.map((adj) => (
@@ -955,7 +940,7 @@ export default function StockAdjustmentPage() {
                     background: adj.type === 'add' ? '#dcfce7' : '#fee2e2',
                     color:      adj.type === 'add' ? '#166534' : '#991b1b',
                   }}>
-                    {adj.type === 'add' ? 'Added' : 'Reduced'}
+                    {adj.type === 'add' ? t.added : t.reduced}
                   </span>
                 </td>
                 <td style={{ padding: 12 }}>{adj.qty}</td>
