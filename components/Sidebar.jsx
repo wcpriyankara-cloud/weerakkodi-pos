@@ -18,6 +18,7 @@ const TEXT = {
     invoices:        'ඉන්වොයිස්',
     catalog:         'Catalog',
     items:           'භාණ්ඩ',
+    stockAdjustment: 'Adjustment',
     purchases:       'ගැනුම්',
     customers:       'පාරිභෝගිකයින්',
     suppliers:       'සැපයුම්කරුවන්',
@@ -44,6 +45,7 @@ const TEXT = {
     invoices:        'Invoices',
     catalog:         'Catalog',
     items:           'Items',
+    stockAdjustment: 'Adjustment',
     purchases:       'Purchases',
     customers:       'Customers',
     suppliers:       'Suppliers',
@@ -84,10 +86,11 @@ function getMenu(t) {
     {
       section: t.operations,
       items: [
-        { href: '/items',             label: t.items,           icon: '📦' },
-        { href: '/purchases',         label: t.purchases,       icon: '📥' },
-        { href: '/vehicle-income',    label: t.vehicleIncome,   icon: '🚛' },
-        { href: '/vehicle-expenses',  label: t.vehicleExpenses, icon: '💸' },
+        { href: '/items',              label: t.items,           icon: '📦' },
+        { href: '/stock-adjustment',   label: t.stockAdjustment, icon: '🗃️' },
+        { href: '/purchases',          label: t.purchases,       icon: '📥' },
+        { href: '/vehicle-income',     label: t.vehicleIncome,   icon: '🚛' },
+        { href: '/vehicle-expenses',   label: t.vehicleExpenses, icon: '💸' },
       ],
     },
     {
@@ -166,7 +169,7 @@ export default function Sidebar({
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  const sidebarWidth  = isMobile ? 280 : (isCollapsed ? 70 : 280);
+  const sidebarWidth   = isMobile ? 280 : (isCollapsed ? 70 : 280);
   const handleNavigate = () => { if (isMobile) onClose?.(); };
 
   const handleLangChange = (nextLang) => {
@@ -307,7 +310,8 @@ export default function Sidebar({
                 <div
                   style={{
                     fontSize: 13, fontWeight: 800, color: '#f8fafc',
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    overflow: 'hidden', textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
                   }}
                 >
                   {user?.displayName || 'User'}
