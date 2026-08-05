@@ -15,29 +15,29 @@ const T = {
     pos:                 'POS',
     posDesc:             'නව බිල්පතක්',
     invoices:            'ඉන්වොයිස්',
-    invoicesDesc:        'බිල්පත් ලැයිස්තුව',
+    invoicesDesc:        'බිල්පත් ලෝයිස්ටුව',
     catalog:             'Catalog',
     catalogDesc:         'භාණ්ඩ නාමාවලිය',
-    customers:           'පාරිභෝගිකයින්',
-    customersDesc:       'ගනුදෙනුකරුවන්',
-    suppliers:           'සැපයුම්කරුවන්',
-    suppliersDesc:       'සැපයුම්කරු කළමනාකරණය',
-    purchases:           'ගැනුම්',
-    purchasesDesc:       'ගැනුම් ඉන්වොයිස්',
+    production:          'නිෂ්පාදනය',
+    productionDesc:      'නිෂ්පාදන කළමනාකරණය',
     items:               'භාණ්ඩ',
     itemsDesc:           'භාණ්ඩ ලියාපදිංචිය',
     stockAdjustment:     'Adjustment',
-    stockAdjustmentDesc: 'ගබඩා තොග & මිල සංස්කරණය',
+    stockAdjustmentDesc: 'ගබඩා & මිල සංස්කරණය',
+    purchases:           'ගැනුම්',
+    purchasesDesc:       'ගැනුම් ඉන්වොයිස්',
+    customers:           'පාරිභෝගිකයින්',
+    customersDesc:       'පාරිභෝගික කළමනාකරණය',
+    suppliers:           'සැපයුම්කරුවන්',
+    suppliersDesc:       'සැපයුම්කරු කළමනාකරණය',
+    vehicle:             'වාහන',
+    vehicleDesc:         'වාහන ආදායම් / වියදම්',
     orders:              'ඇණවුම්',
     ordersDesc:          'පාරිභෝගික ඇණවුම්',
-    returns:             'ආපසු භාර',
-    returnsDesc:         'ආපසු භාර ගැනීම්',
+    returns:             'ආපසු',
+    returnsDesc:         'ආපසු භාර ගැනුම්',
     shops:               'වෙළඳසැල්',
     shopsDesc:           'වෙළඳසැල් කළමනාකරණය',
-    vehicleIncome:       'වාහන ආදායම්',
-    vehicleIncomeDesc:   'වාහන ආදායම් කළමනාකරණය',
-    vehicleExpenses:     'වාහන වියදම්',
-    vehicleExpensesDesc: 'වාහන වියදම් කළමනාකරණය',
   },
   en: {
     appName:             'Weerakkodi POS',
@@ -49,43 +49,43 @@ const T = {
     invoicesDesc:        'Invoice list',
     catalog:             'Catalog',
     catalogDesc:         'Product Catalog',
-    customers:           'Customers',
-    customersDesc:       'Customer management',
-    suppliers:           'Suppliers',
-    suppliersDesc:       'Supplier management',
-    purchases:           'Purchases',
-    purchasesDesc:       'Purchase invoices',
+    production:          'Production',
+    productionDesc:      'Production management',
     items:               'Items',
     itemsDesc:           'Item registration',
     stockAdjustment:     'Adjustment',
     stockAdjustmentDesc: 'Stock & Price Adjustment',
+    purchases:           'Purchases',
+    purchasesDesc:       'Purchase invoices',
+    customers:           'Customers',
+    customersDesc:       'Customer management',
+    suppliers:           'Suppliers',
+    suppliersDesc:       'Supplier management',
+    vehicle:             'Vehicle',
+    vehicleDesc:         'Vehicle Income & Expenses',
     orders:              'Orders',
     ordersDesc:          'Customer orders',
     returns:             'Returns',
     returnsDesc:         'Return management',
     shops:               'Shops',
     shopsDesc:           'Shop management',
-    vehicleIncome:       'Vehicle Income',
-    vehicleIncomeDesc:   'Vehicle income management',
-    vehicleExpenses:     'Vehicle Expenses',
-    vehicleExpensesDesc: 'Vehicle expense management',
   },
 };
 
 const getCards = (t) => [
-  { id: 'pos',              href: '/pos',              icon: '🖥️', title: t.pos,              desc: t.posDesc,              gradient: 'linear-gradient(135deg,#3b82f6,#2563eb)' },
-  { id: 'invoices',         href: '/invoice-list',     icon: '🧾', title: t.invoices,         desc: t.invoicesDesc,         gradient: 'linear-gradient(135deg,#8b5cf6,#7c3aed)' },
-  { id: 'catalog',          href: '/pfi',              icon: '🛍️', title: t.catalog,          desc: t.catalogDesc,          gradient: 'linear-gradient(135deg,#7c3aed,#3b82f6)' },
-  { id: 'items',            href: '/items',            icon: '📦', title: t.items,            desc: t.itemsDesc,            gradient: 'linear-gradient(135deg,#f97316,#ea580c)' },
-  { id: 'stock-adjustment', href: '/stock-adjustment', icon: '🗃️', title: t.stockAdjustment, desc: t.stockAdjustmentDesc, gradient: 'linear-gradient(135deg,#6366f1,#4f46e5)' },
-  { id: 'purchases',        href: '/purchases',        icon: '🛒', title: t.purchases,        desc: t.purchasesDesc,        gradient: 'linear-gradient(135deg,#ec4899,#db2777)' },
-  { id: 'customers',        href: '/customers',        icon: '👥', title: t.customers,        desc: t.customersDesc,        gradient: 'linear-gradient(135deg,#10b981,#059669)' },
-  { id: 'suppliers',        href: '/suppliers',        icon: '🏭', title: t.suppliers,        desc: t.suppliersDesc,        gradient: 'linear-gradient(135deg,#7c3aed,#6d28d9)' },
-  { id: 'vehicle-income',   href: '/vehicle-income',   icon: '🚛', title: t.vehicleIncome,   desc: t.vehicleIncomeDesc,   gradient: 'linear-gradient(135deg,#f59e0b,#d97706)' },
-  { id: 'vehicle-expenses', href: '/vehicle-expenses', icon: '💸', title: t.vehicleExpenses, desc: t.vehicleExpensesDesc, gradient: 'linear-gradient(135deg,#ef4444,#dc2626)' },
-  { id: 'orders',           href: '/customer-orders',  icon: '📋', title: t.orders,           desc: t.ordersDesc,           gradient: 'linear-gradient(135deg,#06b6d4,#0891b2)' },
-  { id: 'returns',          href: '/return',           icon: '🔄', title: t.returns,          desc: t.returnsDesc,          gradient: 'linear-gradient(135deg,#f43f5e,#e11d48)' },
-  { id: 'shops',            href: '/shops',            icon: '🏪', title: t.shops,            desc: t.shopsDesc,            gradient: 'linear-gradient(135deg,#14b8a6,#0d9488)' },
+  { id: 'pos',              href: '/pos',              icon: '🖥️',  title: t.pos,             desc: t.posDesc,             gradient: 'linear-gradient(135deg,#3b82f6,#2563eb)' },
+  { id: 'invoices',         href: '/invoice-list',     icon: '🧾',  title: t.invoices,        desc: t.invoicesDesc,        gradient: 'linear-gradient(135deg,#8b5cf6,#7c3aed)' },
+  { id: 'catalog',          href: '/pfi',              icon: '🛍️',  title: t.catalog,         desc: t.catalogDesc,         gradient: 'linear-gradient(135deg,#7c3aed,#3b82f6)' },
+  { id: 'production',       href: '/production',       icon: '🏭',  title: t.production,      desc: t.productionDesc,      gradient: 'linear-gradient(135deg,#f59e0b,#d97706)', badge: 'NEW' },
+  { id: 'items',            href: '/items',            icon: '📦',  title: t.items,           desc: t.itemsDesc,           gradient: 'linear-gradient(135deg,#f97316,#ea580c)' },
+  { id: 'stock-adjustment', href: '/stock-adjustment', icon: '🗃️',  title: t.stockAdjustment, desc: t.stockAdjustmentDesc, gradient: 'linear-gradient(135deg,#6366f1,#4f46e5)' },
+  { id: 'purchases',        href: '/purchases',        icon: '🛒',  title: t.purchases,       desc: t.purchasesDesc,       gradient: 'linear-gradient(135deg,#ec4899,#db2777)' },
+  { id: 'customers',        href: '/customers',        icon: '👥',  title: t.customers,       desc: t.customersDesc,       gradient: 'linear-gradient(135deg,#10b981,#059669)' },
+  { id: 'suppliers',        href: '/suppliers',        icon: '🏪',  title: t.suppliers,       desc: t.suppliersDesc,       gradient: 'linear-gradient(135deg,#7c3aed,#6d28d9)' },
+  { id: 'vehicle',          href: '/vehicle-income',   icon: '🚛',  title: t.vehicle,         desc: t.vehicleDesc,         gradient: 'linear-gradient(135deg,#0ea5e9,#0284c7)' },
+  { id: 'orders',           href: '/customer-orders',  icon: '📋',  title: t.orders,          desc: t.ordersDesc,          gradient: 'linear-gradient(135deg,#06b6d4,#0891b2)' },
+  { id: 'returns',          href: '/return',           icon: '🔄',  title: t.returns,         desc: t.returnsDesc,         gradient: 'linear-gradient(135deg,#f43f5e,#e11d48)' },
+  { id: 'shops',            href: '/shops',            icon: '🏪',  title: t.shops,           desc: t.shopsDesc,           gradient: 'linear-gradient(135deg,#14b8a6,#0d9488)' },
 ];
 
 function DashboardCard({ card }) {
@@ -104,6 +104,8 @@ function DashboardCard({ card }) {
         boxShadow: '0 4px 15px rgba(0,0,0,0.1)',
         border: '1px solid rgba(255,255,255,0.1)',
         transition: 'transform 0.2s, box-shadow 0.2s',
+        position: 'relative',
+        overflow: 'hidden',
       }}
       onMouseEnter={(e) => {
         e.currentTarget.style.transform = 'translateY(-3px)';
@@ -114,6 +116,26 @@ function DashboardCard({ card }) {
         e.currentTarget.style.boxShadow = '0 4px 15px rgba(0,0,0,0.1)';
       }}
     >
+      {card.badge && (
+        <span
+          style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            fontSize: 9,
+            fontWeight: 900,
+            color: 'white',
+            background: '#16a34a',
+            padding: '2px 8px',
+            borderRadius: 6,
+            letterSpacing: 0.5,
+            boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
+          }}
+        >
+          {card.badge}
+        </span>
+      )}
+
       <div
         style={{
           width: 48,
@@ -129,6 +151,7 @@ function DashboardCard({ card }) {
       >
         {card.icon}
       </div>
+
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
@@ -155,9 +178,8 @@ function DashboardCard({ card }) {
           {card.desc}
         </div>
       </div>
-      <div style={{ fontSize: 16, opacity: 0.5, flexShrink: 0 }}>
-        →
-      </div>
+
+      <div style={{ fontSize: 16, opacity: 0.5, flexShrink: 0 }}>→</div>
     </Link>
   );
 }
@@ -216,12 +238,8 @@ export default function DashboardPage() {
                 />
               )}
               <div>
-                <div style={{ fontWeight: 800, fontSize: 16 }}>
-                  🏪 {t.appName}
-                </div>
-                <div style={{ fontSize: 12, opacity: 0.8 }}>
-                  {user?.email}
-                </div>
+                <div style={{ fontWeight: 800, fontSize: 16 }}>🏪 {t.appName}</div>
+                <div style={{ fontSize: 12, opacity: 0.8 }}>{user?.email}</div>
               </div>
             </div>
 
