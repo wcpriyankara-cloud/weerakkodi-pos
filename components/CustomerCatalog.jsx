@@ -2,6 +2,7 @@
 
 // components/CustomerCatalog.jsx
 // Next.js App Router compatible
+// ★ v2 — Auto-load logged-in user's shop
 
 import React, {
   useState,
@@ -13,6 +14,7 @@ import React, {
 } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { db } from '@/lib/firebase';
+import { useUserAuth } from '@/context/UserContext';
 import {
   collection,
   onSnapshot,
@@ -113,6 +115,7 @@ const TEXT = {
     shopSelected:      'තෝරාගත්තා',
     noItemsRegistered: 'මෙම වෙළඳසැලේ භාණ්ඩ ලියාපදිංචි කර නැත',
     share:             'Share',
+    myShop:            'මගේ වෙළඳසැල',
   },
   en: {
     catalog:           'Product Catalog',
@@ -181,6 +184,7 @@ const TEXT = {
     shopSelected:      'Selected',
     noItemsRegistered: 'No items registered for this shop',
     share:             'Share',
+    myShop:            'My Shop',
   },
 };
 
@@ -244,13 +248,13 @@ const calcPrice = (item) => {
     if (c && parseFloat(c.factor) > 0) factor = parseFloat(c.factor);
   }
   return {
-    orig:     base / factor,
-    discAmt:  discAmt / factor,
-    final:    final / factor,
-    discPct:  disc,
-    unit:     item.catalogUom || item.uomName || '',
-    hasDsc:   disc > 0 && discAmt > 0,
-    label:    item.catalogPriceType || 'retail',
+    orig:    base / factor,
+    discAmt: discAmt / factor,
+    final:   final / factor,
+    discPct: disc,
+    unit:    item.catalogUom || item.uomName || '',
+    hasDsc:  disc > 0 && discAmt > 0,
+    label:   item.catalogPriceType || 'retail',
   };
 };
 
@@ -420,10 +424,10 @@ Toast.displayName = 'Toast';
    SHOP SELECTOR MODAL
 ═══════════════════════════════════════ */
 const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose, t }) => {
-  const [shops,    setShops]   = useState([]);
-  const [loading,  setLoading] = useState(true);
-  const [search,   setSearch]  = useState('');
-  const [error,    setError]   = useState(null);
+  const [shops,   setShops]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search,  setSearch]  = useState('');
+  const [error,   setError]   = useState(null);
   const searchRef = useRef(null);
 
   useEffect(() => {
@@ -531,12 +535,7 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose, t }) => 
         style={{ position: 'relative', width: '100%', maxWidth: 480, maxHeight: '90vh', background: 'white', borderRadius: 20, overflow: 'hidden', display: 'flex', flexDirection: 'column', animation: 'ccFadeIn .25s ease', boxShadow: '0 24px 64px rgba(0,0,0,0.3)' }}
         onClick={(e) => e.stopPropagation()}
       >
-        <button
-          onClick={onClose}
-          style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(255,255,255,0.9)', color: '#1e293b', width: 32, height: 32, borderRadius: '50%', border: 'none', fontSize: 13, fontWeight: 'bold', cursor: 'pointer' }}
-        >
-          X
-        </button>
+        <button onClick={onClose} style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(255,255,255,0.9)', color: '#1e293b', width: 32, height: 32, borderRadius: '50%', border: 'none', fontSize: 13, fontWeight: 'bold', cursor: 'pointer' }}>X</button>
 
         <div style={{ background: 'linear-gradient(135deg,#7c3aed,#3b82f6)', padding: '24px 20px 18px', textAlign: 'center', flexShrink: 0 }}>
           <div style={{ fontSize: 40, marginBottom: 6 }}>🏪</div>
@@ -556,12 +555,7 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose, t }) => 
               style={{ width: '100%', padding: '10px 32px 10px 36px', border: '2px solid #e2e8f0', borderRadius: 10, fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
             />
             {search && (
-              <button
-                onClick={() => setSearch('')}
-                style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: '#e2e8f0', border: 'none', borderRadius: '50%', width: 20, height: 20, cursor: 'pointer', fontSize: 9 }}
-              >
-                X
-              </button>
+              <button onClick={() => setSearch('')} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: '#e2e8f0', border: 'none', borderRadius: '50%', width: 20, height: 20, cursor: 'pointer', fontSize: 9 }}>X</button>
             )}
           </div>
         </div>
@@ -636,10 +630,7 @@ const ShopSelectorModal = memo(({ currentShopId, onSelectShop, onClose, t }) => 
         </div>
 
         <div style={{ padding: '10px 16px 14px', borderTop: '1px solid #e2e8f0', flexShrink: 0 }}>
-          <button
-            onClick={onClose}
-            style={{ width: '100%', padding: '11px 0', background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: 'pointer' }}
-          >
+          <button onClick={onClose} style={{ width: '100%', padding: '11px 0', background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
             {t.closeModal}
           </button>
         </div>
@@ -661,14 +652,13 @@ const ShareModal = memo(({ item, shopId, shopInfo, onClose, onToast, t }) => {
 
   if (!item) return null;
 
-  const name     = item.sinhalaName || item.name || '';
-  const img      = getImg(item);
-  const p        = calcPrice(item);
-  const oos      = isOutOfStock(item);
-  const unit     = getDisplayUnit(item);
-  const itemUrl  = getShareUrl(shopId, item.id);
-  const waMsg    = encodeURIComponent(itemUrl);
-  const shopName = shopInfo?.shopName || '';
+  const name    = item.sinhalaName || item.name || '';
+  const img     = getImg(item);
+  const p       = calcPrice(item);
+  const oos     = isOutOfStock(item);
+  const unit    = getDisplayUnit(item);
+  const itemUrl = getShareUrl(shopId, item.id);
+  const waMsg   = encodeURIComponent(itemUrl);
 
   const copyLink = async () => {
     try {
@@ -756,9 +746,8 @@ const ContactPhoneModal = memo(({ item, shopInfo, onClose, t }) => {
 
   const name      = item.sinhalaName || item.name || '';
   const img       = getImg(item);
-  const shopPhone = shopInfo?.phone  || '';
+  const shopPhone = shopInfo?.phone || '';
   const waPhone   = shopInfo?.whatsapp || shopPhone;
-  const shopName  = shopInfo?.shopName || '';
   const callLink  = formatPhoneForCall(shopPhone);
   const waLink    = formatPhoneForWhatsApp(waPhone);
   const waMsg     = encodeURIComponent(`සුබ දවසක් 🙏\n\n"${name}" භාණ්ඩයේ මිල දැනගැනීමට කැමැත්තෙමි.\n\nස්තූතියි!`);
@@ -784,10 +773,10 @@ const ContactPhoneModal = memo(({ item, shopInfo, onClose, t }) => {
         </div>
 
         <div style={{ padding: '14px 16px' }}>
-          {shopName && (
+          {shopInfo?.shopName && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '9px 12px', background: '#f0fdf4', borderRadius: 10, border: '1px solid #bbf7d0' }}>
               <span style={{ fontSize: 18 }}>🏪</span>
-              <div style={{ fontWeight: 700, fontSize: 13, color: '#166534' }}>{shopName}</div>
+              <div style={{ fontWeight: 700, fontSize: 13, color: '#166534' }}>{shopInfo.shopName}</div>
             </div>
           )}
 
@@ -986,13 +975,9 @@ const Card = memo(({ item, onClick, onAddToCart, onContactClick, onShareClick, s
           alt={name || enName}
           loading="lazy"
         />
-
         <button onClick={(e) => { e.stopPropagation(); onShareClick(item); }} style={{ position: 'absolute', top: 5, left: 5, width: 26, height: 26, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,0.92)', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>📤</button>
-
         <a href={`https://wa.me/?text=${waMsg}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ position: 'absolute', top: 5, left: 35, width: 26, height: 26, borderRadius: '50%', border: 'none', background: '#25d366', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', textDecoration: 'none' }}>💬</a>
-
         {!oos && p.hasDsc && <span style={{ position: 'absolute', top: 5, right: 5, background: '#dc2626', color: 'white', fontSize: 9, fontWeight: 800, padding: '2px 5px', borderRadius: 4 }}>-{p.discPct}%</span>}
-
         {imgCount > 1 && <span style={{ position: 'absolute', bottom: 5, right: 5, background: 'rgba(15,23,42,0.6)', color: 'white', fontSize: 9, padding: '2px 5px', borderRadius: 4 }}>📸{imgCount}</span>}
       </div>
 
@@ -1097,27 +1082,44 @@ const CheckoutForm = memo(({ cart, grossTotal, totalDiscount, grandTotal, hasOOS
     if (!shopUid) { alert('Shop UID not resolved.'); return; }
     setSubmitting(true);
     try {
-      try { localStorage.setItem('cust_name', customerName.trim()); localStorage.setItem('cust_phone', customerPhone.trim()); localStorage.setItem('cust_address', customerAddress.trim()); } catch {}
+      try {
+        localStorage.setItem('cust_name', customerName.trim());
+        localStorage.setItem('cust_phone', customerPhone.trim());
+        localStorage.setItem('cust_address', customerAddress.trim());
+      } catch {}
+
       const standardizedItems = cart.map((c) => {
-        const itemOOS  = isOutOfStock(c.item);
+        const itemOOS   = isOutOfStock(c.item);
         const yourPrice = itemOOS ? 0 : c.priceInfo.final;
         return {
           id: c.item.id || '', name: c.item.name || '', sinhalaName: c.item.sinhalaName || '',
-          qty: c.qty, quantity: c.qty, unitPrice: itemOOS ? 0 : c.priceInfo.orig,
-          yourPrice, price: yourPrice, total: yourPrice * c.qty, lineTotal: yourPrice * c.qty,
-          discount: (itemOOS ? 0 : c.priceInfo.discAmt) * c.qty, isOutOfStock: itemOOS,
-          picture: getImg(c.item), uom: c.priceInfo.unit || c.item.uomName || '',
+          qty: c.qty, quantity: c.qty,
+          unitPrice: itemOOS ? 0 : c.priceInfo.orig,
+          yourPrice, price: yourPrice,
+          total: yourPrice * c.qty, lineTotal: yourPrice * c.qty,
+          discount: (itemOOS ? 0 : c.priceInfo.discAmt) * c.qty,
+          isOutOfStock: itemOOS,
+          picture: getImg(c.item),
+          uom: c.priceInfo.unit || c.item.uomName || '',
         };
       });
+
       const orderData = {
-        customerName: customerName.trim(), customerPhone: customerPhone.trim(),
-        customerAddress: customerAddress.trim(), orderNote: orderNote.trim(),
-        items: standardizedItems, grossTotal, totalDiscount, grandTotal, total: grandTotal,
-        status: 'pending', hasOutOfStock: hasOOS, shopId: shopUid, uid: shopUid,
-        publicShopId: publicShopId || shopUid, createdAt: serverTimestamp(),
-        date: new Date().toISOString(), source: 'customer-catalog',
+        customerName: customerName.trim(),
+        customerPhone: customerPhone.trim(),
+        customerAddress: customerAddress.trim(),
+        orderNote: orderNote.trim(),
+        items: standardizedItems,
+        grossTotal, totalDiscount, grandTotal, total: grandTotal,
+        status: 'pending', hasOutOfStock: hasOOS,
+        shopId: shopUid, uid: shopUid,
+        publicShopId: publicShopId || shopUid,
+        createdAt: serverTimestamp(),
+        date: new Date().toISOString(),
+        source: 'customer-catalog',
         itemCount: cart.reduce((s, c) => s + c.qty, 0),
       };
+
       await addDoc(collection(db, `shops/${shopUid}/pfis`), orderData);
       try { await addDoc(collection(db, 'orders'), orderData); } catch {}
       onSuccess();
@@ -1128,7 +1130,12 @@ const CheckoutForm = memo(({ cart, grossTotal, totalDiscount, grandTotal, hasOOS
     }
   }, [validate, customerName, customerPhone, customerAddress, orderNote, cart, grossTotal, totalDiscount, grandTotal, hasOOS, shopUid, publicShopId, onSuccess]);
 
-  const inp = (err) => ({ width: '100%', padding: '9px 11px', borderRadius: 9, border: err ? '2px solid #ef4444' : '1px solid #cbd5e1', fontSize: 12, outline: 'none', boxSizing: 'border-box', background: err ? '#fef2f2' : 'white', color: '#1e293b' });
+  const inp = (err) => ({
+    width: '100%', padding: '9px 11px', borderRadius: 9,
+    border: err ? '2px solid #ef4444' : '1px solid #cbd5e1',
+    fontSize: 12, outline: 'none', boxSizing: 'border-box',
+    background: err ? '#fef2f2' : 'white', color: '#1e293b',
+  });
 
   return (
     <div>
@@ -1163,8 +1170,12 @@ const CheckoutForm = memo(({ cart, grossTotal, totalDiscount, grandTotal, hasOOS
           const price   = itemOOS ? 0 : c.priceInfo.final;
           return (
             <div key={c.item.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, padding: '2px 0', borderBottom: idx !== cart.length - 1 ? '1px dashed #e2e8f0' : 'none' }}>
-              <span style={{ flex: 1, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.item.sinhalaName || c.item.name} <span style={{ color: '#2563eb', fontWeight: 700 }}>x{c.qty}</span></span>
-              <span style={{ fontWeight: 700, color: itemOOS ? '#94a3b8' : '#1e293b', marginLeft: 5 }}>{itemOOS ? '-' : fmtAmt(price * c.qty)}</span>
+              <span style={{ flex: 1, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {c.item.sinhalaName || c.item.name} <span style={{ color: '#2563eb', fontWeight: 700 }}>x{c.qty}</span>
+              </span>
+              <span style={{ fontWeight: 700, color: itemOOS ? '#94a3b8' : '#1e293b', marginLeft: 5 }}>
+                {itemOOS ? '-' : fmtAmt(price * c.qty)}
+              </span>
             </div>
           );
         })}
@@ -1184,7 +1195,11 @@ const CheckoutForm = memo(({ cart, grossTotal, totalDiscount, grandTotal, hasOOS
         </div>
       )}
 
-      <button onClick={handleSubmit} disabled={submitting} style={{ width: '100%', padding: '12px 0', background: submitting ? '#94a3b8' : 'linear-gradient(135deg,#10b981,#059669)', color: 'white', borderRadius: 11, fontWeight: 800, fontSize: 13, border: 'none', cursor: submitting ? 'wait' : 'pointer' }}>
+      <button
+        onClick={handleSubmit}
+        disabled={submitting}
+        style={{ width: '100%', padding: '12px 0', background: submitting ? '#94a3b8' : 'linear-gradient(135deg,#10b981,#059669)', color: 'white', borderRadius: 11, fontWeight: 800, fontSize: 13, border: 'none', cursor: submitting ? 'wait' : 'pointer' }}
+      >
         {submitting ? `${t.submitting}` : `${t.placeOrder} - Rs. ${fmtAmt(grandTotal)}`}
       </button>
     </div>
@@ -1396,13 +1411,17 @@ const MobileCartModal = memo(({ cart, onClose, onUpdateQty, onRemove, onClearCar
 MobileCartModal.displayName = 'MobileCartModal';
 
 /* ═══════════════════════════════════════
-   MAIN COMPONENT
+   ★ MAIN COMPONENT
 ═══════════════════════════════════════ */
 export default function CustomerCatalog({ shopId: propShopId, lang: propLang = 'si' }) {
   const params       = useParams();
   const searchParams = useSearchParams();
   const router       = useRouter();
 
+  // ★ Get logged-in user
+  const { user } = useUserAuth();
+
+  // ★ Language
   const [lang, setLang] = useState(propLang);
   useEffect(() => {
     try {
@@ -1415,33 +1434,36 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
   }, []);
   const t = TEXT[lang] || TEXT.si;
 
-  const embedded       = !!propShopId;
-  const initialShopId  = propShopId || params?.shopId || '';
+  const embedded = !!propShopId;
+
+  // ★ Priority: propShopId → URL params → logged-in user UID
+  const initialShopId = propShopId || params?.shopId || user?.uid || '';
   const [activeShopId, setActiveShopId] = useState(initialShopId);
-  const highlightId    = searchParams?.get('highlight') || '';
 
-  const [resolvedUid,  setResolvedUid]  = useState('');
-  const [shopResolved, setShopResolved] = useState(false);
-  const [items,        setItems]        = useState([]);
-  const [shopInfo,     setShopInfo]     = useState(null);
-  const [loading,      setLoading]      = useState(true);
-  const [search,       setSearch]       = useState('');
-  const [selCat,       setSelCat]       = useState('');
-  const [selBrand,     setSelBrand]     = useState('');
-  const [sortBy,       setSortBy]       = useState('default');
-  const [selItem,      setSelItem]      = useState(null);
-  const [showSort,     setShowSort]     = useState(false);
-  const [showMobileCart, setShowMobileCart] = useState(false);
-  const [toastMsg,     setToastMsg]     = useState('');
-  const [showToast,    setShowToast]    = useState(false);
-  const [cart,         setCart]         = useState([]);
-  const [contactItem,  setContactItem]  = useState(null);
-  const [shareItem,    setShareItem]    = useState(null);
-  const [showShopSelector, setShowShopSelector] = useState(false);
+  const highlightId = searchParams?.get('highlight') || '';
 
-  const toastTimer   = useRef(null);
-  const unsubRef     = useRef(null);
-  const autoOpenRef  = useRef('');
+  const [resolvedUid,       setResolvedUid]       = useState('');
+  const [shopResolved,      setShopResolved]       = useState(false);
+  const [items,             setItems]             = useState([]);
+  const [shopInfo,          setShopInfo]          = useState(null);
+  const [loading,           setLoading]           = useState(true);
+  const [search,            setSearch]            = useState('');
+  const [selCat,            setSelCat]            = useState('');
+  const [selBrand,          setSelBrand]          = useState('');
+  const [sortBy,            setSortBy]            = useState('default');
+  const [selItem,           setSelItem]           = useState(null);
+  const [showSort,          setShowSort]          = useState(false);
+  const [showMobileCart,    setShowMobileCart]    = useState(false);
+  const [toastMsg,          setToastMsg]          = useState('');
+  const [showToast,         setShowToast]         = useState(false);
+  const [cart,              setCart]              = useState([]);
+  const [contactItem,       setContactItem]       = useState(null);
+  const [shareItem,         setShareItem]         = useState(null);
+  const [showShopSelector,  setShowShopSelector]  = useState(false);
+
+  const toastTimer  = useRef(null);
+  const unsubRef    = useRef(null);
+  const autoOpenRef = useRef('');
 
   const showToastMessage = useCallback((msg) => {
     setToastMsg(msg);
@@ -1452,36 +1474,77 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
 
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
+  // ★ KEY FIX: Auto-set user's own shop — no selector popup
   useEffect(() => {
-    if (!activeShopId) setShowShopSelector(true);
-    else setShowShopSelector(false);
-  }, [activeShopId]);
+    if (!activeShopId && user?.uid) {
+      // Logged-in user — use their UID as shop
+      setActiveShopId(user.uid);
+      setShowShopSelector(false);
+    } else if (!activeShopId && !user?.uid) {
+      // Not logged in and no shop — show selector
+      setShowShopSelector(true);
+    } else {
+      // Shop already set
+      setShowShopSelector(false);
+    }
+  }, [activeShopId, user?.uid]);
 
+  // ★ Also update when user logs in and activeShopId is empty
+  useEffect(() => {
+    if (user?.uid && !activeShopId) {
+      setActiveShopId(user.uid);
+    }
+  }, [user?.uid, activeShopId]);
+
+  // Resolve shop UID
   useEffect(() => {
     let cancelled = false;
-    if (!activeShopId) { setResolvedUid(''); setShopResolved(true); setLoading(false); return; }
+    if (!activeShopId) {
+      setResolvedUid('');
+      setShopResolved(true);
+      setLoading(false);
+      return;
+    }
     setShopResolved(false);
     setLoading(true);
     resolvePublicShopToUid(activeShopId).then((uid) => {
-      if (!cancelled) { setResolvedUid(uid || ''); setShopResolved(true); }
+      if (!cancelled) {
+        setResolvedUid(uid || '');
+        setShopResolved(true);
+      }
     }).catch(() => {
-      if (!cancelled) { setResolvedUid(''); setShopResolved(true); setLoading(false); }
+      if (!cancelled) {
+        setResolvedUid('');
+        setShopResolved(true);
+        setLoading(false);
+      }
     });
     return () => { cancelled = true; };
   }, [activeShopId]);
 
+  // Load cart from localStorage
   useEffect(() => {
     if (!activeShopId) return;
-    try { const s = localStorage.getItem(`cart_${activeShopId}`); setCart(s ? JSON.parse(s) : []); } catch { setCart([]); }
+    try {
+      const s = localStorage.getItem(`cart_${activeShopId}`);
+      setCart(s ? JSON.parse(s) : []);
+    } catch { setCart([]); }
   }, [activeShopId]);
 
+  // Save cart to localStorage
   useEffect(() => {
-    if (activeShopId) { try { localStorage.setItem(`cart_${activeShopId}`, JSON.stringify(cart)); } catch {} }
+    if (activeShopId) {
+      try { localStorage.setItem(`cart_${activeShopId}`, JSON.stringify(cart)); } catch {}
+    }
   }, [cart, activeShopId]);
 
+  // Load items + shop info
   useEffect(() => {
     if (unsubRef.current) { unsubRef.current(); unsubRef.current = null; }
-    if (!activeShopId || !shopResolved) { if (!activeShopId) { setLoading(false); setItems([]); setShopInfo(null); } return; }
+    if (!activeShopId || !shopResolved) {
+      if (!activeShopId) { setLoading(false); setItems([]); setShopInfo(null); }
+      return;
+    }
     if (!resolvedUid) { setItems([]); setShopInfo(null); setLoading(false); return; }
 
     let cancelled = false;
@@ -1489,7 +1552,7 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
     setItems([]);
     setShopInfo(null);
 
-    const q   = query(collection(db, 'items'), where('uid', '==', resolvedUid));
+    const q     = query(collection(db, 'items'), where('uid', '==', resolvedUid));
     const unsub = onSnapshot(q, (snap) => {
       if (cancelled) return;
       const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -1501,7 +1564,10 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
         }).filter(Boolean)
       );
       setLoading(false);
-    }, (err) => { console.error('items error:', err); if (!cancelled) setLoading(false); });
+    }, (err) => {
+      console.error('items error:', err);
+      if (!cancelled) setLoading(false);
+    });
 
     unsubRef.current = unsub;
 
@@ -1515,18 +1581,21 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
           getDoc(doc(db, 'shopDirectory', resolvedUid)),
         ]);
         if (cancelled) return;
+
         const merged = {};
         const fields = ['shopName', 'businessName', 'companyName', 'phone', 'contactPhone', 'mobile', 'whatsapp', 'address', 'email'];
+
         [userSnap, settingsSnap, genSnap, dirSnap1, dirSnap2].forEach((res) => {
           if (res.status !== 'fulfilled') return;
           const val = res.value;
-          let data = null;
+          let data  = null;
           if (typeof val.exists === 'function') data = val.exists() ? val.data() : null;
           else if (typeof val.exists === 'boolean') data = val.exists ? val.data() : null;
           else if (val.empty !== undefined) data = val.empty ? null : val.docs[0]?.data();
           if (!data) return;
           fields.forEach((f) => { if (!merged[f] && data[f]) merged[f] = data[f]; });
         });
+
         if (!cancelled) {
           setShopInfo({
             shopName: merged.shopName || merged.businessName || merged.companyName || '',
@@ -1545,6 +1614,7 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
 
   useEffect(() => () => { if (unsubRef.current) unsubRef.current(); }, []);
 
+  // Auto-open highlighted item
   useEffect(() => {
     if (!highlightId || !items.length) return;
     const key = `${activeShopId}:${highlightId}`;
@@ -1559,9 +1629,10 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
     }, 150);
   }, [highlightId, items, activeShopId]);
 
+  // Cart operations
   const addToCart = useCallback((item, qty) => {
     setCart((prev) => {
-      const existing = prev.find((c) => c.item.id === item.id);
+      const existing  = prev.find((c) => c.item.id === item.id);
       const priceInfo = calcPrice(item);
       if (existing) return prev.map((c) => c.item.id === item.id ? { ...c, qty: c.qty + qty, priceInfo } : c);
       return [...prev, { item, qty, priceInfo }];
@@ -1592,8 +1663,16 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
   }, [highlightId, router]);
 
   const handleShopSelect = useCallback((newShopId, shopData) => {
-    if (newShopId === activeShopId) { showToastMessage(`${shopData?.name || ''} — දැනට`); return; }
-    setCart([]); setSearch(''); setSelCat(''); setSelBrand(''); setSortBy('default'); setSelItem(null);
+    if (newShopId === activeShopId) {
+      showToastMessage(`${shopData?.name || ''} — දැනට`);
+      return;
+    }
+    setCart([]);
+    setSearch('');
+    setSelCat('');
+    setSelBrand('');
+    setSortBy('default');
+    setSelItem(null);
     setActiveShopId(newShopId);
     if (!embedded) router.push(`/pfi/${newShopId}`);
     showToastMessage(`${shopData?.name || ''} ${t.shopSelected}`);
@@ -1617,7 +1696,7 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
     let f = items.filter((i) => !i.isHidden && !i.isPurchaseOnly);
     f = smartSearch(f, search);
     if (selCat)   f = f.filter((i) => i.categoryName === selCat);
-    if (selBrand) f = f.filter((i) => i.brandName === selBrand);
+    if (selBrand) f = f.filter((i) => i.brandName    === selBrand);
     const sorted = [...f];
     switch (sortBy) {
       case 'priceLow':  sorted.sort((a, b) => calcPrice(a).final - calcPrice(b).final); break;
@@ -1632,34 +1711,13 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
   const hasFilters  = !!(search || selCat || selBrand || sortBy !== 'default');
   const clearAll    = useCallback(() => { setSearch(''); setSelCat(''); setSelBrand(''); setSortBy('default'); }, []);
 
+  // Loading state
   if (loading || !shopResolved) {
     return (
       <div id="cc-root" style={{ alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 10 }}>
         <GlobalStyles />
         <div style={{ width: 30, height: 30, border: '3px solid #e2e8f0', borderTopColor: '#3b82f6', borderRadius: '50%', animation: 'ccSpin 1s linear infinite' }} />
         <p style={{ color: '#475569', fontSize: 13, fontWeight: 600 }}>{t.loading}</p>
-      </div>
-    );
-  }
-
-  if (!activeShopId) {
-    return (
-      <div id="cc-root" style={{ alignItems: 'center', justifyContent: 'center' }}>
-        <GlobalStyles />
-        <div style={{ textAlign: 'center', padding: 36 }}>
-          <div style={{ fontSize: 56, marginBottom: 14 }}>🏪</div>
-          <p style={{ color: '#475569', fontSize: 15, fontWeight: 600, marginBottom: 8 }}>{t.noShop}</p>
-          <p style={{ color: '#94a3b8', fontSize: 12, marginBottom: 16 }}>{t.selectShopDesc}</p>
-          <button
-            onClick={() => setShowShopSelector(true)}
-            style={{ padding: '13px 26px', background: 'linear-gradient(135deg,#7c3aed,#3b82f6)', color: 'white', borderRadius: 12, fontWeight: 800, fontSize: 15, border: 'none', cursor: 'pointer' }}
-          >
-            🏪 {t.selectShop}
-          </button>
-        </div>
-        {showShopSelector && (
-          <ShopSelectorModal currentShopId={activeShopId} onSelectShop={handleShopSelect} onClose={() => setShowShopSelector(false)} t={t} />
-        )}
       </div>
     );
   }
@@ -1674,6 +1732,8 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
         <header style={{ background: 'white', borderBottom: '1px solid #e2e8f0', boxShadow: '0 1px 6px rgba(0,0,0,0.04)', flexShrink: 0, position: 'sticky', top: 0, zIndex: 30 }}>
           <div style={{ padding: '10px 12px 7px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 9, flex: 1, minWidth: 0 }}>
+
+              {/* ★ Shop selector button — only if not user's own shop */}
               <button
                 onClick={() => setShowShopSelector(true)}
                 style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'linear-gradient(135deg,#ede9fe,#dbeafe)', border: '2px solid #c4b5fd', borderRadius: 12, padding: '7px 12px', cursor: 'pointer', flexShrink: 0 }}
@@ -1686,7 +1746,9 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
                       <div style={{ fontSize: 9, color: '#7c3aed', fontWeight: 600 }}>🔄 {t.changeShop}</div>
                     </>
                   ) : (
-                    <div style={{ fontSize: 11, fontWeight: 800, color: '#5b21b6' }}>{t.selectShop}</div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#5b21b6' }}>
+                      {user?.uid === activeShopId ? `🏪 ${t.myShop}` : t.selectShop}
+                    </div>
                   )}
                 </div>
                 <span style={{ fontSize: 12, color: '#7c3aed', fontWeight: 800 }}>▾</span>
@@ -1764,8 +1826,12 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
           {visible.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '48px 18px', background: 'white', borderRadius: 12, border: '1px solid #e2e8f0', margin: 12 }}>
               <div style={{ fontSize: 40, marginBottom: 9 }}>{items.length === 0 ? '🏪' : '🔍'}</div>
-              <p style={{ fontSize: 14, fontWeight: 800, color: '#1e293b', marginBottom: 4 }}>{items.length === 0 ? t.noItemsRegistered : t.noResults}</p>
-              <p style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>{items.length === 0 ? t.selectShopDesc : t.tryAgain}</p>
+              <p style={{ fontSize: 14, fontWeight: 800, color: '#1e293b', marginBottom: 4 }}>
+                {items.length === 0 ? t.noItemsRegistered : t.noResults}
+              </p>
+              <p style={{ fontSize: 11, color: '#475569', marginBottom: 12 }}>
+                {items.length === 0 ? t.selectShopDesc : t.tryAgain}
+              </p>
               <div style={{ display: 'flex', gap: 7, justifyContent: 'center', flexWrap: 'wrap' }}>
                 {items.length === 0 && (
                   <button onClick={() => setShowShopSelector(true)} style={{ background: 'linear-gradient(135deg,#7c3aed,#3b82f6)', color: 'white', padding: '9px 18px', borderRadius: 9, fontSize: 12, fontWeight: 700, border: 'none', cursor: 'pointer' }}>🏪 {t.selectShop}</button>
@@ -1779,7 +1845,14 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
             <div className="cc-grid">
               {visible.map((item) => (
                 <div key={item.id} id={`cc-item-${item.id}`}>
-                  <Card item={item} onClick={setSelItem} onAddToCart={addToCart} onContactClick={setContactItem} onShareClick={setShareItem} shopId={activeShopId} />
+                  <Card
+                    item={item}
+                    onClick={setSelItem}
+                    onAddToCart={addToCart}
+                    onContactClick={setContactItem}
+                    onShareClick={setShareItem}
+                    shopId={activeShopId}
+                  />
                 </div>
               ))}
             </div>
@@ -1788,20 +1861,82 @@ export default function CustomerCatalog({ shopId: propShopId, lang: propLang = '
         </div>
       </div>
 
-      <DesktopCartSidebar cart={cart} onUpdateQty={updateCartQty} onRemove={removeFromCart} onClearCart={clearCart} shopUid={resolvedUid} publicShopId={activeShopId} shopInfo={shopInfo} t={t} />
+      <DesktopCartSidebar
+        cart={cart}
+        onUpdateQty={updateCartQty}
+        onRemove={removeFromCart}
+        onClearCart={clearCart}
+        shopUid={resolvedUid}
+        publicShopId={activeShopId}
+        shopInfo={shopInfo}
+        t={t}
+      />
 
       {cartCount > 0 && (
-        <button className="cc-mobile" onClick={() => setShowMobileCart(true)} aria-label="cart" style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 500, width: 54, height: 54, borderRadius: '50%', background: 'linear-gradient(135deg,#3b82f6,#2563eb)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 6px 20px rgba(59,130,246,0.5)', animation: 'ccPulse 2s infinite', color: 'white', fontSize: 22 }}>
+        <button
+          className="cc-mobile"
+          onClick={() => setShowMobileCart(true)}
+          aria-label="cart"
+          style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 500, width: 54, height: 54, borderRadius: '50%', background: 'linear-gradient(135deg,#3b82f6,#2563eb)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 6px 20px rgba(59,130,246,0.5)', animation: 'ccPulse 2s infinite', color: 'white', fontSize: 22 }}
+        >
           🛒
           <span style={{ position: 'absolute', top: -3, right: -3, minWidth: 18, height: 18, background: '#ef4444', color: 'white', borderRadius: '50%', fontSize: 9, fontWeight: 900, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid white', padding: '0 2px' }}>{cartCount}</span>
         </button>
       )}
 
-      {showMobileCart && <MobileCartModal cart={cart} onClose={() => setShowMobileCart(false)} onUpdateQty={updateCartQty} onRemove={removeFromCart} onClearCart={clearCart} shopUid={resolvedUid} publicShopId={activeShopId} t={t} />}
-      {selItem && <DetailModal item={selItem} onClose={closeSelectedItem} onAddToCart={addToCart} onContactClick={(item) => { closeSelectedItem(); setContactItem(item); }} onShareClick={setShareItem} shopId={activeShopId} t={t} />}
-      {showShopSelector && <ShopSelectorModal currentShopId={activeShopId} onSelectShop={handleShopSelect} onClose={() => setShowShopSelector(false)} t={t} />}
-      {shareItem && <ShareModal item={shareItem} shopId={activeShopId} shopInfo={shopInfo} onClose={() => setShareItem(null)} onToast={showToastMessage} t={t} />}
-      {contactItem && <ContactPhoneModal item={contactItem} shopInfo={shopInfo} onClose={() => setContactItem(null)} t={t} />}
+      {showMobileCart && (
+        <MobileCartModal
+          cart={cart}
+          onClose={() => setShowMobileCart(false)}
+          onUpdateQty={updateCartQty}
+          onRemove={removeFromCart}
+          onClearCart={clearCart}
+          shopUid={resolvedUid}
+          publicShopId={activeShopId}
+          t={t}
+        />
+      )}
+
+      {selItem && (
+        <DetailModal
+          item={selItem}
+          onClose={closeSelectedItem}
+          onAddToCart={addToCart}
+          onContactClick={(item) => { closeSelectedItem(); setContactItem(item); }}
+          onShareClick={setShareItem}
+          shopId={activeShopId}
+          t={t}
+        />
+      )}
+
+      {showShopSelector && (
+        <ShopSelectorModal
+          currentShopId={activeShopId}
+          onSelectShop={handleShopSelect}
+          onClose={() => setShowShopSelector(false)}
+          t={t}
+        />
+      )}
+
+      {shareItem && (
+        <ShareModal
+          item={shareItem}
+          shopId={activeShopId}
+          shopInfo={shopInfo}
+          onClose={() => setShareItem(null)}
+          onToast={showToastMessage}
+          t={t}
+        />
+      )}
+
+      {contactItem && (
+        <ContactPhoneModal
+          item={contactItem}
+          shopInfo={shopInfo}
+          onClose={() => setContactItem(null)}
+          t={t}
+        />
+      )}
     </div>
   );
 }
