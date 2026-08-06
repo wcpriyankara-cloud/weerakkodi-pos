@@ -37,6 +37,7 @@ const TEXT = {
     english:         'English',
     sinhala:         'සිංහල',
     allProduction:   'සියලු නිෂ්පාදන',
+    catalogSettings: 'Catalog සැකසුම්',
   },
   en: {
     appName:         'Weerakkodi POS',
@@ -66,6 +67,7 @@ const TEXT = {
     english:         'English',
     sinhala:         'Sinhala',
     allProduction:   'All Production',
+    catalogSettings: 'Catalog Settings',
   },
 };
 
