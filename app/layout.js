@@ -1,11 +1,21 @@
 import './globals.css';
 import { UserAuthContextProvider } from '@/context/UserContext';
 
+/* ═══════════════════════════════════════
+   METADATA (server metadata)
+═══════════════════════════════════════ */
 export const metadata = {
-  title: 'Weerakkodi POS',
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_APP_URL || 'https://weerakkodi-pos-app.vercel.app'
+  ),
+
+  title: {
+    default: 'Weerakkodi POS',
+    template: '%s | Weerakkodi POS',
+  },
   description: 'POS & Inventory Management System',
+
   manifest: '/site.webmanifest',
-  themeColor: '#1e3a8a',
 
   icons: {
     icon: [
@@ -33,7 +43,33 @@ export const metadata = {
     siteName: 'Weerakkodi POS',
     images: ['/android-chrome-512x512.png'],
     type: 'website',
+    locale: 'si_LK',
   },
+
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Weerakkodi POS',
+    description: 'POS & Inventory Management System',
+    images: ['/android-chrome-512x512.png'],
+  },
+
+  formatDetection: {
+    telephone: false,
+    email: false,
+    address: false,
+  },
+};
+
+/* ═══════════════════════════════════════
+   VIEWPORT (Next.js 14+ requirement)
+═══════════════════════════════════════ */
+export const viewport = {
+  themeColor: '#1e3a8a',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+  userScalable: true,
+  colorScheme: 'light',
 };
 
 export default function RootLayout({ children }) {

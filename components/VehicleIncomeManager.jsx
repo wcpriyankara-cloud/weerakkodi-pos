@@ -2,7 +2,7 @@
 
 // components/VehicleIncomeManager.jsx
 // ═══════════════════════════════════════════════════════════════
-// v24.1 — Income + Expenses Tabs
+// v25.0 — Fuzzy / Out-of-Order Search Added
 // ═══════════════════════════════════════════════════════════════
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
@@ -71,19 +71,56 @@ const getCustomerBalance = (c) =>
   R2(c?.currentBalance ?? c?.balance ?? 0);
 
 /* ════════════════════════════════════════
+   FUZZY SEARCH — Order-independent partial matching
+   "වීර චන්" matches "චන්දන වීරක්කොඩි" ✅
+   ════════════════════════════════════════ */
+
+/**
+ * fuzzyMatch — every space-separated token must appear
+ * somewhere in the target string (substring match).
+ * Order does NOT matter. Partial words are OK.
+ *
+ * fuzzyMatch("චන්දන වීරක්කොඩි", "වීර චන්")   → true ✅
+ * fuzzyMatch("Chandana Weerakkodi", "weer chan") → true ✅
+ * fuzzyMatch("0771234567", "077")               → true ✅
+ */
+const fuzzyMatch = (target, searchText) => {
+  if (!searchText || !searchText.trim()) return true;
+  if (!target) return false;
+  const hay    = String(target).toLowerCase();
+  const tokens = String(searchText).toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return tokens.every((tok) => hay.includes(tok));
+};
+
+/**
+ * Build a single searchable string from a customer object
+ * so we search across name + phone + address + etc.
+ */
+const customerSearchStr = (c) =>
+  [c?.name, c?.customerName, c?.displayName, c?.phone, c?.mobile, c?.address, c?.email, c?.nic]
+    .filter(Boolean).join(' ');
+
+/**
+ * Build a searchable string for a trip row
+ */
+const tripSearchStr = (tr) =>
+  [tr?.customerName, tr?.customerPhone, tr?.vehicleName, tr?.fromLocation, tr?.toLocation, tr?.notes, tr?.paymentMethod]
+    .filter(Boolean).join(' ');
+
+/* ════════════════════════════════════════
    BUILD TRIP INVOICE
    ════════════════════════════════════════ */
 const buildTripInvoice = (trip, vehicles = []) => {
   if (!trip) return null;
-  const tripId = trip.id || trip.receiptId || Date.now().toString(36);
+  const tripId    = trip.id || trip.receiptId || Date.now().toString(36);
   const invoiceNo = `TRP-${String(tripId).slice(0, 6).toUpperCase()}`;
   const vehicleNo =
     trip.vehicleName || vehicles.find((v) => v.id === trip.vehicleId)?.vehicleNo || '';
-  const totalBill = R2(trip.totalBillAmount || 0);
-  const paidAmt = R2(trip.paidAmount || 0);
-  const methodMap = { cash: 'cash', bank: 'etransfer', card: 'card', credit: 'credit' };
-  const payMethod = methodMap[trip.paymentMethod] || 'cash';
-  const items = [];
+  const totalBill  = R2(trip.totalBillAmount || 0);
+  const paidAmt    = R2(trip.paidAmount || 0);
+  const methodMap  = { cash: 'cash', bank: 'etransfer', card: 'card', credit: 'credit' };
+  const payMethod  = methodMap[trip.paymentMethod] || 'cash';
+  const items      = [];
 
   if (R2(trip.fare) > 0) {
     items.push({
@@ -171,6 +208,7 @@ const TRANSLATIONS = {
     from: 'සිට',
     to: 'දක්වා',
     searchCustomer: 'පාරිභෝගිකයා සොයන්න...',
+    searchTrips: 'ගමන් සොයන්න... (උදා: වීර චන්)',
     paymentMethod: 'ගෙවීම් ක්‍රමය',
     cash: 'මුදල්',
     bank: 'බැංකු',
@@ -209,6 +247,7 @@ const TRANSLATIONS = {
     notRegistered: 'ලියාපදිංචි නැත',
     customerName: 'ගනුදෙනුකරු නම',
     phone: 'දුරකථනය',
+    searchResults: 'ප්‍රතිඵල',
   },
   en: {
     title: 'Vehicle Income Manager',
@@ -254,6 +293,7 @@ const TRANSLATIONS = {
     from: 'From',
     to: 'To',
     searchCustomer: 'Search customer...',
+    searchTrips: 'Search trips... (e.g. weer chan)',
     paymentMethod: 'Payment Method',
     cash: 'Cash',
     bank: 'Bank',
@@ -292,6 +332,7 @@ const TRANSLATIONS = {
     notRegistered: 'Not registered',
     customerName: 'Customer Name',
     phone: 'Phone',
+    searchResults: 'results',
   },
 };
 
@@ -352,6 +393,17 @@ const S = {
     fontSize: 14,
     boxSizing: 'border-box',
     outline: 'none',
+  },
+  searchInput: {
+    width: '100%',
+    padding: '12px 16px',
+    border: '2px solid #667eea',
+    borderRadius: 10,
+    fontSize: 14,
+    boxSizing: 'border-box',
+    outline: 'none',
+    background: '#f8f9ff',
+    transition: 'border-color 0.2s, box-shadow 0.2s',
   },
   label: {
     display: 'block',
@@ -430,7 +482,6 @@ function useLanguage() {
       const newLang = e.detail || 'si';
       setLang(newLang);
     };
-
     const handleStorage = () => {
       try {
         const s = localStorage.getItem('language');
@@ -440,7 +491,6 @@ function useLanguage() {
 
     window.addEventListener('app-language-change', handleLangEvent);
     window.addEventListener('storage', handleStorage);
-
     const interval = setInterval(() => {
       try {
         const s = localStorage.getItem('language');
@@ -456,18 +506,18 @@ function useLanguage() {
   }, [lang]);
 
   const t = useMemo(() => TRANSLATIONS[lang] || TRANSLATIONS.si, [lang]);
-
   return { lang, t };
 }
 
 /* ════════════════════════════════════════
-   CUSTOMER SEARCH
+   CUSTOMER SEARCH COMPONENT
+   — Fuzzy search inside dropdown
    ════════════════════════════════════════ */
 function CustomerSearch({ uid, value, onChange, placeholder, t }) {
   const [customers, setCustomers] = useState([]);
-  const [q, setQ] = useState('');
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+  const [q, setQ]                 = useState('');
+  const [open, setOpen]           = useState(false);
+  const ref                       = useRef(null);
 
   useEffect(() => {
     if (!uid) return;
@@ -486,14 +536,12 @@ function CustomerSearch({ uid, value, onChange, placeholder, t }) {
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
+  // ── FUZZY filter customers ──
   const filtered = useMemo(() => {
     if (!q.trim()) return customers.slice(0, 12);
-    const lq = norm(q);
+    // Build searchable string per customer, then fuzzyMatch
     return customers
-      .filter((c) =>
-        norm(c.name).includes(lq) ||
-        (c.phone && normalizePhone(c.phone).includes(lq.replace(/\D/g, '')))
-      )
+      .filter((c) => fuzzyMatch(customerSearchStr(c), q))
       .slice(0, 10);
   }, [customers, q]);
 
@@ -522,18 +570,11 @@ function CustomerSearch({ uid, value, onChange, placeholder, t }) {
                 style={{ width: 28, height: 28, borderRadius: '50%', objectFit: 'cover' }}
               />
             ) : (
-              <div
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: '50%',
-                  background: '#dbeafe',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: 14,
-                }}
-              >
+              <div style={{
+                width: 28, height: 28, borderRadius: '50%',
+                background: '#dbeafe', display: 'flex',
+                alignItems: 'center', justifyContent: 'center', fontSize: 14,
+              }}>
                 👤
               </div>
             )}
@@ -549,18 +590,8 @@ function CustomerSearch({ uid, value, onChange, placeholder, t }) {
               </span>
             )}
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onChange(null, null);
-                setQ('');
-              }}
-              style={{
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                color: '#dc2626',
-                fontSize: 16,
-              }}
+              onClick={(e) => { e.stopPropagation(); onChange(null, null); setQ(''); }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontSize: 16 }}
             >
               ✕
             </button>
@@ -571,67 +602,59 @@ function CustomerSearch({ uid, value, onChange, placeholder, t }) {
       </div>
 
       {open && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            right: 0,
-            zIndex: 99,
-            background: 'white',
-            border: '2px solid #e2e8f0',
-            borderRadius: 12,
-            boxShadow: '0 10px 30px rgba(0,0,0,0.15)',
-            overflow: 'hidden',
-          }}
-        >
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 99,
+          background: 'white', border: '2px solid #e2e8f0', borderRadius: 12,
+          boxShadow: '0 10px 30px rgba(0,0,0,0.15)', overflow: 'hidden',
+        }}>
+          {/* Search input inside dropdown */}
           <div style={{ padding: 10, borderBottom: '1px solid #e2e8f0' }}>
             <input
               autoFocus
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder={t.searchCustomer}
-              style={{ ...S.input, border: '1px solid #e2e8f0', padding: '8px 12px' }}
+              style={{ ...S.searchInput, fontSize: 13 }}
             />
+            {/* Hint text */}
+            {q && (
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, paddingLeft: 2 }}>
+                🔍 &quot;{q}&quot; — {filtered.length} {t.searchResults || 'results'}
+              </div>
+            )}
           </div>
+
           <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+            {/* Guest option */}
             <div
-              onClick={() => {
-                onChange('guest', null);
-                setOpen(false);
-                setQ('');
-              }}
+              onClick={() => { onChange('guest', null); setOpen(false); setQ(''); }}
               style={{
-                padding: '10px 14px',
-                cursor: 'pointer',
+                padding: '10px 14px', cursor: 'pointer',
                 borderBottom: '1px solid #f1f5f9',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
+                display: 'flex', alignItems: 'center', gap: 10,
               }}
+              onMouseEnter={(e) => e.currentTarget.style.background = '#f8fafc'}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'white'}
             >
               <span style={{ fontSize: 20 }}>👤</span>
               <span style={{ fontWeight: 600, color: '#475569' }}>
                 {t.guestCustomer} ({t.notRegistered})
               </span>
             </div>
+
+            {/* Filtered customer list */}
             {filtered.map((c) => (
               <div
                 key={c.id}
-                onClick={() => {
-                  onChange(c.id, c);
-                  setOpen(false);
-                  setQ('');
-                }}
+                onClick={() => { onChange(c.id, c); setOpen(false); setQ(''); }}
                 style={{
-                  padding: '10px 14px',
-                  cursor: 'pointer',
+                  padding: '10px 14px', cursor: 'pointer',
                   borderBottom: '1px solid #f1f5f9',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
+                  display: 'flex', alignItems: 'center', gap: 10,
                   background: c.id === value ? '#f0fdf4' : 'white',
                 }}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#f0f9ff'}
+                onMouseLeave={(e) => e.currentTarget.style.background = c.id === value ? '#f0fdf4' : 'white'}
               >
                 {getCustomerPicture(c) ? (
                   <img
@@ -640,18 +663,11 @@ function CustomerSearch({ uid, value, onChange, placeholder, t }) {
                     style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover' }}
                   />
                 ) : (
-                  <div
-                    style={{
-                      width: 34,
-                      height: 34,
-                      borderRadius: '50%',
-                      background: '#dbeafe',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: 16,
-                    }}
-                  >
+                  <div style={{
+                    width: 34, height: 34, borderRadius: '50%',
+                    background: '#dbeafe', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center', fontSize: 16,
+                  }}>
                     👤
                   </div>
                 )}
@@ -666,9 +682,16 @@ function CustomerSearch({ uid, value, onChange, placeholder, t }) {
                 )}
               </div>
             ))}
+
             {filtered.length === 0 && (
               <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>
-                {t.noMatches}
+                <div style={{ fontSize: 24, marginBottom: 6 }}>🔍</div>
+                <div>{t.noMatches}</div>
+                {q && (
+                  <div style={{ fontSize: 12, marginTop: 4, color: '#cbd5e1' }}>
+                    &quot;{q}&quot; — {t.searchCustomer}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -683,20 +706,16 @@ function CustomerSearch({ uid, value, onChange, placeholder, t }) {
    ════════════════════════════════════════ */
 function AddVehicleModal({ basePath, onClose, onSaved, t }) {
   const [form, setForm] = useState({
-    vehicleNo: '',
-    vehicleType: 'truck',
-    driverName: '',
-    driverPhone: '',
-    capacity: '',
-    notes: '',
+    vehicleNo: '', vehicleType: 'truck',
+    driverName: '', driverPhone: '', capacity: '', notes: '',
   });
   const [saving, setSaving] = useState(false);
 
   const vehicleTypes = [
     { value: 'truck', label: `🚛 ${t.truck}` },
-    { value: 'van', label: `🚐 ${t.van}` },
+    { value: 'van',   label: `🚐 ${t.van}`   },
     { value: 'lorry', label: `🚚 ${t.lorry}` },
-    { value: 'pickup', label: `🛻 ${t.pickup}` },
+    { value: 'pickup',label: `🛻 ${t.pickup}` },
   ];
 
   const handleSave = async () => {
@@ -704,9 +723,7 @@ function AddVehicleModal({ basePath, onClose, onSaved, t }) {
     setSaving(true);
     try {
       await addDoc(collection(db, `${basePath}/vehicles`), {
-        ...form,
-        isActive: true,
-        createdAt: serverTimestamp(),
+        ...form, isActive: true, createdAt: serverTimestamp(),
       });
       onSaved?.();
       onClose();
@@ -722,21 +739,11 @@ function AddVehicleModal({ basePath, onClose, onSaved, t }) {
       <div style={S.modal}>
         <div style={S.modalHdr('#10b981')}>
           <h3 style={{ margin: 0, fontSize: 18 }}>🚛 {t.addVehicle}</h3>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'rgba(255,255,255,0.2)',
-              border: 'none',
-              color: 'white',
-              borderRadius: '50%',
-              width: 32,
-              height: 32,
-              cursor: 'pointer',
-              fontSize: 16,
-            }}
-          >
-            ✕
-          </button>
+          <button onClick={onClose} style={{
+            background: 'rgba(255,255,255,0.2)', border: 'none',
+            color: 'white', borderRadius: '50%', width: 32, height: 32,
+            cursor: 'pointer', fontSize: 16,
+          }}>✕</button>
         </div>
         <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={S.grid2}>
@@ -744,26 +751,19 @@ function AddVehicleModal({ basePath, onClose, onSaved, t }) {
               <label style={S.label}>{t.vehicleNo} *</label>
               <input
                 value={form.vehicleNo}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, vehicleNo: e.target.value.toUpperCase() }))
-                }
-                style={S.input}
-                placeholder="ABC-1234"
+                onChange={(e) => setForm((p) => ({ ...p, vehicleNo: e.target.value.toUpperCase() }))}
+                style={S.input} placeholder="ABC-1234"
               />
             </div>
             <div>
               <label style={S.label}>{t.vehicleType}</label>
               <select
                 value={form.vehicleType}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, vehicleType: e.target.value }))
-                }
+                onChange={(e) => setForm((p) => ({ ...p, vehicleType: e.target.value }))}
                 style={S.input}
               >
                 {vehicleTypes.map((vt) => (
-                  <option key={vt.value} value={vt.value}>
-                    {vt.label}
-                  </option>
+                  <option key={vt.value} value={vt.value}>{vt.label}</option>
                 ))}
               </select>
             </div>
@@ -773,9 +773,7 @@ function AddVehicleModal({ basePath, onClose, onSaved, t }) {
               <label style={S.label}>{t.driverName}</label>
               <input
                 value={form.driverName}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, driverName: e.target.value }))
-                }
+                onChange={(e) => setForm((p) => ({ ...p, driverName: e.target.value }))}
                 style={S.input}
               />
             </div>
@@ -783,11 +781,8 @@ function AddVehicleModal({ basePath, onClose, onSaved, t }) {
               <label style={S.label}>{t.driverPhone}</label>
               <input
                 value={form.driverPhone}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, driverPhone: e.target.value }))
-                }
-                style={S.input}
-                placeholder="07X XXX XXXX"
+                onChange={(e) => setForm((p) => ({ ...p, driverPhone: e.target.value }))}
+                style={S.input} placeholder="07X XXX XXXX"
               />
             </div>
           </div>
@@ -795,27 +790,20 @@ function AddVehicleModal({ basePath, onClose, onSaved, t }) {
             <label style={S.label}>{t.capacity}</label>
             <input
               value={form.capacity}
-              onChange={(e) =>
-                setForm((p) => ({ ...p, capacity: e.target.value }))
-              }
-              style={S.input}
-              placeholder="10 Ton"
+              onChange={(e) => setForm((p) => ({ ...p, capacity: e.target.value }))}
+              style={S.input} placeholder="10 Ton"
             />
           </div>
           <div>
             <label style={S.label}>{t.notes}</label>
             <textarea
               value={form.notes}
-              onChange={(e) =>
-                setForm((p) => ({ ...p, notes: e.target.value }))
-              }
+              onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))}
               style={{ ...S.input, height: 70, resize: 'vertical' }}
             />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
-            <button onClick={onClose} style={{ ...S.btn('#f1f5f9', '#475569'), flex: 1 }}>
-              {t.cancel}
-            </button>
+            <button onClick={onClose} style={{ ...S.btn('#f1f5f9', '#475569'), flex: 1 }}>{t.cancel}</button>
             <button onClick={handleSave} disabled={saving} style={{ ...S.btn('#10b981'), flex: 2 }}>
               {saving ? t.saving : `💾 ${t.save}`}
             </button>
@@ -831,26 +819,19 @@ function AddVehicleModal({ basePath, onClose, onSaved, t }) {
    ════════════════════════════════════════ */
 function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
   const [form, setForm] = useState({
-    tripDate: todayStr(),
-    vehicleId: '',
-    customerId: '',
-    customerName: '',
-    customerPhone: '',
-    fromLocation: '',
-    toLocation: '',
-    fare: '',
-    paidAmount: '',
-    paymentMethod: 'cash',
-    notes: '',
+    tripDate: todayStr(), vehicleId: '',
+    customerId: '', customerName: '', customerPhone: '',
+    fromLocation: '', toLocation: '',
+    fare: '', paidAmount: '', paymentMethod: 'cash', notes: '',
   });
   const [cargoItems, setCargoItems] = useState([]);
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving]         = useState(false);
 
-  const fare = R2(form.fare);
-  const cargoTotal = cargoItems.reduce((s, ci) => s + R2(ci.total), 0);
-  const totalBill = R2(fare + cargoTotal);
-  const paid = R2(form.paidAmount);
-  const balanceDue = R2(totalBill - paid);
+  const fare        = R2(form.fare);
+  const cargoTotal  = cargoItems.reduce((s, ci) => s + R2(ci.total), 0);
+  const totalBill   = R2(fare + cargoTotal);
+  const paid        = R2(form.paidAmount);
+  const balanceDue  = R2(totalBill - paid);
 
   const addCargoItem = () =>
     setCargoItems((p) => [...p, { goodsName: '', qty: 1, unitPrice: 0, total: 0 }]);
@@ -865,8 +846,7 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
     });
   };
 
-  const removeCargo = (idx) =>
-    setCargoItems((p) => p.filter((_, i) => i !== idx));
+  const removeCargo = (idx) => setCargoItems((p) => p.filter((_, i) => i !== idx));
 
   const handleCustomerChange = (custId, custData) => {
     if (custId === 'guest' || !custId) {
@@ -922,61 +902,40 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
             currentBalance: increment(balanceDue),
             updatedAt: serverTimestamp(),
           });
-
           await addDoc(collection(db, 'customerTransactions'), {
-            uid,
-            customerId: form.customerId,
-            type: 'credit',
-            amount: fare,
-            date: form.tripDate,
+            uid, customerId: form.customerId, type: 'credit',
+            amount: fare, date: form.tripDate,
             note: `ප්‍රවාහන ගාස්තු (${vehicle?.vehicleNo || ''})`,
-            source: 'vehicleTrip',
-            tripId: tripRef.id,
-            createdAt: serverTimestamp(),
-            timestamp: Date.now(),
+            source: 'vehicleTrip', tripId: tripRef.id,
+            createdAt: serverTimestamp(), timestamp: Date.now(),
           });
-
           if (paid > 0) {
             await addDoc(collection(db, 'customerTransactions'), {
-              uid,
-              customerId: form.customerId,
-              type: 'payment',
-              amount: paid,
-              date: form.tripDate,
+              uid, customerId: form.customerId, type: 'payment',
+              amount: paid, date: form.tripDate,
               note: `ප්‍රවාහන ගෙවීම (${vehicle?.vehicleNo || ''})`,
-              source: 'vehicleTrip',
-              tripId: tripRef.id,
+              source: 'vehicleTrip', tripId: tripRef.id,
               paymentMethod: form.paymentMethod,
-              createdAt: serverTimestamp(),
-              timestamp: Date.now() + 100,
+              createdAt: serverTimestamp(), timestamp: Date.now() + 100,
             });
           }
-        } catch (e) {
-          console.warn('Customer update:', e);
-        }
+        } catch (e) { console.warn('Customer update:', e); }
       }
 
       if (paid > 0) {
         try {
           await addDoc(collection(db, `users/${uid}/cashTransactions`), {
-            uid,
-            type: 'in',
-            category: 'vehicleIncome',
+            uid, type: 'in', category: 'vehicleIncome',
             source: 'vehicleTrip',
             description: `ප්‍රවාහන ආදායම - ${form.customerName || t.guestCustomer}`,
-            amount: paid,
-            paymentMethod: form.paymentMethod,
+            amount: paid, paymentMethod: form.paymentMethod,
             customerId: form.customerId || null,
             customerName: form.customerName || t.guestCustomer,
-            tripId: tripRef.id,
-            date: form.tripDate,
+            tripId: tripRef.id, date: form.tripDate,
             timestamp: Timestamp.fromDate(new Date(form.tripDate + 'T12:00:00')),
-            createdAt: serverTimestamp(),
-            isAutomatic: true,
+            createdAt: serverTimestamp(), isAutomatic: true,
           });
-        } catch (e) {
-          console.warn('Cash txn:', e);
-        }
+        } catch (e) { console.warn('Cash txn:', e); }
       }
 
       onSaved?.();
@@ -993,29 +952,18 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
       <div style={{ ...S.modal, maxWidth: 700 }}>
         <div style={S.modalHdr('#667eea')}>
           <h3 style={{ margin: 0, fontSize: 18 }}>🚛 {t.addTrip}</h3>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'rgba(255,255,255,0.2)',
-              border: 'none',
-              color: 'white',
-              borderRadius: '50%',
-              width: 32,
-              height: 32,
-              cursor: 'pointer',
-              fontSize: 16,
-            }}
-          >
-            ✕
-          </button>
+          <button onClick={onClose} style={{
+            background: 'rgba(255,255,255,0.2)', border: 'none',
+            color: 'white', borderRadius: '50%', width: 32, height: 32,
+            cursor: 'pointer', fontSize: 16,
+          }}>✕</button>
         </div>
         <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 18 }}>
           <div style={S.grid2}>
             <div>
               <label style={S.label}>{t.tripDate} *</label>
               <input
-                type="date"
-                value={form.tripDate}
+                type="date" value={form.tripDate}
                 onChange={(e) => setForm((p) => ({ ...p, tripDate: e.target.value }))}
                 style={S.input}
               />
@@ -1029,9 +977,7 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
               >
                 <option value="">{t.selectVehicle}</option>
                 {vehicles.filter((v) => v.isActive !== false).map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.vehicleNo} — {v.vehicleType}
-                  </option>
+                  <option key={v.id} value={v.id}>{v.vehicleNo} — {v.vehicleType}</option>
                 ))}
               </select>
             </div>
@@ -1045,14 +991,12 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
                 <input
                   value={form.customerName}
                   onChange={(e) => setForm((p) => ({ ...p, customerName: e.target.value }))}
-                  style={S.input}
-                  placeholder={`${t.customerName} (Optional)`}
+                  style={S.input} placeholder={`${t.customerName} (Optional)`}
                 />
                 <input
                   value={form.customerPhone}
                   onChange={(e) => setForm((p) => ({ ...p, customerPhone: e.target.value }))}
-                  style={S.input}
-                  placeholder={`${t.phone} (Optional)`}
+                  style={S.input} placeholder={`${t.phone} (Optional)`}
                 />
               </div>
             )}
@@ -1061,29 +1005,22 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
           <div style={S.grid2}>
             <div>
               <label style={S.label}>{t.fromLocation}</label>
-              <input
-                value={form.fromLocation}
+              <input value={form.fromLocation}
                 onChange={(e) => setForm((p) => ({ ...p, fromLocation: e.target.value }))}
-                style={S.input}
-              />
+                style={S.input} />
             </div>
             <div>
               <label style={S.label}>{t.toLocation}</label>
-              <input
-                value={form.toLocation}
+              <input value={form.toLocation}
                 onChange={(e) => setForm((p) => ({ ...p, toLocation: e.target.value }))}
-                style={S.input}
-              />
+                style={S.input} />
             </div>
           </div>
 
           <div>
             <label style={S.label}>{t.fare} (Rs.)</label>
             <input
-              type="number"
-              step="0.01"
-              min="0"
-              value={form.fare}
+              type="number" step="0.01" min="0" value={form.fare}
               onChange={(e) => setForm((p) => ({ ...p, fare: e.target.value }))}
               style={{ ...S.input, fontSize: 20, fontWeight: 800, color: '#2563eb' }}
               placeholder="0.00"
@@ -1093,70 +1030,32 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
               <label style={{ ...S.label, margin: 0 }}>📦 {t.cargo} (Optional)</label>
-              <button onClick={addCargoItem} style={S.btn('#8b5cf6')}>
-                + {t.addGoods}
-              </button>
+              <button onClick={addCargoItem} style={S.btn('#8b5cf6')}>+ {t.addGoods}</button>
             </div>
-
             {cargoItems.map((ci, idx) => (
-              <div
-                key={idx}
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: '2fr 1fr 1fr 1fr auto',
-                  gap: 8,
-                  marginBottom: 8,
-                  alignItems: 'center',
-                }}
-              >
-                <input
-                  value={ci.goodsName}
+              <div key={idx} style={{
+                display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr auto',
+                gap: 8, marginBottom: 8, alignItems: 'center',
+              }}>
+                <input value={ci.goodsName}
                   onChange={(e) => updateCargo(idx, 'goodsName', e.target.value)}
-                  style={{ ...S.input, marginBottom: 0 }}
-                  placeholder={t.goodsName}
-                />
-                <input
-                  type="number"
-                  value={ci.qty}
+                  style={{ ...S.input, marginBottom: 0 }} placeholder={t.goodsName} />
+                <input type="number" value={ci.qty}
                   onChange={(e) => updateCargo(idx, 'qty', e.target.value)}
-                  style={{ ...S.input, marginBottom: 0 }}
-                  placeholder={t.qty}
-                />
-                <input
-                  type="number"
-                  value={ci.unitPrice}
+                  style={{ ...S.input, marginBottom: 0 }} placeholder={t.qty} />
+                <input type="number" value={ci.unitPrice}
                   onChange={(e) => updateCargo(idx, 'unitPrice', e.target.value)}
-                  style={{ ...S.input, marginBottom: 0 }}
-                  placeholder={t.unitPrice}
-                />
-                <div
-                  style={{
-                    padding: '12px 10px',
-                    background: '#f0fdf4',
-                    borderRadius: 8,
-                    textAlign: 'center',
-                    fontWeight: 700,
-                    fontSize: 13,
-                    color: '#16a34a',
-                  }}
-                >
+                  style={{ ...S.input, marginBottom: 0 }} placeholder={t.unitPrice} />
+                <div style={{
+                  padding: '12px 10px', background: '#f0fdf4', borderRadius: 8,
+                  textAlign: 'center', fontWeight: 700, fontSize: 13, color: '#16a34a',
+                }}>
                   Rs.{ci.total.toLocaleString()}
                 </div>
-                <button
-                  onClick={() => removeCargo(idx)}
-                  style={{
-                    background: '#fee2e2',
-                    border: 'none',
-                    borderRadius: 8,
-                    width: 34,
-                    height: 44,
-                    cursor: 'pointer',
-                    color: '#dc2626',
-                    fontSize: 16,
-                  }}
-                >
-                  ✕
-                </button>
+                <button onClick={() => removeCargo(idx)} style={{
+                  background: '#fee2e2', border: 'none', borderRadius: 8,
+                  width: 34, height: 44, cursor: 'pointer', color: '#dc2626', fontSize: 16,
+                }}>✕</button>
               </div>
             ))}
           </div>
@@ -1174,9 +1073,7 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderTop: '2px solid #e2e8f0', marginTop: 6 }}>
               <span style={{ fontWeight: 800, fontSize: 16 }}>{t.totalBill}:</span>
-              <span style={{ fontWeight: 900, fontSize: 18, color: '#2563eb' }}>
-                {formatCurrency(totalBill)}
-              </span>
+              <span style={{ fontWeight: 900, fontSize: 18, color: '#2563eb' }}>{formatCurrency(totalBill)}</span>
             </div>
           </div>
 
@@ -1184,10 +1081,7 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
             <div>
               <label style={S.label}>{t.paidAmount} (Rs.)</label>
               <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={form.paidAmount}
+                type="number" step="0.01" min="0" value={form.paidAmount}
                 onChange={(e) => setForm((p) => ({ ...p, paidAmount: e.target.value }))}
                 style={{ ...S.input, fontSize: 18, fontWeight: 800, color: '#16a34a' }}
                 placeholder="0.00"
@@ -1195,11 +1089,9 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
             </div>
             <div>
               <label style={S.label}>{t.paymentMethod}</label>
-              <select
-                value={form.paymentMethod}
+              <select value={form.paymentMethod}
                 onChange={(e) => setForm((p) => ({ ...p, paymentMethod: e.target.value }))}
-                style={S.input}
-              >
+                style={S.input}>
                 <option value="cash">💵 {t.cash}</option>
                 <option value="bank">🏦 {t.bank}</option>
                 <option value="credit">🔴 {t.credit}</option>
@@ -1208,7 +1100,11 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
           </div>
 
           {balanceDue > 0.01 && (
-            <div style={{ padding: '10px 16px', background: '#fef2f2', borderRadius: 10, border: '2px solid #fecaca', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{
+              padding: '10px 16px', background: '#fef2f2', borderRadius: 10,
+              border: '2px solid #fecaca', display: 'flex',
+              justifyContent: 'space-between', alignItems: 'center',
+            }}>
               <span style={{ fontWeight: 700, color: '#dc2626' }}>⚠️ {t.balanceDue}:</span>
               <span style={{ fontWeight: 900, fontSize: 18, color: '#dc2626' }}>
                 {formatCurrency(balanceDue)}
@@ -1218,17 +1114,13 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
 
           <div>
             <label style={S.label}>{t.notes}</label>
-            <textarea
-              value={form.notes}
+            <textarea value={form.notes}
               onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))}
-              style={{ ...S.input, height: 70, resize: 'vertical' }}
-            />
+              style={{ ...S.input, height: 70, resize: 'vertical' }} />
           </div>
 
           <div style={{ display: 'flex', gap: 12 }}>
-            <button onClick={onClose} style={{ ...S.btn('#f1f5f9', '#475569'), flex: 1 }}>
-              {t.cancel}
-            </button>
+            <button onClick={onClose} style={{ ...S.btn('#f1f5f9', '#475569'), flex: 1 }}>{t.cancel}</button>
             <button onClick={handleSave} disabled={saving} style={{ ...S.btn('#667eea'), flex: 2 }}>
               {saving ? t.saving : `💾 ${t.save}`}
             </button>
@@ -1244,28 +1136,28 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t }) {
    ════════════════════════════════════════ */
 function ReportsTab({ trips, vehicles, t }) {
   const [filterVehicle, setFilterVehicle] = useState('');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  const [fromDate, setFromDate]           = useState('');
+  const [toDate, setToDate]               = useState('');
 
   const filtered = useMemo(() => {
     return trips.filter((tr) => {
       const ms = toMs(tr.tripDate);
       if (fromDate && ms < new Date(fromDate + 'T00:00:00').getTime()) return false;
-      if (toDate && ms > new Date(toDate + 'T23:59:59').getTime()) return false;
+      if (toDate   && ms > new Date(toDate   + 'T23:59:59').getTime()) return false;
       if (filterVehicle && tr.vehicleId !== filterVehicle) return false;
       return true;
     });
   }, [trips, fromDate, toDate, filterVehicle]);
 
-  const totalBilled = filtered.reduce((s, x) => s + R2(x.totalBillAmount || 0), 0);
+  const totalBilled   = filtered.reduce((s, x) => s + R2(x.totalBillAmount || 0), 0);
   const totalReceived = filtered.reduce((s, x) => s + R2(x.paidAmount || 0), 0);
-  const totalDue = filtered.reduce((s, x) => s + R2(x.balanceDue || 0), 0);
+  const totalDue      = filtered.reduce((s, x) => s + R2(x.balanceDue || 0), 0);
 
   const statCards = [
-    { label: t.totalTrips, value: filtered.length, icon: '🚛', color: '#3b82f6' },
-    { label: t.totalBilled, value: formatCurrency(totalBilled), icon: '📋', color: '#8b5cf6' },
-    { label: t.totalReceived, value: formatCurrency(totalReceived), icon: '💰', color: '#10b981' },
-    { label: t.totalDue, value: formatCurrency(totalDue), icon: '⚠️', color: '#dc2626' },
+    { label: t.totalTrips,    value: filtered.length,             icon: '🚛', color: '#3b82f6' },
+    { label: t.totalBilled,   value: formatCurrency(totalBilled), icon: '📋', color: '#8b5cf6' },
+    { label: t.totalReceived, value: formatCurrency(totalReceived),icon: '💰', color: '#10b981' },
+    { label: t.totalDue,      value: formatCurrency(totalDue),    icon: '⚠️', color: '#dc2626' },
   ];
 
   return (
@@ -1292,7 +1184,10 @@ function ReportsTab({ trips, vehicles, t }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16, marginBottom: 24 }}>
         {statCards.map((sc, i) => (
-          <div key={i} style={{ ...S.card, padding: 20, marginBottom: 0, textAlign: 'center', borderTop: `4px solid ${sc.color}` }}>
+          <div key={i} style={{
+            ...S.card, padding: 20, marginBottom: 0,
+            textAlign: 'center', borderTop: `4px solid ${sc.color}`,
+          }}>
             <div style={{ fontSize: 30, marginBottom: 8 }}>{sc.icon}</div>
             <div style={{ fontSize: 13, color: '#64748b', marginBottom: 4 }}>{sc.label}</div>
             <div style={{ fontSize: 18, fontWeight: 900, color: sc.color }}>{sc.value}</div>
@@ -1333,11 +1228,10 @@ function ReportsTab({ trips, vehicles, t }) {
                       <td style={{ ...S.td, fontWeight: 700 }}>{formatCurrency(tr.totalBillAmount)}</td>
                       <td style={{ ...S.td, fontWeight: 700, color: '#16a34a' }}>{formatCurrency(tr.paidAmount)}</td>
                       <td style={S.td}>
-                        {due > 0.01 ? (
-                          <span style={S.badge('#fef2f2', '#dc2626')}>Rs.{due.toLocaleString()}</span>
-                        ) : (
-                          <span style={S.badge('#f0fdf4', '#16a34a')}>✅</span>
-                        )}
+                        {due > 0.01
+                          ? <span style={S.badge('#fef2f2', '#dc2626')}>Rs.{due.toLocaleString()}</span>
+                          : <span style={S.badge('#f0fdf4', '#16a34a')}>✅</span>
+                        }
                       </td>
                     </tr>
                   );
@@ -1365,47 +1259,41 @@ function ReportsTab({ trips, vehicles, t }) {
    MAIN COMPONENT
    ═══════════════════════════════════════ */
 export default function VehicleIncomeManager() {
-  const { user } = useUserAuth();
+  const { user }  = useUserAuth();
   const { lang, t } = useLanguage();
 
-  const [activeTab, setActiveTab] = useState('income');
-  const [vehicles, setVehicles] = useState([]);
-  const [trips, setTrips] = useState([]);
+  const [activeTab, setActiveTab]         = useState('income');
+  const [vehicles, setVehicles]           = useState([]);
+  const [trips, setTrips]                 = useState([]);
   const [outputInvoice, setOutputInvoice] = useState(null);
-  const [showAddTrip, setShowAddTrip] = useState(false);
+  const [showAddTrip, setShowAddTrip]     = useState(false);
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [filterVehicle, setFilterVehicle] = useState('');
+
+  // ── Fuzzy search state ──
   const [searchQ, setSearchQ] = useState('');
 
   const basePath = useMemo(() => (user ? `users/${user.uid}` : null), [user]);
 
   useEffect(() => {
     if (!basePath) return;
-
     const unsubV = onSnapshot(collection(db, `${basePath}/vehicles`), (s) =>
       setVehicles(s.docs.map((d) => ({ id: d.id, ...d.data() })))
     );
-
     const unsubT = onSnapshot(
       query(collection(db, `${basePath}/vehicleTrips`), orderBy('tripDate', 'desc')),
       (s) => setTrips(s.docs.map((d) => ({ id: d.id, ...d.data() })))
     );
-
-    return () => {
-      unsubV();
-      unsubT();
-    };
+    return () => { unsubV(); unsubT(); };
   }, [basePath]);
 
+  // ── FUZZY filtered trips ──
   const filteredTrips = useMemo(() => {
     return trips.filter((tr) => {
+      // vehicle filter (dropdown)
       if (filterVehicle && tr.vehicleId !== filterVehicle) return false;
-      if (searchQ) {
-        const q = norm(searchQ);
-        if (!norm(tr.customerName).includes(q) && !norm(tr.vehicleName).includes(q)) {
-          return false;
-        }
-      }
+      // fuzzy text search — "වීර චන්" matches "චන්දන වීරක්කොඩි" ✅
+      if (searchQ && !fuzzyMatch(tripSearchStr(tr), searchQ)) return false;
       return true;
     });
   }, [trips, filterVehicle, searchQ]);
@@ -1416,38 +1304,32 @@ export default function VehicleIncomeManager() {
   );
 
   const tabs = [
-    { key: 'income', icon: '💰', label: t.incomeTab || t.income || 'Income' },
+    { key: 'income',   icon: '💰', label: t.incomeTab || t.income || 'Income' },
     { key: 'expenses', icon: '💸', label: t.expenses },
     { key: 'vehicles', icon: '🚗', label: t.vehicles },
-    { key: 'reports', icon: '📊', label: t.reports },
+    { key: 'reports',  icon: '📊', label: t.reports },
   ];
 
   return (
     <div style={S.container}>
+      {/* ── Modals ── */}
       {outputInvoice && (
         <InvoiceOutputManager invoice={outputInvoice} onClose={() => setOutputInvoice(null)} />
       )}
-
       {showAddTrip && basePath && (
         <AddTripModal
-          basePath={basePath}
-          uid={user.uid}
-          vehicles={vehicles}
-          onClose={() => setShowAddTrip(false)}
-          onSaved={() => setShowAddTrip(false)}
-          t={t}
+          basePath={basePath} uid={user.uid} vehicles={vehicles}
+          onClose={() => setShowAddTrip(false)} onSaved={() => setShowAddTrip(false)} t={t}
         />
       )}
-
       {showAddVehicle && basePath && (
         <AddVehicleModal
           basePath={basePath}
-          onClose={() => setShowAddVehicle(false)}
-          onSaved={() => setShowAddVehicle(false)}
-          t={t}
+          onClose={() => setShowAddVehicle(false)} onSaved={() => setShowAddVehicle(false)} t={t}
         />
       )}
 
+      {/* ── Header ── */}
       <div style={S.header}>
         <div style={{ fontSize: 50, marginBottom: 10 }}>🚛</div>
         <h1 style={{ fontSize: 28, fontWeight: 900, margin: 0 }}>{t.title}</h1>
@@ -1456,28 +1338,20 @@ export default function VehicleIncomeManager() {
         </p>
       </div>
 
+      {/* ── Tabs ── */}
       <div style={S.tabs}>
         {tabs.map((tab) => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
             style={{
-              padding: '12px 24px',
-              borderRadius: 12,
-              border: 'none',
-              cursor: 'pointer',
-              fontWeight: 700,
-              fontSize: 14,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
+              padding: '12px 24px', borderRadius: 12, border: 'none',
+              cursor: 'pointer', fontWeight: 700, fontSize: 14,
+              display: 'flex', alignItems: 'center', gap: 8,
               background: activeTab === tab.key
-                ? 'linear-gradient(135deg,#667eea,#764ba2)'
-                : '#f8fafc',
+                ? 'linear-gradient(135deg,#667eea,#764ba2)' : '#f8fafc',
               color: activeTab === tab.key ? 'white' : '#64748b',
-              boxShadow: activeTab === tab.key
-                ? '0 4px 12px rgba(102,126,234,0.3)'
-                : 'none',
+              boxShadow: activeTab === tab.key ? '0 4px 12px rgba(102,126,234,0.3)' : 'none',
               transition: 'all 0.2s',
             }}
           >
@@ -1487,22 +1361,18 @@ export default function VehicleIncomeManager() {
         ))}
       </div>
 
+      {/* ══════════ EXPENSES ══════════ */}
       {activeTab === 'expenses' && (
         <VehicleExpenseTab vehicles={vehicles} lang={lang} />
       )}
 
+      {/* ══════════ INCOME ══════════ */}
       {activeTab === 'income' && (
         <div style={S.card}>
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 20,
-              flexWrap: 'wrap',
-              gap: 12,
-            }}
-          >
+          <div style={{
+            display: 'flex', justifyContent: 'space-between',
+            alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12,
+          }}>
             <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>
               💰 {t.incomeTab || t.income}
             </h2>
@@ -1511,13 +1381,19 @@ export default function VehicleIncomeManager() {
             </button>
           </div>
 
-          <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-            <input
-              value={searchQ}
-              onChange={(e) => setSearchQ(e.target.value)}
-              placeholder={`🔍 ${t.search}`}
-              style={{ ...S.input, maxWidth: 260 }}
-            />
+          {/* ── Search + Filter row ── */}
+          <div style={{ display: 'flex', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+            {/* FUZZY SEARCH BOX */}
+            <div style={{ flex: 2, minWidth: 220, position: 'relative' }}>
+              <input
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+                placeholder={t.searchTrips}
+                style={S.searchInput}
+              />
+            </div>
+
+            {/* Vehicle filter */}
             <select
               value={filterVehicle}
               onChange={(e) => setFilterVehicle(e.target.value)}
@@ -1525,13 +1401,19 @@ export default function VehicleIncomeManager() {
             >
               <option value="">{t.allVehicles}</option>
               {vehicles.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.vehicleNo}
-                </option>
+                <option key={v.id} value={v.id}>{v.vehicleNo}</option>
               ))}
             </select>
           </div>
 
+          {/* Result hint */}
+          {searchQ && (
+            <div style={{ marginBottom: 12, fontSize: 13, color: '#64748b' }}>
+              🔍 &quot;{searchQ}&quot; — {filteredTrips.length} {t.searchResults || 'ප්‍රතිඵල'}
+            </div>
+          )}
+
+          {/* ── Trips table ── */}
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
@@ -1545,8 +1427,12 @@ export default function VehicleIncomeManager() {
                 {filteredTrips.length === 0 ? (
                   <tr>
                     <td colSpan={7} style={{ ...S.td, textAlign: 'center', color: '#94a3b8', padding: 40 }}>
-                      <div style={{ fontSize: 40, marginBottom: 10 }}>🚛</div>
-                      {t.noData}
+                      <div style={{ fontSize: 40, marginBottom: 10 }}>
+                        {searchQ ? '🔍' : '🚛'}
+                      </div>
+                      {searchQ
+                        ? `"${searchQ}" ${t.noMatches}`
+                        : t.noData}
                     </td>
                   </tr>
                 ) : (
@@ -1565,10 +1451,17 @@ export default function VehicleIncomeManager() {
                           </span>
                         </td>
                         <td style={S.td}>
-                          <div style={{ fontWeight: 600 }}>{tr.customerName || t.guestCustomer}</div>
+                          <div style={{ fontWeight: 600 }}>
+                            {tr.customerName || t.guestCustomer}
+                          </div>
                           {tr.customerPhone && (
                             <div style={{ fontSize: 11, color: '#64748b' }}>
                               {tr.customerPhone}
+                            </div>
+                          )}
+                          {(tr.fromLocation || tr.toLocation) && (
+                            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                              {[tr.fromLocation, tr.toLocation].filter(Boolean).join(' → ')}
                             </div>
                           )}
                         </td>
@@ -1579,28 +1472,18 @@ export default function VehicleIncomeManager() {
                           {formatCurrency(tr.paidAmount)}
                         </td>
                         <td style={S.td}>
-                          {due > 0.01 ? (
-                            <span style={S.badge('#fef2f2', '#dc2626')}>
-                              Rs.{due.toLocaleString()}
-                            </span>
-                          ) : (
-                            <span style={S.badge('#f0fdf4', '#16a34a')}>
-                              ✅ {t.fullyPaid}
-                            </span>
-                          )}
+                          {due > 0.01
+                            ? <span style={S.badge('#fef2f2', '#dc2626')}>Rs.{due.toLocaleString()}</span>
+                            : <span style={S.badge('#f0fdf4', '#16a34a')}>✅ {t.fullyPaid}</span>
+                          }
                         </td>
                         <td style={S.td}>
                           <button
                             onClick={() => openOutputManager(tr)}
                             style={{
-                              padding: '7px 14px',
-                              background: '#3b82f6',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: 8,
-                              cursor: 'pointer',
-                              fontWeight: 700,
-                              fontSize: 13,
+                              padding: '7px 14px', background: '#3b82f6', color: 'white',
+                              border: 'none', borderRadius: 8, cursor: 'pointer',
+                              fontWeight: 700, fontSize: 13,
                             }}
                           >
                             📤 {t.share}
@@ -1616,31 +1499,19 @@ export default function VehicleIncomeManager() {
         </div>
       )}
 
+      {/* ══════════ VEHICLES ══════════ */}
       {activeTab === 'vehicles' && (
         <div style={S.card}>
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 20,
-            }}
-          >
-            <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>
-              🚗 {t.vehicles}
-            </h2>
+          <div style={{
+            display: 'flex', justifyContent: 'space-between',
+            alignItems: 'center', marginBottom: 20,
+          }}>
+            <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>🚗 {t.vehicles}</h2>
             <button onClick={() => setShowAddVehicle(true)} style={S.btn('#10b981')}>
               + {t.addVehicle}
             </button>
           </div>
-
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-              gap: 16,
-            }}
-          >
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 16 }}>
             {vehicles.length === 0 ? (
               <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: 40, color: '#94a3b8' }}>
                 <div style={{ fontSize: 50, marginBottom: 10 }}>🚗</div>
@@ -1648,55 +1519,33 @@ export default function VehicleIncomeManager() {
               </div>
             ) : (
               vehicles.map((v) => {
-                const vTrips = trips.filter((x) => x.vehicleId === v.id);
+                const vTrips  = trips.filter((x) => x.vehicleId === v.id);
                 const vIncome = vTrips.reduce((s, x) => s + R2(x.paidAmount || 0), 0);
-                const typeEmoji =
-                  { truck: '🚛', van: '🚐', lorry: '🚚', pickup: '🛻' }[v.vehicleType] || '🚗';
-
+                const typeEmoji = { truck: '🚛', van: '🚐', lorry: '🚚', pickup: '🛻' }[v.vehicleType] || '🚗';
                 return (
-                  <div
-                    key={v.id}
-                    style={{
-                      ...S.card,
-                      marginBottom: 0,
-                      border: '2px solid #e2e8f0',
-                      padding: 20,
-                    }}
-                  >
+                  <div key={v.id} style={{ ...S.card, marginBottom: 0, border: '2px solid #e2e8f0', padding: 20 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
                       <span style={{ fontSize: 36 }}>{typeEmoji}</span>
                       <div>
                         <div style={{ fontWeight: 900, fontSize: 18 }}>{v.vehicleNo}</div>
                         <div style={{ fontSize: 12, color: '#64748b' }}>{v.vehicleType}</div>
                       </div>
-                      <span
-                        style={{
-                          marginLeft: 'auto',
-                          ...S.badge(
-                            v.isActive !== false ? '#f0fdf4' : '#f1f5f9',
-                            v.isActive !== false ? '#16a34a' : '#94a3b8'
-                          ),
-                        }}
-                      >
+                      <span style={{
+                        marginLeft: 'auto',
+                        ...S.badge(
+                          v.isActive !== false ? '#f0fdf4' : '#f1f5f9',
+                          v.isActive !== false ? '#16a34a' : '#94a3b8'
+                        ),
+                      }}>
                         ● {v.isActive !== false ? t.active : t.inactive}
                       </span>
                     </div>
-
                     {v.driverName && (
                       <div style={{ fontSize: 13, color: '#475569', marginBottom: 6 }}>
                         👨‍💼 {v.driverName} {v.driverPhone && `• ${v.driverPhone}`}
                       </div>
                     )}
-
-                    <div
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        marginTop: 12,
-                        paddingTop: 12,
-                        borderTop: '1px solid #e2e8f0',
-                      }}
-                    >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
                       <div style={{ textAlign: 'center' }}>
                         <div style={{ fontSize: 11, color: '#94a3b8' }}>{t.tripCount}</div>
                         <div style={{ fontWeight: 800, color: '#3b82f6' }}>{vTrips.length}</div>
@@ -1716,6 +1565,7 @@ export default function VehicleIncomeManager() {
         </div>
       )}
 
+      {/* ══════════ REPORTS ══════════ */}
       {activeTab === 'reports' && (
         <ReportsTab trips={trips} vehicles={vehicles} t={t} />
       )}
