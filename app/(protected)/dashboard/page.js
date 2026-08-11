@@ -26,6 +26,8 @@ const T = {
     stockAdjustmentDesc: 'ගබඩා & මිල සංස්කරණය',
     purchases:           'ගැනුම්',
     purchasesDesc:       'ගැනුම් ඉන්වොයිස්',
+    expenses:            'වියදම්',
+    expensesDesc:        'වියදම් කළමනාකරණය',
     customers:           'පාරිභෝගිකයින්',
     customersDesc:       'පාරිභෝගික කළමනාකරණය',
     suppliers:           'සැපයුම්කරුවන්',
@@ -57,6 +59,8 @@ const T = {
     stockAdjustmentDesc: 'Stock & Price Adjustment',
     purchases:           'Purchases',
     purchasesDesc:       'Purchase invoices',
+    expenses:            'Expenses',
+    expensesDesc:        'Expense management',
     customers:           'Customers',
     customersDesc:       'Customer management',
     suppliers:           'Suppliers',
@@ -73,19 +77,20 @@ const T = {
 };
 
 const getCards = (t) => [
-  { id: 'pos',              href: '/pos',              icon: '🖥️',  title: t.pos,             desc: t.posDesc,             gradient: 'linear-gradient(135deg,#3b82f6,#2563eb)' },
-  { id: 'invoices',         href: '/invoice-list',     icon: '🧾',  title: t.invoices,        desc: t.invoicesDesc,        gradient: 'linear-gradient(135deg,#8b5cf6,#7c3aed)' },
-  { id: 'catalog',          href: '/pfi',              icon: '🛍️',  title: t.catalog,         desc: t.catalogDesc,         gradient: 'linear-gradient(135deg,#7c3aed,#3b82f6)' },
-  { id: 'production',       href: '/production',       icon: '🏭',  title: t.production,      desc: t.productionDesc,      gradient: 'linear-gradient(135deg,#f59e0b,#d97706)', badge: 'NEW' },
-  { id: 'items',            href: '/items',            icon: '📦',  title: t.items,           desc: t.itemsDesc,           gradient: 'linear-gradient(135deg,#f97316,#ea580c)' },
-  { id: 'stock-adjustment', href: '/stock-adjustment', icon: '🗃️',  title: t.stockAdjustment, desc: t.stockAdjustmentDesc, gradient: 'linear-gradient(135deg,#6366f1,#4f46e5)' },
-  { id: 'purchases',        href: '/purchases',        icon: '🛒',  title: t.purchases,       desc: t.purchasesDesc,       gradient: 'linear-gradient(135deg,#ec4899,#db2777)' },
-  { id: 'customers',        href: '/customers',        icon: '👥',  title: t.customers,       desc: t.customersDesc,       gradient: 'linear-gradient(135deg,#10b981,#059669)' },
-  { id: 'suppliers',        href: '/suppliers',        icon: '🏪',  title: t.suppliers,       desc: t.suppliersDesc,       gradient: 'linear-gradient(135deg,#7c3aed,#6d28d9)' },
-  { id: 'vehicle',          href: '/vehicle-income',   icon: '🚛',  title: t.vehicle,         desc: t.vehicleDesc,         gradient: 'linear-gradient(135deg,#0ea5e9,#0284c7)' },
-  { id: 'orders',           href: '/customer-orders',  icon: '📋',  title: t.orders,          desc: t.ordersDesc,          gradient: 'linear-gradient(135deg,#06b6d4,#0891b2)' },
-  { id: 'returns',          href: '/return',           icon: '🔄',  title: t.returns,         desc: t.returnsDesc,         gradient: 'linear-gradient(135deg,#f43f5e,#e11d48)' },
-  { id: 'shops',            href: '/shops',            icon: '🏪',  title: t.shops,           desc: t.shopsDesc,           gradient: 'linear-gradient(135deg,#14b8a6,#0d9488)' },
+  { id: 'pos',              href: '/pos',              icon: '🖥️', title: t.pos,             desc: t.posDesc,             gradient: 'linear-gradient(135deg,#3b82f6,#2563eb)' },
+  { id: 'invoices',         href: '/invoice-list',     icon: '🧾', title: t.invoices,        desc: t.invoicesDesc,        gradient: 'linear-gradient(135deg,#8b5cf6,#7c3aed)' },
+  { id: 'catalog',          href: '/pfi',              icon: '🛍️', title: t.catalog,         desc: t.catalogDesc,         gradient: 'linear-gradient(135deg,#7c3aed,#3b82f6)' },
+  { id: 'production',       href: '/production',       icon: '🏭', title: t.production,      desc: t.productionDesc,      gradient: 'linear-gradient(135deg,#f59e0b,#d97706)', badge: 'NEW' },
+  { id: 'items',            href: '/items',            icon: '📦', title: t.items,           desc: t.itemsDesc,           gradient: 'linear-gradient(135deg,#f97316,#ea580c)' },
+  { id: 'stock-adjustment', href: '/stock-adjustment', icon: '🗃️', title: t.stockAdjustment, desc: t.stockAdjustmentDesc, gradient: 'linear-gradient(135deg,#6366f1,#4f46e5)' },
+  { id: 'purchases',        href: '/purchases',        icon: '🛒', title: t.purchases,       desc: t.purchasesDesc,       gradient: 'linear-gradient(135deg,#ec4899,#db2777)' },
+  { id: 'expenses',         href: '/expenses',         icon: '💰', title: t.expenses,        desc: t.expensesDesc,        gradient: 'linear-gradient(135deg,#dc2626,#ef4444)' },
+  { id: 'customers',        href: '/customers',        icon: '👥', title: t.customers,       desc: t.customersDesc,       gradient: 'linear-gradient(135deg,#10b981,#059669)' },
+  { id: 'suppliers',        href: '/suppliers',        icon: '🏪', title: t.suppliers,       desc: t.suppliersDesc,       gradient: 'linear-gradient(135deg,#7c3aed,#6d28d9)' },
+  { id: 'vehicle',          href: '/vehicle-income',   icon: '🚛', title: t.vehicle,         desc: t.vehicleDesc,         gradient: 'linear-gradient(135deg,#0ea5e9,#0284c7)' },
+  { id: 'orders',           href: '/customer-orders',  icon: '📋', title: t.orders,          desc: t.ordersDesc,          gradient: 'linear-gradient(135deg,#06b6d4,#0891b2)' },
+  { id: 'returns',          href: '/return',           icon: '🔄', title: t.returns,         desc: t.returnsDesc,         gradient: 'linear-gradient(135deg,#f43f5e,#e11d48)' },
+  { id: 'shops',            href: '/shops',            icon: '🏬', title: t.shops,           desc: t.shopsDesc,           gradient: 'linear-gradient(135deg,#14b8a6,#0d9488)' },
 ];
 
 function DashboardCard({ card }) {
@@ -228,12 +233,13 @@ export default function DashboardPage() {
               {user?.photoURL && (
                 <img
                   src={user.photoURL}
-                  alt={user.displayName}
+                  alt={user.displayName || 'User'}
                   style={{
                     width: 40,
                     height: 40,
                     borderRadius: '50%',
                     border: '2px solid rgba(255,255,255,0.4)',
+                    objectFit: 'cover',
                   }}
                 />
               )}
