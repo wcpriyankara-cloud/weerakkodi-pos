@@ -1,9 +1,11 @@
 ﻿'use client';
 
 // components/POSInvoice.jsx
-// ✅ UOM price calculation FIXED — supports both rate and factor fields
-// ✅ Language-aware + Quota-safe
-// ✅ Unit selector always visible with correct prices
+// ✅ Complete POS Billing System
+// ✅ Fixed UOM price calculations using rate/factor sync
+// ✅ Real-time Outstanding balances (Previous & New Balance) on receipts
+// ✅ Fully responsive & fast rendering layout
+// ✅ Synced to viewer both Active & Old/Exhausted Purchased Batches (පැරණි තොග)
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
@@ -19,7 +21,7 @@ import InvoiceOutputManager from './InvoiceOutputManager';
 
 /* ══════════════════════════════════════════════════════════════
    STYLES
-   ══════════════════════════════════════════════════════════════ */
+══════════════════════════════════════════════════════════════ */
 const printStyles = `@media print { .no-print { display: none !important; } }`;
 const inputFixStyles = `
   input[type=number]::-webkit-outer-spin-button,
@@ -44,87 +46,87 @@ const keyboardStyles = `
 
 /* ══════════════════════════════════════════════════════════════
    TRANSLATIONS
-   ══════════════════════════════════════════════════════════════ */
+══════════════════════════════════════════════════════════════ */
 const TRANSLATIONS = {
   si: {
-    title:'නව ඉන්වොයිසය', searchItem:'භාණ්ඩය සොයන්න...', sellingPrice:'මිල (MRP)',
-    retail:'RETAIL', loose:'LOOSE', wholesale:'WHOLESALE', yourPrice:'අපේ මිල',
-    qty:'ප්‍රමාණය', discPct:'Disc %', discAmt:'Disc Amt', lineTotal:'එකතුව',
-    noData:'දත්ත නැත', customer:'පාරිභෝගිකයා',
-    searchCustomer:'නම/දුරකථන සොයන්න (0xx හෝ +94xx)',
-    grossTotal:'මුළු එකතුව', discount:'වට්ටම', billDiscount:'බිල්පත් වට්ටම',
-    netAmount:'ශුද්ධ මුදල', cash:'මුදල්', card:'කාඩ්', eTransfer:'E-Transfer',
-    cheque:'චෙක්', balance:'ශේෂය', saveOnly:'සුරකින්න', savePrint:'Print',
-    saveDraft:'Draft', successMsg:'සාර්ථකයි!', customerRequired:'පාරිභෝගිකයෙකු තෝරන්න!',
-    stockExceeded:'තොග සීමාව ඉක්මවා ඇත', newCustomer:'➕ නව පාරිභෝගික',
-    createCustomer:'සාදන්න', cancel:'අවලංගු', barcodeNotFound:'භාණ්ඩය හමු නොවීය!',
-    cashCustomer:'Cash Customer', invoiceListPage:'ඉන්වොයිස් ලැයිස්තුව',
-    addRemark:'📝 සටහන', stock:'තොග', totalStock:'Total', afterBill:'Bill පසු',
-    available:'Available', showBatches:'📦 Batches', hideBatches:'📦 සඟවන්න',
-    warrantyCode:'කේතය', warrantyPeriod:'කාලය', warrantyExpires:'අවසන්',
-    selectBank:'බැංකුව තෝරන්න', profit:'ලාභය', exchange:'හුවමාරු මුදල',
-    allocated:'Use', pickContact:'📱 Contacts',
-    contactsNotSupported:'📱 Contacts API නොමැත',
-    whatsappSent:'📲 WhatsApp යැවීය!', noPhoneForWhatsapp:'⚠️ දුරකථන අංකයක් නැත',
-    packUnitSelect:'📦 Pack / Unit තෝරන්න', warrantyDetails:'🛡️ වගකීම',
-    batchesLabel:'📦 Batches', paymentAmountLabel:'ගෙවන මුදල',
-    changeCustomer:'Change', removePhoto:'✕ ඉවත් කරන්න',
-    addAsNew:'නව පාරිභෝගිකයෙකු ලෙස එක් කරන්න', noResults:'ප්‍රතිඵල නැත',
-    loadingItems:'භාණ්ඩ පූරණය වෙමින්...', approvedLabel:'Approved',
-    pendingLabel:'Pending', returnLabel:'Return', clearInvoice:'බිල්පත ඉවත්',
-    scannerBtn:'Barcode Scanner', notesPlaceholder:'සටහන්...',
-    stockOff:'🔓 Stock OFF', stockOn:'🔒 Stock ON',
-    noOtherUnits:'📦 No other units', removed:'ඉවත් විය',
-    invoiceCleared:'Invoice cleared', fullPay:'Full', maxLabel:'Max',
-    lastBatchPrice:'Last Batch Price',
-    orderLoaded:'Approved ඇණවුම load විය — භාණ්ඩ',
-    orderItemsNotFound:'⚠️ Order items not found in catalog',
-    mixedLabel:'Mixed', selectBankPlease:'⚠️ Please select bank!',
-    creditLabel:'credit', orderLabel:'Order',
-    customerCreated:'✅ Customer created!', imageError:'❌ Photo error',
+    title: 'නව ඉන්වොයිසය', searchItem: 'භාණ්ඩය සොයන්න...', sellingPrice: 'මිල (MRP)',
+    retail: 'සිල්ලර (Retail)', loose: 'ලූස් (Loose)', wholesale: 'තොග (Wholesale)', yourPrice: 'අපේ මිල',
+    qty: 'ප්‍රමාණය', discPct: 'Disc %', discAmt: 'Disc Amt', lineTotal: 'එකතුව',
+    noData: 'භාණ්ඩ තෝරා නොමැත', customer: 'පාරිභෝගිකයා',
+    searchCustomer: 'නම/දුරකථන සොයන්න (0xx හෝ +94xx)...',
+    grossTotal: 'මුළු එකතුව', discount: 'වට්ටම', billDiscount: 'බිල්පත් වට්ටම',
+    netAmount: 'ශුද්ධ මුදල', cash: 'මුදල්', card: 'කාඩ්', eTransfer: 'E-Transfer',
+    cheque: 'චෙක්', balance: 'ශේෂය', saveOnly: 'සුරකින්න', savePrint: 'Print',
+    saveDraft: 'Draft', successMsg: 'සාර්ථකයි!', customerRequired: 'පාරිභෝගිකයෙකු තෝරන්න!',
+    stockExceeded: 'තොග සීමාව ඉක්මවා ඇත', newCustomer: '➕ නව පාරිභෝගික',
+    createCustomer: 'සාදන්න', cancel: 'අවලංගු', barcodeNotFound: 'භාණ්ඩය හමු නොවීය!',
+    cashCustomer: 'Cash Customer', invoiceListPage: 'ඉන්වොයිස් ලැයිස්තුව',
+    addRemark: '📝 සටහන', stock: 'තොග', totalStock: 'Total', afterBill: 'Bill පසු',
+    available: 'Available', showBatches: '📦 Batches', hideBatches: '📦 සඟවන්න',
+    warrantyCode: 'කේතය', warrantyPeriod: 'කාලය', warrantyExpires: 'අවසන්',
+    selectBank: 'බැංකුව තෝරන්න', profit: 'ලාභය', exchange: 'හුවමාරු මුදල',
+    allocated: 'Use', pickContact: '📱 Contacts',
+    contactsNotSupported: '📱 Contacts API නොමැත',
+    whatsappSent: '📲 WhatsApp යැවීය!', noPhoneForWhatsapp: '⚠️ දුරකථන අංකයක් නැත',
+    packUnitSelect: '📦 Pack / Unit තෝරන්න', warrantyDetails: '🛡️ වගකීම',
+    batchesLabel: '📦 Batches', paymentAmountLabel: 'ගෙවන මුදල',
+    changeCustomer: 'Change', removePhoto: '✕ ඉවත් කරන්න',
+    addAsNew: 'නව පාරිභෝගිකයෙකු ලෙස එක් කරන්න', noResults: 'ප්‍රතිඵල නැත',
+    loadingItems: 'භාණ්ඩ පූරණය වෙමින්...', approvedLabel: 'Approved',
+    pendingLabel: 'Pending', returnLabel: 'Return', clearInvoice: 'බිල්පත ඉවත්',
+    scannerBtn: 'Barcode Scanner', notesPlaceholder: 'සටහන්...',
+    stockOff: '🔓 Stock OFF', stockOn: '🔒 Stock ON',
+    noOtherUnits: '📦 No other units', removed: 'ඉවත් විය',
+    invoiceCleared: 'Invoice cleared', fullPay: 'Full', maxLabel: 'Max',
+    lastBatchPrice: 'Last Batch Price',
+    orderLoaded: 'Approved ඇණවුම load විය — භාණ්ඩ',
+    orderItemsNotFound: '⚠️ Order items not found in catalog',
+    mixedLabel: 'Mixed', selectBankPlease: '⚠️ Please select bank!',
+    creditLabel: 'credit', orderLabel: 'Order',
+    customerCreated: '✅ Customer created!', imageError: '❌ Photo error',
   },
   en: {
-    title:'New Invoice', searchItem:'Search item...', sellingPrice:'Price (MRP)',
-    retail:'RETAIL', loose:'LOOSE', wholesale:'WHOLESALE', yourPrice:'Your Price',
-    qty:'Qty', discPct:'Disc %', discAmt:'Disc Amt', lineTotal:'Total',
-    noData:'No data', customer:'Customer',
-    searchCustomer:'Search name/phone (0xx or +94xx)',
-    grossTotal:'Gross Total', discount:'Discount', billDiscount:'Bill Discount',
-    netAmount:'Net Amount', cash:'Cash', card:'Card', eTransfer:'E-Transfer',
-    cheque:'Cheque', balance:'Balance', saveOnly:'Save', savePrint:'Print',
-    saveDraft:'Draft', successMsg:'Success!', customerRequired:'Please select a customer!',
-    stockExceeded:'Stock limit exceeded', newCustomer:'➕ New Customer',
-    createCustomer:'Create', cancel:'Cancel', barcodeNotFound:'Item not found!',
-    cashCustomer:'Cash Customer', invoiceListPage:'Invoice List',
-    addRemark:'📝 Remark', stock:'Stock', totalStock:'Total', afterBill:'After Bill',
-    available:'Available', showBatches:'📦 Batches', hideBatches:'📦 Hide',
-    warrantyCode:'Code', warrantyPeriod:'Period', warrantyExpires:'Expires',
-    selectBank:'Select Bank', profit:'Profit', exchange:'Exchange',
-    allocated:'Use', pickContact:'📱 Contacts',
-    contactsNotSupported:'📱 Contacts API not available',
-    whatsappSent:'📲 WhatsApp sent!', noPhoneForWhatsapp:'⚠️ No phone number',
-    packUnitSelect:'📦 Select Pack / Unit', warrantyDetails:'🛡️ Warranty',
-    batchesLabel:'📦 Batches', paymentAmountLabel:'Payment Amount',
-    changeCustomer:'Change', removePhoto:'✕ Remove',
-    addAsNew:'Add as new customer', noResults:'No results',
-    loadingItems:'Loading items...', approvedLabel:'Approved',
-    pendingLabel:'Pending', returnLabel:'Return', clearInvoice:'Clear invoice',
-    scannerBtn:'Barcode Scanner', notesPlaceholder:'Notes...',
-    stockOff:'🔓 Stock OFF', stockOn:'🔒 Stock ON',
-    noOtherUnits:'📦 No other units', removed:'removed',
-    invoiceCleared:'Invoice cleared', fullPay:'Full', maxLabel:'Max',
-    lastBatchPrice:'Last Batch Price',
-    orderLoaded:'Approved order loaded — items',
-    orderItemsNotFound:'⚠️ Order items not found in catalog',
-    mixedLabel:'Mixed', selectBankPlease:'⚠️ Please select bank!',
-    creditLabel:'credit', orderLabel:'Order',
-    customerCreated:'✅ Customer created!', imageError:'❌ Photo error',
+    title: 'New Invoice', searchItem: 'Search item...', sellingPrice: 'Price (MRP)',
+    retail: 'RETAIL', loose: 'LOOSE', wholesale: 'WHOLESALE', yourPrice: 'Your Price',
+    qty: 'Qty', discPct: 'Disc %', discAmt: 'Disc Amt', lineTotal: 'Total',
+    noData: 'No data', customer: 'Customer',
+    searchCustomer: 'Search name/phone (0xx or +94xx)...',
+    grossTotal: 'Gross Total', discount: 'Discount', billDiscount: 'Bill Discount',
+    netAmount: 'Net Amount', cash: 'Cash', card: 'Card', eTransfer: 'E-Transfer',
+    cheque: 'Cheque', balance: 'Balance', saveOnly: 'Save', savePrint: 'Print',
+    saveDraft: 'Draft', successMsg: 'Success!', customerRequired: 'Please select a customer!',
+    stockExceeded: 'Stock limit exceeded', newCustomer: '➕ New Customer',
+    createCustomer: 'Create', cancel: 'Cancel', barcodeNotFound: 'Item not found!',
+    cashCustomer: 'Cash Customer', invoiceListPage: 'Invoice List',
+    addRemark: '📝 Remark', stock: 'Stock', totalStock: 'Total', afterBill: 'After Bill',
+    available: 'Available', showBatches: '📦 Batches', hideBatches: '📦 Hide',
+    warrantyCode: 'Code', warrantyPeriod: 'Period', warrantyExpires: 'Expires',
+    selectBank: 'Select Bank', profit: 'Profit', exchange: 'Exchange',
+    allocated: 'Use', pickContact: '📱 Contacts',
+    contactsNotSupported: '📱 Contacts API not available',
+    whatsappSent: '📲 WhatsApp sent!', noPhoneForWhatsapp: '⚠️ No phone number',
+    packUnitSelect: '📦 Select Pack / Unit', warrantyDetails: '🛡️ Warranty',
+    batchesLabel: '📦 Batches', paymentAmountLabel: 'Payment Amount',
+    changeCustomer: 'Change', removePhoto: '✕ Remove',
+    addAsNew: 'Add as new customer', noResults: 'No results',
+    loadingItems: 'Loading items...', approvedLabel: 'Approved',
+    pendingLabel: 'Pending', returnLabel: 'Return', clearInvoice: 'Clear invoice',
+    scannerBtn: 'Barcode Scanner', notesPlaceholder: 'Notes...',
+    stockOff: '🔓 Stock OFF', stockOn: '🔒 Stock ON',
+    noOtherUnits: '📦 No other units', removed: 'removed',
+    invoiceCleared: 'Invoice cleared', fullPay: 'Full', maxLabel: 'Max',
+    lastBatchPrice: 'Last Batch Price',
+    orderLoaded: 'Approved order loaded — items',
+    orderItemsNotFound: '⚠️ Order items not found in catalog',
+    mixedLabel: 'Mixed', selectBankPlease: '⚠️ Please select bank!',
+    creditLabel: 'credit', orderLabel: 'Order',
+    customerCreated: '✅ Customer created!', imageError: '❌ Photo error',
   },
 };
 
 /* ══════════════════════════════════════════════════════════════
    MATH UTILITIES
-   ══════════════════════════════════════════════════════════════ */
+══════════════════════════════════════════════════════════════ */
 const R2 = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : Math.round(n * 100) / 100; };
 const fmt = (v) => R2(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtQ = (v) => { const n = R2(v); return n % 1 === 0 ? String(n) : n.toFixed(2); };
@@ -147,7 +149,7 @@ const normalizePhone = (phone) => {
 
 /* ══════════════════════════════════════════════════════════════
    CACHE
-   ══════════════════════════════════════════════════════════════ */
+══════════════════════════════════════════════════════════════ */
 const CACHE_KEY_ITEMS = 'pos_items_cache';
 const CACHE_KEY_CUSTOMERS = 'pos_customers_cache';
 const CACHE_TTL = 1000 * 60 * 30;
@@ -167,31 +169,13 @@ const loadCache = (key) => {
 };
 
 /* ══════════════════════════════════════════════════════════════
-   UOM & PRICE HELPERS — ★ FIXED ★
-   Supports both 'rate' (from ItemForm) and 'factor' (legacy)
-   ══════════════════════════════════════════════════════════════ */
-
-/**
- * Get the conversion rate/factor from a single conversion object.
- * ItemForm saves as 'rate', legacy code uses 'factor'.
- * This helper checks all possible field names.
- */
+   UOM & PRICE HELPERS
+══════════════════════════════════════════════════════════════ */
 const getConvRate = (conv) => {
   if (!conv) return 0;
   return R2(conv.rate ?? conv.factor ?? conv.conversionRate ?? conv.ratio ?? 0);
 };
 
-/**
- * Get conversion factor between selected unit and base unit.
- *
- * Data from ItemForm:
- *   baseUomName: "Kilogram"
- *   availableUnits: [{ toUnitName: "Gram", rate: 1000 }]
- *
- * If user selects "Gram":
- *   factor = 1000 (1 Kilogram = 1000 Grams)
- *   price per Gram = price per Kg / 1000
- */
 const getUomFactor = (selectedUom, baseUomName, availableUnits) => {
   if (!selectedUom || !baseUomName) return 1;
 
@@ -202,7 +186,6 @@ const getUomFactor = (selectedUom, baseUomName, availableUnits) => {
 
   const units = Array.isArray(availableUnits) ? availableUnits : [];
 
-  // Forward: base → selected (e.g. Kg → Gram, rate=1000)
   for (const conv of units) {
     if ((conv.toUnitName || '').toLowerCase().trim() === selLower) {
       const rate = getConvRate(conv);
@@ -210,7 +193,6 @@ const getUomFactor = (selectedUom, baseUomName, availableUnits) => {
     }
   }
 
-  // Reverse: selected → base
   for (const conv of units) {
     if ((conv.toUnitName || '').toLowerCase().trim() === baseLower) {
       const rate = getConvRate(conv);
@@ -242,10 +224,6 @@ const getYourPrice = (item, pt = 'retail') => {
   return R2(item.retailYourPrice || 0);
 };
 
-/**
- * Calculate prices for a specific UOM.
- * price per unit = base price / conversion factor
- */
 const calcPricesForUom = (item, priceType, uomFactor) => {
   const f = Math.max(0.0001, R2(uomFactor || 1));
   const baseMRP = getOriginalPrice(item, priceType);
@@ -269,7 +247,7 @@ const calcPricesForUom = (item, priceType, uomFactor) => {
 
 /* ══════════════════════════════════════════════════════════════
    BATCH HELPERS
-   ══════════════════════════════════════════════════════════════ */
+══════════════════════════════════════════════════════════════ */
 const getBatchPrice = (batch, pt = 'retail') => {
   if (!batch) return { original: 0, discount: 0, net: 0 };
   let o = 0, d = 0;
@@ -310,7 +288,7 @@ const calcWarrantyExpiry = (period) => {
 
 /* ══════════════════════════════════════════════════════════════
    STOCK HELPERS
-   ══════════════════════════════════════════════════════════════ */
+══════════════════════════════════════════════════════════════ */
 const getDocStock = (item) => {
   if (!item) return 0;
   if (item.stocks && typeof item.stocks === 'object') {
@@ -325,9 +303,6 @@ const getDocStock = (item) => {
   return 0;
 };
 
-/* ══════════════════════════════════════════════════════════════
-   BATCH EXTRACTION & FIFO
-   ══════════════════════════════════════════════════════════════ */
 const getBatchRemainingInfo = (bi) => {
   if (!bi) return { remaining: 0, isTracked: false };
   const p = R2(bi.qty || bi.quantity || 0);
@@ -339,7 +314,8 @@ const getBatchRemainingInfo = (bi) => {
 const getBatchRemaining = (bi) => getBatchRemainingInfo(bi).remaining;
 const getBatchTime = (b) => b?.createdAt?.toDate?.()?.getTime?.() || new Date(b?.date || 0).getTime() || 0;
 
-const extractBatches = (itemId, sources) => {
+// ✅ Modified to support displaying exhausted/old batches (පැරණි අවසන් වූ තොග)
+const extractBatches = (itemId, sources, includeEmpty = true) => {
   if (!itemId || !sources) return [];
   const batches = [];
   ['purchases', 'purchaseInvoices', 'stockIn'].forEach(col => {
@@ -352,7 +328,10 @@ const extractBatches = (itemId, sources) => {
         const id = item.itemId || item.id;
         if (id !== itemId) return;
         const ri = getBatchRemainingInfo(item);
-        if (ri.remaining <= 0) return;
+        
+        // If includeEmpty is false, filter out zero-stock batches.
+        if (!includeEmpty && ri.remaining <= 0) return;
+        
         batches.push({
           batchId: `${inv.id}_${idx}`, invoiceId: inv.id, invoiceCollection: col,
           itemIndex: idx, supplierName: inv.supplierName || 'Unknown',
@@ -423,9 +402,6 @@ const allocateFIFO = (batches, need, preferredId = '') => {
   return { allocations: allocs, allocated: R2(need - rem), shortage: R2(rem) };
 };
 
-/* ══════════════════════════════════════════════════════════════
-   IMAGE HELPERS
-   ══════════════════════════════════════════════════════════════ */
 const DP = "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23e2e8f0' rx='10'/%3E%3Cpath d='M35 60l10-10 10 10 15-15 10 15' stroke='%2394a3b8' stroke-width='4' fill='none'/%3E%3Ccircle cx='65' cy='40' r='5' fill='%2394a3b8'/%3E%3C/svg%3E";
 const DA = "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23dbeafe'/%3E%3Ccircle cx='50' cy='35' r='15' fill='%233b82f6'/%3E%3Cpath d='M20 80a30 30 0 0 1 60 0' stroke='%233b82f6' stroke-width='8' fill='none'/%3E%3C/svg%3E";
 
@@ -450,7 +426,7 @@ const getBalSt = (b) => {
 
 /* ══════════════════════════════════════════════════════════════
    CONTACT PICKER
-   ══════════════════════════════════════════════════════════════ */
+══════════════════════════════════════════════════════════════ */
 const isContactPickerSupported = () =>
   typeof navigator !== 'undefined' && typeof window !== 'undefined' &&
   'contacts' in navigator && 'ContactsManager' in window;
@@ -480,7 +456,8 @@ const resizeImage = (base64, maxSize = 200) => new Promise(resolve => {
     let w = img.width, h = img.height;
     if (w > h) { if (w > maxSize) { h = (h * maxSize) / w; w = maxSize; } }
     else { if (h > maxSize) { w = (w * maxSize) / h; h = maxSize; } }
-    c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h);
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
     resolve(c.toDataURL('image/jpeg', 0.7));
   };
   img.onerror = () => resolve('');
@@ -492,7 +469,7 @@ const deepCloneItems = (items) => { try { return JSON.parse(JSON.stringify(items
 
 /* ══════════════════════════════════════════════════════════════
    TOUCH HOOK
-   ══════════════════════════════════════════════════════════════ */
+══════════════════════════════════════════════════════════════ */
 function useTouchScrollTap() {
   const touchRef = useRef({ y: 0, time: 0 });
   const scrollingRef = useRef(false);
@@ -504,7 +481,7 @@ function useTouchScrollTap() {
 
 /* ══════════════════════════════════════════════════════════════
    STOCK BADGE
-   ══════════════════════════════════════════════════════════════ */
+══════════════════════════════════════════════════════════════ */
 const StockBadge = ({ stock, uom }) => {
   const s = R2(stock), z = s <= 0, l = s > 0 && s <= 5;
   return (
@@ -516,7 +493,8 @@ const StockBadge = ({ stock, uom }) => {
 
 /* ══════════════════════════════════════════════════════════════
    BATCH CARD
-   ══════════════════════════════════════════════════════════════ */
+══════════════════════════════════════════════════════════════ */
+// ✅ Updated to cleanly render Empty/Past Batches visually faded
 const POSBatchCard = React.memo(({ batch, isSelected, allocatedQty = 0, onSelect, priceType = 'retail', index, uomFactor = 1 }) => {
   const f = Math.max(0.0001, R2(uomFactor || 1));
   const rem = R2(batch.remainingQty), remDisplay = R2(rem * f), qtyDisplay = R2(R2(batch.qty) * f);
@@ -529,15 +507,16 @@ const POSBatchCard = React.memo(({ batch, isSelected, allocatedQty = 0, onSelect
       padding: '10px 12px', borderRadius: 10, cursor: empty ? 'not-allowed' : 'pointer',
       border: isSelected ? '2px solid #3b82f6' : '1px solid #e2e8f0',
       background: isSelected ? '#eff6ff' : empty ? '#fafafa' : 'white',
-      opacity: empty ? 0.5 : 1, marginBottom: 6,
+      opacity: empty ? 0.6 : 1, marginBottom: 6,
       borderLeft: newest ? '4px solid #8b5cf6' : batch.isFIFO ? '4px solid #f59e0b' : 'none',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: isSelected ? '#3b82f6' : empty ? '#d1d5db' : '#22c55e' }} />
-          <span style={{ fontSize: 12, fontWeight: 700 }}>{batch.supplierName}</span>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: isSelected ? '#3b82f6' : empty ? '#94a3b8' : '#22c55e' }} />
+          <span style={{ fontSize: 12, fontWeight: 700, color: empty ? '#64748b' : '#1e293b' }}>{batch.supplierName}</span>
           {newest && <span style={{ fontSize: 8, fontWeight: 800, color: '#7c3aed', background: '#ede9fe', padding: '1px 5px', borderRadius: 6 }}>NEW</span>}
           {batch.isFIFO && <span style={{ fontSize: 8, fontWeight: 800, color: '#b45309', background: '#fef3c7', padding: '1px 5px', borderRadius: 6 }}>FIFO</span>}
+          {empty && <span style={{ fontSize: 8, fontWeight: 800, color: '#64748b', background: '#f1f5f9', padding: '1px 5px', borderRadius: 6 }}>OLD / EMPTY</span>}
         </div>
         <span style={{ fontSize: 10, color: '#6b7280' }}>📅 {fmtDate(batch.date)}</span>
       </div>
@@ -553,7 +532,7 @@ const POSBatchCard = React.memo(({ batch, isSelected, allocatedQty = 0, onSelect
         </div>
       </div>
       <div style={{ display: 'flex', gap: 8, fontSize: 11, flexWrap: 'wrap' }}>
-        <span style={{ color: '#059669', fontWeight: 700 }}>📦 {fmtQ(remDisplay)}/{fmtQ(qtyDisplay)}</span>
+        <span style={{ color: empty ? '#64748b' : '#059669', fontWeight: 700 }}>📦 {fmtQ(remDisplay)}/{fmtQ(qtyDisplay)}</span>
         <span style={{ color: '#6b7280' }}>💰 Cost {fmt(cost)}</span>
         {profit > 0 && <span style={{ color: '#16a34a', fontWeight: 700 }}>📈+{fmt(profit)}</span>}
         {profit < 0 && <span style={{ color: '#dc2626', fontWeight: 700 }}>📉{fmt(profit)}</span>}
@@ -567,36 +546,60 @@ POSBatchCard.displayName = 'POSBatchCard';
 /* ══════════════════════════════════════════════════════════════
    SAVE HELPERS
    ══════════════════════════════════════════════════════════════ */
-const isPersistedCustomer = (cust) => !!cust?.id && cust.id !== 'CASH_CUSTOMER' && cust.id !== 'TEMP_ORDER_CUSTOMER';
+const isPersistedCustomer = (cust) =>
+  !!cust?.id && cust.id !== 'CASH_CUSTOMER' && cust.id !== 'TEMP_ORDER_CUSTOMER';
 
-const snapshotInvoiceState = ({ safeInvoiceItems, selectedCustomer, finalNetAmount, payAmount, balance, paymentMethod, subTotal, billDiscountPercent, billDiscount, exchangeAmount, totalDiscount, invoiceRemark, selectedBankAccountId, selectedBankAccount }) => {
+const snapshotInvoiceState = ({
+  safeInvoiceItems, selectedCustomer, finalNetAmount, payAmount,
+  balance, paymentMethod, subTotal, billDiscountPercent, billDiscount,
+  exchangeAmount, totalDiscount, invoiceRemark,
+  selectedBankAccountId, selectedBankAccount,
+}) => {
   const fc = selectedCustomer || { id: 'CASH_CUSTOMER', name: 'Cash Customer', phone: '', address: '' };
-  return { items: deepCloneItems(safeInvoiceItems), customer: { ...fc }, netAmount: R2(finalNetAmount), payAmount: R2(payAmount), balance: R2(balance), paymentMethod, subTotal: R2(subTotal), billDiscountPercent: R2(billDiscountPercent), billDiscount: R2(billDiscount), exchangeAmount: R2(exchangeAmount), totalDiscount: R2(totalDiscount), remark: invoiceRemark || '', bankAccountId: selectedBankAccountId || '', bankAccount: selectedBankAccount ? { ...selectedBankAccount } : null, bankInfo: paymentMethod === 'etransfer' && selectedBankAccount ? { bankAccountId: selectedBankAccount.id, bankName: selectedBankAccount.bankName || '' } : {} };
+  return {
+    items: deepCloneItems(safeInvoiceItems), customer: { ...fc },
+    netAmount: R2(finalNetAmount), payAmount: R2(payAmount), balance: R2(balance),
+    paymentMethod, subTotal: R2(subTotal), billDiscountPercent: R2(billDiscountPercent),
+    billDiscount: R2(billDiscount), exchangeAmount: R2(exchangeAmount),
+    totalDiscount: R2(totalDiscount), remark: invoiceRemark || '',
+    bankAccountId: selectedBankAccountId || '',
+    bankAccount: selectedBankAccount ? { ...selectedBankAccount } : null,
+    bankInfo: paymentMethod === 'etransfer' && selectedBankAccount
+      ? { bankAccountId: selectedBankAccount.id, bankName: selectedBankAccount.bankName || '' } : {},
+  };
 };
 
 const calculateCostSummary = (items) => {
   let totalCost = 0, hasCost = false;
-  items.forEach(item => { const ac = R2(item.allocatedCostTotal || 0), av = R2(item.avgBatchCost || 0), q = R2(item.qty || 0); if (ac > 0) { totalCost += ac; hasCost = true; } else if (av > 0 && q > 0) { totalCost += R2(av * q); hasCost = true; } });
+  items.forEach(item => {
+    const ac = R2(item.allocatedCostTotal || 0), av = R2(item.avgBatchCost || 0), q = R2(item.qty || 0);
+    if (ac > 0) { totalCost += ac; hasCost = true; }
+    else if (av > 0 && q > 0) { totalCost += R2(av * q); hasCost = true; }
+  });
   return { totalCost: R2(totalCost), hasCost };
 };
 
-const calculateSellingRevenue = (items) => R2(items.reduce((sum, i) => sum + R2(i.lineTotal || R2(i.yourPrice) * R2(i.qty)), 0));
+const calculateSellingRevenue = (items) =>
+  R2(items.reduce((sum, i) => sum + R2(i.lineTotal || R2(i.yourPrice) * R2(i.qty)), 0));
 
 const getCreditSaleInfo = (actualCashReceived, netAmount) => {
   const isCreditSale = actualCashReceived < netAmount - 0.01;
   const creditAmount = isCreditSale ? R2(netAmount - actualCashReceived) : 0;
-  return { isCreditSale, creditAmount, isFullCredit: actualCashReceived < 1 && netAmount > 0 };
+  const isFullCredit = actualCashReceived < 1 && netAmount > 0;
+  return { isCreditSale, creditAmount, isFullCredit };
 };
 
-const buildInvoicePayload = ({ user, snap, invoiceNo, actionType, mode, isFullCredit }) => ({
+const buildInvoicePayload = ({ user, snap, invoiceNo, actionType, mode, isFullCredit, previousOutstanding, newOutstanding }) => ({
   uid: user.uid, customerId: snap.customer.id, customerName: snap.customer.name,
-  customerPhone: snap.customer.phone || '', customerAddress: snap.customer.address || '', invoiceNo,
+  customerPhone: snap.customer.phone || '', customerAddress: snap.customer.address || '',
+  invoiceNo,
   items: snap.items.map(i => ({
     itemId: i.itemId, name: i.name, nameSi: i.nameSi || '',
     sellingPrice: R2(i.sellingPrice), yourPrice: R2(i.yourPrice), qty: R2(i.qty),
-    discountPercent: R2(i.discountPercent || 0), discAmount: R2(i.discAmount), lineTotal: R2(i.lineTotal),
-    priceType: i.priceType || 'retail', uom: i.uom || 'unit', uomFactor: R2(i.uomFactor || 1),
-    negativeStock: !!i.negativeStock, warrantyCode: i.warrantyCode || '', warrantyPeriod: i.warrantyPeriod || '',
+    discountPercent: R2(i.discountPercent || 0), discAmount: R2(i.discAmount),
+    lineTotal: R2(i.lineTotal), priceType: i.priceType || 'retail', uom: i.uom || 'unit',
+    uomFactor: R2(i.uomFactor || 1), negativeStock: !!i.negativeStock,
+    warrantyCode: i.warrantyCode || '', warrantyPeriod: i.warrantyPeriod || '',
     preferredBatchId: i.preferredBatchId || '', avgBatchCost: R2(i.avgBatchCost || 0),
     allocatedCostTotal: R2(i.allocatedCostTotal || 0), mixedBatchPricing: !!i.mixedBatchPricing,
     batchAllocations: (i.batchAllocations || []).map(a => ({
@@ -613,12 +616,18 @@ const buildInvoicePayload = ({ user, snap, invoiceNo, actionType, mode, isFullCr
   paymentMethod: isFullCredit ? 'credit' : snap.paymentMethod,
   payAmount: snap.payAmount, balance: snap.balance,
   itemCount: snap.items.length, createdAt: serverTimestamp(), mode,
-  status: actionType === 'draft' ? 'draft' : 'completed', remarks: snap.remark, ...snap.bankInfo,
+  status: actionType === 'draft' ? 'draft' : 'completed',
+  remarks: snap.remark, ...snap.bankInfo,
+  previousOutstanding: R2(previousOutstanding),
+  newOutstanding:      R2(newOutstanding),
 });
 
 const buildDeductionMap = (items) => {
   const d = {};
-  items.forEach(i => { const f = Math.max(0.0001, R2(i.uomFactor || 1)); d[i.itemId] = R2((d[i.itemId] || 0) + R2(R2(i.qty) / f)); });
+  items.forEach(i => {
+    const f = Math.max(0.0001, R2(i.uomFactor || 1));
+    d[i.itemId] = R2((d[i.itemId] || 0) + R2(R2(i.qty) / f));
+  });
   return d;
 };
 
@@ -653,61 +662,68 @@ const applyBatchSourceUpdates = async (fbBatch, batchUpdates) => {
   }
 };
 
-const buildCashTransactionPayload = ({ user, snap, invoiceId, invoiceNo, mode, actualCashReceived, totalSellingRevenue, totalCost, hasCost, isCreditSale, creditAmount, isFullCredit }) => {
+const buildCashTransactionPayload = ({
+  user, snap, invoiceId, invoiceNo, mode,
+  actualCashReceived, totalSellingRevenue, totalCost, hasCost,
+  isCreditSale, creditAmount, isFullCredit,
+}) => {
   const now = new Date();
   return {
-    type: 'in', category: 'sales', source: mode === 'pos' ? 'pos' : 'invoice',
-    amount: actualCashReceived, invoiceTotal: snap.netAmount, totalSellingRevenue,
-    totalCostPrice: R2(totalCost), lineProfit: hasCost ? R2(totalSellingRevenue - totalCost) : null,
-    hasCostData: hasCost, creditAmount: R2(creditAmount), isCreditSale,
-    isFullyPaid: !isCreditSale, isFullCredit, remainingCredit: R2(creditAmount),
-    invoiceItems: snap.items.map(i => ({
-      itemId: i.itemId || '', name: i.name || '', nameSi: i.nameSi || '',
-      qty: R2(i.qty), sellingPrice: R2(i.sellingPrice), yourPrice: R2(i.yourPrice),
-      discAmount: R2(i.discAmount || 0), lineTotal: R2(i.lineTotal),
-      avgBatchCost: R2(i.avgBatchCost || 0), allocatedCostTotal: R2(i.allocatedCostTotal || 0),
-      priceType: i.priceType || 'retail', uom: i.uom || 'unit',
+    type:'in', category:'sales', source:mode==='pos'?'pos':'invoice',
+    amount:actualCashReceived, invoiceTotal:snap.netAmount, totalSellingRevenue,
+    totalCostPrice:R2(totalCost), lineProfit:hasCost?R2(totalSellingRevenue-totalCost):null,
+    hasCostData:hasCost, creditAmount:R2(creditAmount), isCreditSale,
+    isFullyPaid:!isCreditSale, isFullCredit, remainingCredit:R2(creditAmount),
+    invoiceItems:snap.items.map(i=>({
+      itemId:i.itemId||'', name:i.name||'', nameSi:i.nameSi||'',
+      qty:R2(i.qty), sellingPrice:R2(i.sellingPrice), yourPrice:R2(i.yourPrice),
+      discAmount:R2(i.discAmount||0), lineTotal:R2(i.lineTotal),
+      avgBatchCost:R2(i.avgBatchCost||0), allocatedCostTotal:R2(i.allocatedCostTotal||0),
+      priceType:i.priceType||'retail', uom:i.uom||'unit',
     })),
-    itemCount: snap.items.length, invoiceId, invoiceNo,
-    customerId: snap.customer.id || '', customerName: snap.customer.name || '',
-    customerPhone: snap.customer.phone || '',
-    paymentMethod: isFullCredit ? 'credit' : snap.paymentMethod,
-    description: isFullCredit
-      ? `📝 Full Credit — ${snap.customer.name || 'Cash'} — Rs.${fmt(snap.netAmount)}`
-      : isCreditSale
-        ? `🧾 ${snap.customer.name || 'Cash'} — Rs.${fmt(actualCashReceived)} paid (Credit Rs.${fmt(creditAmount)})`
-        : `🧾 ${snap.customer.name || 'Cash'} — Rs.${fmt(actualCashReceived)}`,
-    date: now.toISOString().split('T')[0], time: now.toTimeString().slice(0, 5),
-    isAutomatic: true, uid: user.uid, createdAt: serverTimestamp(),
-    timestamp: serverTimestamp(), createdBy: user.email || '',
+    itemCount:snap.items.length, invoiceId, invoiceNo,
+    customerId:snap.customer.id||'', customerName:snap.customer.name||'',
+    customerPhone:snap.customer.phone||'',
+    paymentMethod:isFullCredit?'credit':snap.paymentMethod,
+    description:isFullCredit
+      ?`📝 Full Credit — ${snap.customer.name||'Cash'} — Rs.${fmt(snap.netAmount)}`
+      :isCreditSale
+        ?`🧾 ${snap.customer.name||'Cash'} — Rs.${fmt(actualCashReceived)} paid (Credit Rs.${fmt(creditAmount)})`
+        :`🧾 ${snap.customer.name||'Cash'} — Rs.${fmt(actualCashReceived)}`,
+    date:now.toISOString().split('T')[0], time:now.toTimeString().slice(0,5),
+    isAutomatic:true, uid:user.uid, createdAt:serverTimestamp(),
+    timestamp:serverTimestamp(), createdBy:user.email||'',
   };
 };
 
-const buildOutputInvoicePayload = ({ invoiceId, invoiceNo, user, snap, isFullCredit, actionType, custWithKey }) => ({
-  id: invoiceId, invoiceNo, uid: user.uid,
-  customerId: snap.customer.id, customerName: snap.customer.name,
-  customerPhone: snap.customer.phone || '', customerAddress: snap.customer.address || '',
-  portalAccessKey: custWithKey?.portalAccessKey || '',
-  items: snap.items.map(i => ({
-    itemId: i.itemId, name: i.name, nameSi: i.nameSi || '',
-    sellingPrice: R2(i.sellingPrice), yourPrice: R2(i.yourPrice),
-    qty: R2(i.qty), discountPercent: R2(i.discountPercent || 0),
-    discAmount: R2(i.discAmount), lineTotal: R2(i.lineTotal),
-    priceType: i.priceType || 'retail', uom: i.uom || 'unit',
-    warrantyCode: i.warrantyCode || '', warrantyPeriod: i.warrantyPeriod || '',
-    mixedBatchPricing: !!i.mixedBatchPricing,
-    batchAllocations: (i.batchAllocations || []).map(a => ({
-      batchId: a.batchId || '', allocatedQty: R2(R2(a.allocatedQty || 0) * R2(i.uomFactor || 1)),
-      sellNetPrice: R2(a.sellNetPrice || 0), allocatedLineTotal: R2(a.allocatedLineTotal || 0),
+const buildOutputInvoicePayload = ({ invoiceId, invoiceNo, user, snap, isFullCredit, actionType, custWithKey, previousOutstanding, newOutstanding }) => ({
+  id:invoiceId, invoiceNo, uid:user.uid,
+  customerId:snap.customer.id, customerName:snap.customer.name,
+  customerPhone:snap.customer.phone||'', customerAddress:snap.customer.address||'',
+  portalAccessKey:custWithKey?.portalAccessKey||'',
+  items:snap.items.map(i=>({
+    itemId:i.itemId, name:i.name, nameSi:i.nameSi||'',
+    sellingPrice:R2(i.sellingPrice), yourPrice:R2(i.yourPrice),
+    qty:R2(i.qty), discountPercent:R2(i.discountPercent||0),
+    discAmount:R2(i.discAmount), lineTotal:R2(i.lineTotal),
+    priceType:i.priceType||'retail', uom:i.uom||'unit',
+    uomFactor:R2(i.uomFactor||1),
+    warrantyCode:i.warrantyCode||'', warrantyPeriod:i.warrantyPeriod||'',
+    mixedBatchPricing:!!i.mixedBatchPricing,
+    batchAllocations:(i.batchAllocations||[]).map(a=>({
+      batchId:a.batchId||'', allocatedQty:R2(R2(a.allocatedQty||0)*R2(i.uomFactor||1)),
+      sellNetPrice:R2(a.sellNetPrice||0), allocatedLineTotal:R2(a.allocatedLineTotal||0),
     })),
   })),
-  grossTotal: snap.subTotal, billDiscountPercent: snap.billDiscountPercent,
-  billDiscount: snap.billDiscount, exchangeAmount: snap.exchangeAmount,
-  totalDiscount: snap.totalDiscount, netAmount: snap.netAmount,
-  payAmount: snap.payAmount, balance: snap.balance,
-  paymentMethod: isFullCredit ? 'credit' : snap.paymentMethod,
-  remarks: snap.remark, createdAt: new Date(),
-  initialMode: actionType === 'link' ? 'share' : 'print',
+  grossTotal:snap.subTotal, billDiscountPercent:snap.billDiscountPercent,
+  billDiscount:snap.billDiscount, exchangeAmount:snap.exchangeAmount,
+  totalDiscount:snap.totalDiscount, netAmount:snap.netAmount,
+  payAmount:snap.payAmount, balance:snap.balance,
+  paymentMethod:isFullCredit?'credit':snap.paymentMethod,
+  remarks:snap.remark, createdAt:new Date(),
+  initialMode:actionType==='link'?'share':'print',
+  previousOutstanding: R2(previousOutstanding),
+  newOutstanding:      R2(newOutstanding),
 });
 
 /* ══════════════════════════════════════════════════════════════
@@ -906,9 +922,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
   const safeInvoiceItems = useMemo(() => {
     if (!Array.isArray(invoiceItems)) return [];
     return invoiceItems.filter(item => item && typeof item === 'object' && item.itemId);
-  }, [invoiceItems]);
-
-  /* ── Stock ── */
+  }, [invoiceItems]);  /* ── Stock ── */
   const getItemTotalStock = useCallback((itemOrId) => {
     try {
       if (!itemOrId) return 0;
@@ -931,7 +945,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
     return R2(total - reserved);
   }, [getItemTotalStock, safeInvoiceItems]);
 
-  /* ── Auto enrich ── */
+  /* ── Auto enrich (පැරණි තොග ද ඇතුළත්ව යාවත්කාලීන කිරීම) ── */
   useEffect(() => {
     if (!allItems.length && !Object.values(purchaseSources).some(a => a.length > 0)) return;
     if (enrichTimerRef.current) clearTimeout(enrichTimerRef.current);
@@ -942,7 +956,13 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
           if (!inv || typeof inv !== 'object') return inv;
           try {
             const fi = allItems.find(i => i.id === inv.itemId) || inv.originalItem;
-            return enrichLine({ ...inv, maxStock: getItemTotalStock(inv.itemId), originalItem: fi, allBatches: extractBatches(inv.itemId, purchaseSources) });
+            // extractBatches සඳහා includeEmpty = true ලබා දී ඇත
+            return enrichLine({ 
+              ...inv, 
+              maxStock: getItemTotalStock(inv.itemId), 
+              originalItem: fi, 
+              allBatches: extractBatches(inv.itemId, purchaseSources, true) 
+            });
           } catch { return inv; }
         });
         const changed = updated.some((item, idx) => {
@@ -977,7 +997,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
     for (const oi of orderItems) {
       const li = allItems.find(i => { if (oi.itemId && i.id === oi.itemId) return true; const oN = (oi.name || '').toLowerCase(), oS = (oi.sinhalaName || '').toLowerCase(); if (oN && i.name && i.name.toLowerCase() === oN) return true; if (oS && i.sinhalaName && i.sinhalaName.toLowerCase() === oS) return true; return false; });
       if (!li) continue;
-      const qty = R2(oi.qty || 1), batches = extractBatches(li.id, purchaseSources);
+      const qty = R2(oi.qty || 1), batches = extractBatches(li.id, purchaseSources, true);
       const iu = getItemAvailableUnits(li), bu = getBaseUnit(li) || 'unit';
       const uom = oi.uom || bu, pt = oi.priceType || 'retail';
       const factor = Math.max(0.0001, getUomFactor(uom, bu, iu));
@@ -1012,7 +1032,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
   /* ── Add item ── */
   const addItemToInvoice = useCallback((item) => {
     if (!item?.id) return;
-    const avail = getAvailableStock(item.id), batches = extractBatches(item.id, purchaseSources);
+    const avail = getAvailableStock(item.id), batches = extractBatches(item.id, purchaseSources, true);
     const iu = getItemAvailableUnits(item), bu = getBaseUnit(item) || 'unit';
     const pd = calcPricesForUom(item, 'retail', 1);
     const focusQty = (lineId) => { lastAddedLineIdRef.current = lineId; };
@@ -1049,7 +1069,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
     setItemSearch(''); setShowItemDropdown(false);
   }, [stockControlEnabled, showToast, purchaseSources, getAvailableStock, getItemTotalStock, enrichLine, t]);
 
-  /* ── Barcode ── */
+  /* ── Barcode scanning handler ── */
   const handleBarcodeScanned = useCallback((code) => {
     if (!code?.trim() || code.trim().length < 3) return;
     const c = code.trim(), now = Date.now();
@@ -1067,15 +1087,13 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
       if (e.ctrlKey || e.altKey || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName)) return;
       const now = Date.now();
       if (e.key === 'Enter') { e.preventDefault(); if (buf.length >= 3) handleBarcodeScanned(buf); buf = ''; clearTimeout(timer); return; }
-      if (e.key.length === 1) { if (now - lastKey > 300) buf = ''; lastKey = now; buf += e.key; clearTimeout(timer); timer = setTimeout(() => { buf = ''; }, 200); }
+      if (e.key === 'Exchange' || e.key.length === 1) { if (now - lastKey > 300) buf = ''; lastKey = now; buf += e.key; clearTimeout(timer); timer = setTimeout(() => { buf = ''; }, 200); }
     };
     window.addEventListener('keydown', h);
     return () => { window.removeEventListener('keydown', h); clearTimeout(timer); };
   }, [handleBarcodeScanned]);
 
-  /* ══════════════════════════════════════════
-     UPDATE ITEM FIELD — ★ UOM FIX APPLIED ★
-     ══════════════════════════════════════════ */
+  /* ── Update item fields inline ── */
   const updateItemField = useCallback((key, field, value) => {
     setInvoiceItems(prev => {
       if (!Array.isArray(prev)) return prev;
@@ -1101,7 +1119,6 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
           return u;
         }
 
-        // ★ UOM CHANGE — FIXED: uses getConvRate to support both rate & factor
         if (field === 'uom') {
           const newUom = value;
           const baseUomName = u.uomName || getBaseUnit(u.originalItem) || 'unit';
@@ -1131,7 +1148,6 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
           return enrichLine(u);
         }
 
-        // ★ PRICE TYPE CHANGE — recalculate with current UOM factor
         if (field === 'priceType') {
           u.priceType = value;
           const f = Math.max(0.0001, R2(u.uomFactor || 1));
@@ -1217,7 +1233,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
 
   useEffect(() => { setBillDiscount(billDiscountPercent > 0 ? R2(subTotal * (billDiscountPercent / 100)) : 0); }, [subTotal, billDiscountPercent]);
 
-  /* ── New customer helpers ── */
+  /* ── New customer creation ── */
   const handleShowNewCustomerWithPreFill = useCallback((searchText) => {
     const txt = searchText.trim(), isPhone = /^[\d\+\s\-]+$/.test(txt);
     let phonePrefill = '+94';
@@ -1251,7 +1267,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
     finally { if (isMountedRef.current) setSaving(false); }
   };
 
-  /* ── Clear form ── */
+  /* ── Clear pos state ── */
   const clearForm = useCallback(() => {
     setInvoiceItems([]); setBillDiscountPercent(0); setBillDiscount(0); setExchangeAmount(0); setPayAmount(0);
     setPaymentMethod('cash'); setInvoiceRemark(''); setShowRemarkInput(false); setSelectedCustomer(null);
@@ -1261,16 +1277,15 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
     setTimeout(() => { if (itemSearchInputRef.current) itemSearchInputRef.current.focus(); }, 150);
   }, []);
 
-  /* ── Portal key ── */
   const ensurePortalKey = useCallback(async (cust) => {
     if (!cust || cust.id === 'CASH_CUSTOMER' || cust.id === 'TEMP_ORDER_CUSTOMER') return cust;
     if (cust.portalAccessKey) return cust;
     const key = `${cust.id.slice(0, 8)}_${Date.now().toString(36)}`;
     try { await updateDoc(doc(db, 'customers', cust.id), { portalAccessKey: key }); const updated = { ...cust, portalAccessKey: key }; setSelectedCustomer(updated); return updated; }
-    catch (e) { console.warn('Portal key:', e); return cust; }
+    catch (e) { console.warn('Portal key error:', e); return cust; }
   }, []);
 
-  /* ── Save invoice ── */
+  /* ── Process and save invoice ── */
   const handleSaveInvoice = useCallback(async (actionType) => {
     if (!safeInvoiceItems.length || savingRef.current) return;
     savingRef.current = true;
@@ -1278,18 +1293,43 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
     if (actionType !== 'draft' && !isFullyPaid && !isPersistedCustomer(selectedCustomer)) { savingRef.current = false; return showToast(`⚠️ ${t.customerRequired}`); }
 
     setSaving(true);
+    
+    // Live customer balance fetch
+    let customerBalanceBefore = 0;
+    if (isPersistedCustomer(selectedCustomer)) {
+      try {
+        const custSnap = await getDoc(doc(db, 'customers', selectedCustomer.id));
+        if (custSnap.exists()) {
+          customerBalanceBefore = R2(custSnap.data().currentBalance || 0);
+        }
+      } catch (e) {
+        console.warn('Live balance fetch failed:', e.message);
+        customerBalanceBefore = R2(selectedCustomer.currentBalance || 0);
+      }
+    }
+
+    const actualCashReceived = R2(Math.min(payAmount, finalNetAmount));
+    const { isCreditSale, creditAmount, isFullCredit } = getCreditSaleInfo(actualCashReceived, finalNetAmount);
+
+    const customerBalanceAfter = isCreditSale 
+      ? R2(customerBalanceBefore + creditAmount)
+      : R2(customerBalanceBefore + (balance < -0.01 ? balance : 0));
+
     const snap = snapshotInvoiceState({ safeInvoiceItems, selectedCustomer, finalNetAmount, payAmount, balance, paymentMethod, subTotal, billDiscountPercent, billDiscount, exchangeAmount, totalDiscount, invoiceRemark, selectedBankAccountId, selectedBankAccount });
 
     try {
       const fbBatch = writeBatch(db);
       const invRef = doc(collection(db, actionType === 'draft' ? 'drafts' : 'invoices'));
       const invoiceId = invRef.id, invoiceNo = `INV-${invoiceId.slice(0, 8).toUpperCase()}`;
-      const actualCashReceived = R2(Math.min(snap.payAmount, snap.netAmount));
+
       const { totalCost, hasCost } = calculateCostSummary(snap.items);
       const totalSellingRevenue = calculateSellingRevenue(snap.items);
-      const { isCreditSale, creditAmount, isFullCredit } = getCreditSaleInfo(actualCashReceived, snap.netAmount);
 
-      fbBatch.set(invRef, buildInvoicePayload({ user, snap, invoiceNo, actionType, mode, isFullCredit }));
+      fbBatch.set(invRef, buildInvoicePayload({ 
+        user, snap, invoiceNo, actionType, mode, isFullCredit,
+        previousOutstanding: customerBalanceBefore,
+        newOutstanding:      customerBalanceAfter
+      }));
 
       if (actionType !== 'draft') {
         const deductions = buildDeductionMap(snap.items);
@@ -1297,9 +1337,11 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
           fbBatch.update(doc(db, 'items', id), { stock: increment(-qty), currentStock: increment(-qty), 'stocks.Main_Store': increment(-qty) });
         });
         await applyBatchSourceUpdates(fbBatch, buildBatchUpdateMap(snap.items));
-        if (isPersistedCustomer(snap.customer) && snap.balance < -0.01) {
-          fbBatch.update(doc(db, 'customers', snap.customer.id), { currentBalance: increment(Math.abs(snap.balance)) });
+        
+        if (isPersistedCustomer(snap.customer)) {
+          fbBatch.update(doc(db, 'customers', snap.customer.id), { currentBalance: customerBalanceAfter });
         }
+        
         if (snap.paymentMethod === 'etransfer' && snap.bankAccountId && snap.bankAccount) {
           fbBatch.update(doc(db, `users/${user.uid}/bankAccounts`, snap.bankAccountId), { currentBalance: increment(R2(snap.payAmount)), updatedAt: serverTimestamp() });
           fbBatch.set(doc(collection(db, `users/${user.uid}/bankTransactions`)), { type: 'deposit', accountId: snap.bankAccountId, amount: R2(snap.payAmount), date: serverTimestamp(), description: `Invoice - ${snap.customer.name}`, createdAt: serverTimestamp(), source: 'pos-invoice', invoiceId });
@@ -1312,16 +1354,21 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
       await fbBatch.commit();
       if (!isMountedRef.current) { savingRef.current = false; return; }
       showToast(`✅ ${t.successMsg}`);
+      
       if (actionType === 'print' || actionType === 'link') {
         const custWithKey = actionType === 'link' ? await ensurePortalKey(snap.customer) : snap.customer;
-        setOutputInvoice(buildOutputInvoicePayload({ invoiceId, invoiceNo, user, snap, isFullCredit, actionType, custWithKey }));
+        setOutputInvoice(buildOutputInvoicePayload({ 
+          invoiceId, invoiceNo, user, snap, isFullCredit, actionType, custWithKey,
+          previousOutstanding: customerBalanceBefore,
+          newOutstanding:      customerBalanceAfter
+        }));
       }
       clearForm();
     } catch (e) { console.error('Save error:', e); if (isMountedRef.current) showToast(`❌ ${e.message}`); }
     finally { savingRef.current = false; if (isMountedRef.current) setSaving(false); }
   }, [safeInvoiceItems, paymentMethod, selectedBankAccountId, selectedCustomer, isFullyPaid, finalNetAmount, payAmount, balance, subTotal, billDiscountPercent, billDiscount, exchangeAmount, totalDiscount, invoiceRemark, selectedBankAccount, user, mode, clearForm, ensurePortalKey, showToast, t]);
 
-  /* ── Keyboard shortcuts ── */
+  /* ── Keyboard listeners ── */
   useEffect(() => {
     const h = (e) => {
       if (showNewCustomerModal || outputInvoice) return;
@@ -1382,14 +1429,14 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
   useEffect(() => { if (activeItemRef.current) activeItemRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [activeItemIdx]);
   useEffect(() => { if (activeCustRef.current) activeCustRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [activeCustIdx]);
 
-  /* ── Shared dropdown styles ── */
+  /* ── Dropdown styles ── */
   const dropdownStyle = { position: 'absolute', width: '100%', background: 'white', border: '1px solid #cbd5e1', borderRadius: 8, zIndex: 100, maxHeight: '55vh', overflowY: 'auto', overflowX: 'hidden', boxShadow: '0 4px 20px rgba(0,0,0,0.15)', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' };
   const stickyHeaderStyle = { position: 'sticky', top: 0, zIndex: 2, padding: '6px 12px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', fontSize: 12, color: '#64748b', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
   const dropdownRowStyle = { padding: '12px 12px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, minHeight: 56, userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'rgba(59,130,246,0.1)' };
 
   /* ══════════════════════════════════════════════════════════
-     RENDER
-     ══════════════════════════════════════════════════════════ */
+     RENDER LAYOUT
+  ══════════════════════════════════════════════════════════ */
   return (
     <div style={{ padding: 10, backgroundColor: '#f8fafc', minHeight: '100vh', paddingBottom: 100 }}>
       <style>{printStyles}</style>
@@ -1401,9 +1448,15 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
 
       {!dataReady && (<div style={{ textAlign: 'center', padding: 40 }}><div style={{ fontSize: 32, marginBottom: 10 }}>⏳</div><div style={{ color: '#64748b', fontWeight: 'bold' }}>{t.loadingItems}</div></div>)}
 
-      {outputInvoice && (<InvoiceOutputManager invoice={outputInvoice} initialMode={outputInvoice.initialMode || 'print'} onClose={() => { setOutputInvoice(null); setTimeout(() => { if (itemSearchInputRef.current) itemSearchInputRef.current.focus(); }, 200); }} />)}
+      {outputInvoice && (
+        <InvoiceOutputManager 
+          invoice={outputInvoice} 
+          initialMode={outputInvoice.initialMode || 'print'} 
+          onClose={() => { setOutputInvoice(null); setTimeout(() => { if (itemSearchInputRef.current) itemSearchInputRef.current.focus(); }, 200); }} 
+        />
+      )}
 
-      {/* Keyboard help */}
+      {/* Keyboard help shortcuts */}
       <div className="no-print kb-help-bar">
         <span style={{ color: '#fbbf24', fontSize: 11, fontWeight: 900, marginRight: 4 }}>⌨️</span>
         {[['F1', 'භාණ්ඩ'], ['F2', 'පාරිභෝගික'], ['F3', 'Pay'], ['F4', 'ගෙවීම'], ['F5', 'Full'], ['F6', 'Scan'], ['F7', 'Draft'], ['F8', 'Save'], ['F9', 'WA'], ['F10', 'Print'], ['F12', 'Clear'], ['U', 'Unit'], ['↑↓', 'Nav'], ['Enter', 'Select'], ['Del', 'Remove']].map(([k, d]) => (
@@ -1411,7 +1464,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
         ))}
       </div>
 
-      {/* HEADER */}
+      {/* HEADER CONTROLS */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
         <h2 style={{ margin: 0, fontSize: 20 }}>🧾 {t.title}</h2>
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1428,7 +1481,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
         </div>
       </div>
 
-      {/* SCANNER */}
+      {/* MOBILE SCANNER */}
       <div className="no-print" style={{ marginBottom: 10 }}>
         <button onClick={() => setShowScanner(true)} style={{ width: '100%', padding: 14, background: 'linear-gradient(135deg,#22c55e,#16a34a)', color: 'white', border: 'none', borderRadius: 10, fontWeight: 'bold', fontSize: 16, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
           📷 {t.scannerBtn} <span className="kb-shortcut-badge">F6</span>
@@ -1437,7 +1490,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
       </div>
       <MobileBarcodeScanner isOpen={showScanner} onClose={() => setShowScanner(false)} onScan={handleBarcodeScanned} />
 
-      {/* ITEM SEARCH */}
+      {/* MAIN ITEM SEARCH */}
       <div ref={itemSearchContainerRef} className="no-print" style={{ marginBottom: 10, position: 'relative' }}>
         <div style={{ position: 'relative' }}>
           <input ref={itemSearchInputRef} placeholder={`${t.searchItem} [F1]`} value={itemSearch}
@@ -1483,9 +1536,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
         )}
       </div>
 
-      {/* ═══════════════════════════════════════════════
-         INVOICE ITEMS — ★ UOM SELECTOR FIXED ★
-         ═══════════════════════════════════════════════ */}
+      {/* INVOICE ITEMS LIST */}
       <div style={{ background: 'white', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: 15 }}>
         {safeInvoiceItems.length === 0 ? (
           <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>{t.noData}</div>
@@ -1500,13 +1551,15 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
           const afterBillQty = R2(maxLineQty - R2(item.qty));
           const isOver = stockControlEnabled && !item.negativeStock && R2(item.qty) > maxLineQty + 0.001;
           const isWV = warrantyVisibility[itemKey], isBV = batchVisibility[itemKey], hasWC = !!item.warrantyCode?.trim();
+          
+          // ✅ includeEmpty parameter එක true ලෙස සකසා ඇති නිසා සියලුම තොග (Empty ඇතුළුව) මෙහි ලැබෙනු ඇත.
           const batches = item.allBatches || [], allocMap = {};
           (item.batchAllocations || []).forEach(a => { if (a?.batchId) allocMap[a.batchId] = R2((allocMap[a.batchId] || 0) + R2(a.allocatedQty)); });
           const lP = (item.allocatedQty || 0) > 0 ? R2(R2(item.yourPrice) * R2(item.qty) - R2(item.allocatedCostTotal || 0)) : 0;
 
           return (
             <div key={itemKey} style={{ padding: 12, borderBottom: '1px solid #f1f5f9', background: isOver ? '#fef2f2' : item.negativeStock ? '#fffbeb' : 'white' }}>
-              {/* Item header */}
+              {/* Item header row */}
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
                 <img src={item.photoURL || DP} alt="" onError={e => onImgErr(e)} onClick={() => setPopupImage(item.photoURL)} style={{ width: 54, height: 54, borderRadius: 6, objectFit: 'cover', cursor: 'pointer', border: '1px solid #e2e8f0' }} />
                 <div style={{ flex: 1 }}>
@@ -1525,19 +1578,18 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
                 <button onClick={() => removeItem(itemKey)} style={{ color: '#ef4444', background: 'none', border: 'none', fontSize: 20, cursor: 'pointer' }}>✕</button>
               </div>
 
-              {/* Price type */}
+              {/* Price Type selectors */}
               <div style={{ display: 'flex', gap: 5, marginBottom: 8 }}>
                 {['retail', 'loose', 'wholesale'].map(pt => (
                   <button key={pt} onClick={() => updateItemField(itemKey, 'priceType', pt)} style={{ flex: 1, padding: 6, fontSize: 12, fontWeight: 'bold', borderRadius: 4, border: item.priceType === pt ? '2px solid #3b82f6' : '1px solid #e2e8f0', background: item.priceType === pt ? '#eff6ff' : 'white', color: item.priceType === pt ? '#3b82f6' : '#64748b', cursor: 'pointer' }}>{t[pt]}</button>
                 ))}
               </div>
 
-              {/* ★ Unit selector — FIXED: uses getConvRate ★ */}
+              {/* Sync UOM Conversions pack selector */}
               {baseUomName && (
                 <div className="no-print" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10, background: '#f8fafc', padding: 8, borderRadius: 8, border: '1px dashed #cbd5e1' }}>
                   <span style={{ fontSize: 11, color: '#475569', fontWeight: 'bold' }}>{t.packUnitSelect}: <span className="kb-shortcut-badge">U</span></span>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {/* Base unit button */}
                     {(() => {
                       const sel = currentUom === baseUomName;
                       const pd = calcPricesForUom(item.originalItem, item.priceType, 1);
@@ -1550,7 +1602,6 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
                       );
                     })()}
 
-                    {/* ★ Conversion unit buttons — uses getConvRate() ★ */}
                     {itemAvailUnits.map((conv, idx) => {
                       const convRate = getConvRate(conv);
                       if (convRate <= 0) return null;
@@ -1570,7 +1621,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
                 </div>
               )}
 
-              {/* Batches + Warranty buttons */}
+              {/* Batches & Warranties toggles */}
               <div className="no-print" style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
                 <button onClick={() => setBatchVisibility(p => ({ ...p, [itemKey]: !p[itemKey] }))} style={{ flex: 1, padding: '6px 10px', background: isBV ? '#dbeafe' : '#f8fafc', color: isBV ? '#1d4ed8' : '#64748b', border: `1px solid ${isBV ? '#93c5fd' : '#e2e8f0'}`, borderRadius: 6, fontSize: 12, fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                   <span>{isBV ? t.hideBatches : t.batchesLabel}</span>
@@ -1581,7 +1632,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
                 </button>
               </div>
 
-              {/* Batches panel */}
+              {/* Batches panel layout (පැරණි සහ වත්මන් සියලුම Batches දර්ශනය වේ) */}
               {isBV && (
                 <div style={{ marginBottom: 8, padding: 8, background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd', maxHeight: 260, overflowY: 'auto' }}>
                   {batches.length === 0 ? <div style={{ textAlign: 'center', fontSize: 12, color: '#94a3b8' }}>📭</div>
@@ -1593,7 +1644,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
                 </div>
               )}
 
-              {/* Warranty panel */}
+              {/* Warranty panel layout */}
               {isWV && (
                 <div style={{ marginBottom: 8, padding: 8, background: '#fffbeb', borderRadius: 6, border: '1px solid #fde68a' }}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
@@ -1604,14 +1655,14 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
                 </div>
               )}
 
-              {/* Price inputs */}
+              {/* Inline price inputs */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
                 <div><label style={{ fontSize: 11, color: '#64748b' }}>{t.sellingPrice}</label><input type="number" inputMode="decimal" value={item.sellingPrice} onChange={e => updateItemField(itemKey, 'sellingPrice', e.target.value)} onFocus={onFocusSel} tabIndex={-1} style={{ width: '100%', minWidth: 0, textAlign: 'right', padding: '6px 8px', borderRadius: 4, border: '1px solid #e2e8f0', fontSize: 14, boxSizing: 'border-box', fontWeight: 'bold', height: 38 }} /></div>
                 <div><label style={{ fontSize: 11, color: '#f59e0b', fontWeight: 'bold' }}>{t.discPct}</label><input type="number" inputMode="decimal" value={item.discountPercent} onChange={e => updateItemField(itemKey, 'discountPercent', e.target.value)} onFocus={onFocusSel} tabIndex={-1} style={{ width: '100%', minWidth: 0, textAlign: 'right', padding: '6px 8px', borderRadius: 4, border: '2px solid #fcd34d', fontSize: 14, boxSizing: 'border-box', fontWeight: 'bold', background: '#fffbeb', color: '#b45309', height: 38 }} /></div>
                 <div><label style={{ fontSize: 11, color: '#f59e0b', fontWeight: 'bold' }}>{t.discAmt}</label><input type="number" inputMode="decimal" value={item.discAmount} onChange={e => updateItemField(itemKey, 'discAmount', e.target.value)} onFocus={onFocusSel} tabIndex={-1} style={{ width: '100%', minWidth: 0, textAlign: 'right', padding: '6px 8px', borderRadius: 4, border: '2px solid #fcd34d', fontSize: 14, boxSizing: 'border-box', fontWeight: 'bold', background: '#fffbeb', color: '#b45309', height: 38 }} /></div>
               </div>
 
-              {/* Your price + qty */}
+              {/* Net price & Qty controllers */}
               <div style={{ display: 'grid', gridTemplateColumns: isSmallMobile ? '1fr' : 'minmax(0,1.4fr) minmax(0,0.8fr)', gap: 8, marginBottom: 8, alignItems: 'end' }}>
                 <div style={{ minWidth: 0 }}>
                   <label style={{ fontSize: 11, color: '#0369a1', fontWeight: 'bold' }}>{t.yourPrice} ✏️</label>
@@ -1630,7 +1681,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
                 </div>
               </div>
 
-              {/* Line total */}
+              {/* Total calculations display */}
               <div style={{ textAlign: 'right' }}>
                 <span style={{ fontWeight: 'bold', fontSize: 18, color: '#1e40af' }}>{t.lineTotal}: Rs. {R2(item.lineTotal).toFixed(2)}</span>
                 {item.mixedBatchPricing && Array.isArray(item.batchAllocations) && item.batchAllocations.length > 1 && (
@@ -1647,7 +1698,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
         })}
       </div>
 
-      {/* CUSTOMER */}
+      {/* CUSTOMER SEARCH PORTLET */}
       <div className="no-print" style={{ background: 'white', padding: 12, borderRadius: 10, marginBottom: 15 }}>
         <div style={{ fontSize: 14, fontWeight: 'bold', color: '#64748b', marginBottom: 5 }}>{t.customer} <span className="kb-shortcut-badge">F2</span></div>
         {selectedCustomer ? (
@@ -1702,7 +1753,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
         )}
       </div>
 
-      {/* TOTALS */}
+      {/* BILL TOTALS LAYOUT */}
       <div style={{ background: 'white', padding: 15, borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 6 }}><span>{t.grossTotal}</span><b>{subTotal.toFixed(2)}</b></div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 6, color: '#ef4444' }}><span>{t.discount}</span><span>-{totalDiscount.toFixed(2)}</span></div>
@@ -1725,7 +1776,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
           </div>
         )}
 
-        {/* Payment */}
+        {/* Payment input controller */}
         <div className="no-print" style={{ marginTop: 15 }}>
           <div style={{ display: 'flex', gap: 5, marginBottom: 10 }}>
             {['cash', 'card', 'etransfer', 'cheque'].map((pm, idx) => (
@@ -1751,13 +1802,13 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
           </div>
         </div>
 
-        {/* Balance */}
+        {/* Change / balance display */}
         <div style={{ marginTop: 10, padding: 12, background: balance >= 0 ? '#f0fdf4' : '#fef2f2', borderRadius: 8, textAlign: 'center' }}>
           <div style={{ fontSize: 14, color: '#64748b' }}>{t.balance}</div>
           <div style={{ fontSize: 24, fontWeight: 'bold', color: balance >= 0 ? '#16a34a' : '#dc2626' }}>{balance.toFixed(2)}</div>
         </div>
 
-        {/* Save buttons */}
+        {/* Bottom save actions panel */}
         <div className="no-print" style={{ marginTop: 15, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <button ref={saveBtnRef} onClick={() => handleSaveInvoice('save')} disabled={saving || !safeInvoiceItems.length} style={{ padding: 16, background: !safeInvoiceItems.length ? '#ccc' : '#3b82f6', color: 'white', border: 'none', borderRadius: 8, fontSize: 16, fontWeight: 'bold', cursor: 'pointer' }}>💾 {t.saveOnly} <span className="kb-shortcut-badge">F8</span></button>
           <button ref={printBtnRef} onClick={() => handleSaveInvoice('print')} disabled={saving || !safeInvoiceItems.length} style={{ padding: 16, background: !safeInvoiceItems.length ? '#ccc' : '#16a34a', color: 'white', border: 'none', borderRadius: 8, fontSize: 16, fontWeight: 'bold', cursor: 'pointer' }}>🖨️ {t.savePrint} <span className="kb-shortcut-badge">F10</span></button>
@@ -1766,7 +1817,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
         </div>
       </div>
 
-      {/* NEW CUSTOMER MODAL */}
+      {/* NEW CUSTOMER CREATION MODAL */}
       {showNewCustomerModal && (
         <div className="no-print" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 10002, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
           <div style={{ background: 'white', padding: 20, borderRadius: 16, width: '100%', maxWidth: 380, maxHeight: '90vh', overflowY: 'auto' }}>
@@ -1778,7 +1829,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
                 <img src={newCustomer.profilePicture || DA} alt="" onError={e => onImgErr(e, 'a')} style={{ width: 90, height: 90, borderRadius: '50%', objectFit: 'cover', border: '3px solid #3b82f6' }} />
                 <button onClick={() => photoInputRef.current?.click()} style={{ position: 'absolute', bottom: -2, right: -2, width: 32, height: 32, borderRadius: '50%', background: '#3b82f6', color: 'white', border: '2px solid white', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>📷</button>
               </div>
-              <input ref={photoInputRef} type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} style={{ display: 'none' }} />
+              <input type="file" ref={photoInputRef} onChange={handlePhotoCapture} style={{ display: 'none' }} accept="image/*" />
               {newCustomer.profilePicture && <div style={{ marginTop: 6 }}><button onClick={() => setNewCustomer(prev => ({ ...prev, profilePicture: '' }))} style={{ fontSize: 11, color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '3px 10px', cursor: 'pointer' }}>{t.removePhoto}</button></div>}
             </div>
             <input value={newCustomer.name} onChange={e => setNewCustomer(p => ({ ...p, name: e.target.value }))} placeholder={`${t.customer} *`} style={{ width: '100%', padding: 12, marginBottom: 10, border: '1px solid #cbd5e1', borderRadius: 8, boxSizing: 'border-box', fontSize: 15 }} />
@@ -1792,7 +1843,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
         </div>
       )}
 
-      {/* POPUP IMAGE */}
+      {/* POPUP IMAGE ZOOM PREVIEW */}
       {popupImage && (<div onClick={() => setPopupImage(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}><img src={popupImage} alt="" style={{ maxWidth: '90%', maxHeight: '80vh', borderRadius: 10 }} /></div>)}
     </div>
   );

@@ -1,13 +1,20 @@
 'use client';
 
 // app/(protected)/stock-adjustment/page.jsx
+// ✅ Synced with POS & ItemForm Canonical Database Fields
+// ✅ Real-time Purchased Batches (තොග) viewer (Array Guard Added)
+// ✅ Buying Price (Cost) Adjustment field
+// ✅ Robust error fallback & History Syncing
+// ✅ Adjust and Edit Old/Past/Active Batches directly with Auto-recalculated Item Stock
+// ✅ Reactive Live Sync for Edit Form Stock Fields
+// ✅ Fixed Negative Stock Mismatch Bug on setting Batch Qty to 0
 
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { db } from '@/lib/firebase';
 import {
   collection, query, where, onSnapshot,
-  addDoc, doc, updateDoc, serverTimestamp,
-  getDocs, writeBatch,
+  addDoc, doc, updateDoc, getDoc, serverTimestamp,
+  getDocs, writeBatch, increment
 } from 'firebase/firestore';
 import { useUserAuth } from '@/context/UserContext';
 import { useLang } from '@/hooks/useLang';
@@ -30,6 +37,7 @@ const TEXT = {
     syncDone:         'Items සඳහා History සාදන ලදී.',
     syncNone:         'යාවත්කාලීන කිරීමට Items නොමැත.',
     generalInfo:      '📋 සාමාන්‍ය තොරතුරු',
+    buyingPrice:      'ගැනුම් මිල (Rs.)',
     discountReceived: 'ලැබුණු වට්ටම %',
     expiryDate:       '📅 කල් ඉකුත් දිනය',
     racks:            '📍 රාක්ක',
@@ -65,6 +73,18 @@ const TEXT = {
     confirmTitle:     '⚠️ තහවුරු කරන්න',
     confirmYes:       'ඔව්, ඉදිරියට යන්න',
     confirmNo:        'අවලංගු',
+    // Batches
+    batchesTitle:     '📦 මිලදී ගත් තොග විස්තර (All Purchased Batches)',
+    noBatches:        'මෙම භාණ්ඩය සඳහා මිලදී ගැනීමේ තොග සටහන් කිසිවක් හමු නොවීය.',
+    supplier:         'සැපයුම්කරු',
+    batchQty:         'තොග ප්‍රමාණය',
+    buyingCost:       'ගැනුම් මිල',
+    pricing:          'මිල ගණන්',
+    remaining:        'ඉතිරි',
+    adjustBatchBtn:   '✏️ Adjust Batch',
+    batchAdjustSuccess: 'තොගය සහ භාණ්ඩයේ මුළු ප්‍රමාණය සාර්ථකව යාවත්කාලීන කරන ලදී!',
+    cancelBtn:        'අවලංගු',
+    saveBtn:          'සුරකින්න',
   },
   en: {
     pageTitle:        '📦 Stock & Price Adjustment',
@@ -80,6 +100,7 @@ const TEXT = {
     syncDone:         'History created for items.',
     syncNone:         'No items to update.',
     generalInfo:      '📋 General Information',
+    buyingPrice:      'Buying Price (Rs.)',
     discountReceived: 'Discount Received %',
     expiryDate:       '📅 Expiry Date',
     racks:            '📍 Racks',
@@ -115,6 +136,18 @@ const TEXT = {
     confirmTitle:     '⚠️ Confirm',
     confirmYes:       'Yes, Continue',
     confirmNo:        'Cancel',
+    // Batches
+    batchesTitle:     '📦 Purchased Batches (All Purchased Batches)',
+    noBatches:        'No purchase or stock-in batches found for this item.',
+    supplier:         'Supplier',
+    batchQty:         'Batch Qty',
+    buyingCost:       'Cost Price',
+    pricing:          'Pricing',
+    remaining:        'Remaining',
+    adjustBatchBtn:   '✏️ Adjust Batch',
+    batchAdjustSuccess: 'Batch quantity and total item stock updated successfully!',
+    cancelBtn:        'Cancel',
+    saveBtn:          'Save',
   },
 };
 
@@ -220,6 +253,9 @@ export default function StockAdjustmentPage() {
   const [adjustments, setAdjustments] = useState([]);
   const [loading,     setLoading]     = useState(true);
 
+  // Batches / Purchase history state
+  const [purchaseSources, setPurchaseSources] = useState({ purchases: [], purchaseInvoices: [], stockIn: [] });
+
   const [searchText,     setSearchText]     = useState('');
   const [selectedItem,   setSelectedItem]   = useState('');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -230,6 +266,11 @@ export default function StockAdjustmentPage() {
   const [hasLoosePrice, setHasLoosePrice] = useState(false);
   const [isSaving,      setIsSaving]      = useState(false);
   const [isSyncing,     setIsSyncing]     = useState(false);
+
+  // Batch edit local state
+  const [editingBatchId, setEditingBatchId] = useState(null);
+  const [batchEditData, setBatchEditData] = useState({ remainingQty: '', buyingNetPrice: '' });
+  const [isSavingBatch, setIsSavingBatch] = useState(false);
 
   const [toast,   setToast]   = useState(null);
   const [confirm, setConfirm] = useState(null);
@@ -244,6 +285,21 @@ export default function StockAdjustmentPage() {
     }),
   []);
 
+  /* ── Math / Decimal Rounder & Date/Qty Formatters ── */
+  const R2 = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : Math.round(n * 100) / 100; };
+  const fmt = (v) => R2(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  
+  const fmtQ = (v) => {
+    const n = parseFloat(v);
+    return isNaN(n) ? '0' : Number.isInteger(n) ? n.toString() : n.toFixed(2);
+  };
+
+  const fmtDate = (d) => {
+    if (!d) return 'N/A';
+    const dateObj = d.toDate ? d.toDate() : new Date(d);
+    return isNaN(dateObj.getTime()) ? 'N/A' : dateObj.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  };
+
   /* ── Helpers ── */
   const sortByDate = (data) =>
     data.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
@@ -255,6 +311,7 @@ export default function StockAdjustmentPage() {
     return (p - (p * d / 100)).toFixed(2);
   };
 
+  // ✅ Modified to guarantee stock calculation never falls below zero
   const getActualStock = (item) => {
     if (!item) return 0;
     const s  = parseFloat(item.stock)        || 0;
@@ -265,33 +322,119 @@ export default function StockAdjustmentPage() {
         (sum, v) => sum + (parseFloat(v) || 0), 0
       );
     }
-    return Math.max(s, ms, cs);
+    return Math.max(0, s, ms, cs);
   };
+
+  /* ── Find Live Selected Item ── */
+  const liveSelectedItem = useMemo(() => {
+    return items.find(i => i.id === selectedItem) || null;
+  }, [items, selectedItem]);
+
+  /* ── Reactively Sync stock when database updates ── */
+  useEffect(() => {
+    if (!liveSelectedItem || !editData || !originalData) return;
+    const liveStock = getActualStock(liveSelectedItem);
+
+    // If the user hasn't edited the quantity field manually, keep it synced with DB
+    if (parseFloat(editData.stock) === originalData._stock) {
+      setEditData(prev => ({ ...prev, stock: liveStock }));
+      setOriginalData(prev => ({ ...prev, stock: liveStock, _stock: liveStock }));
+    } else {
+      setOriginalData(prev => ({ ...prev, _stock: liveStock }));
+    }
+  }, [liveSelectedItem]);
+
+  /* ── Batch Helpers (synced with POSInvoice) ── */
+  const getBatchRemainingInfo = (bi) => {
+    if (!bi) return { remaining: 0, isTracked: false };
+    const p = R2(bi.qty || bi.quantity || 0);
+    if (bi.remainingQty !== undefined && bi.remainingQty !== null && bi.remainingQty !== '') {
+      return { remaining: Math.max(0, R2(bi.remainingQty)), isTracked: true };
+    }
+    return { remaining: p, isTracked: false };
+  };
+
+  const getBatchTime = (b) => b?.createdAt?.toDate?.()?.getTime?.() || new Date(b?.date || 0).getTime() || 0;
+
+  const extractBatches = useCallback((itemId) => {
+    if (!itemId || !purchaseSources) return [];
+    const batches = [];
+    ['purchases', 'purchaseInvoices', 'stockIn'].forEach(col => {
+      const invs = purchaseSources[col];
+      if (!Array.isArray(invs)) return;
+      invs.forEach(inv => {
+        if (!inv || !Array.isArray(inv.items)) return;
+        inv.items.forEach((item, idx) => {
+          if (!item) return;
+          const id = item.itemId || item.id;
+          if (id !== itemId) return;
+          const ri = getBatchRemainingInfo(item);
+          batches.push({
+            batchId: `${inv.id}_${idx}`,
+            invoiceId: inv.id,
+            invoiceCollection: col,
+            itemIndex: idx,
+            supplierName: inv.supplierName || 'Unknown',
+            date: inv.date || inv.createdAt,
+            createdAt: inv.createdAt,
+            qty: R2(item.qty || item.quantity || 0),
+            remainingQty: ri.remaining,
+            isTracked: ri.isTracked,
+            buyingNetPrice: R2(item.buyingNetPrice || item.netPrice || item.unitPrice || 0),
+            retailPrice: R2(item.retailPrice || item.sellingPriceRetail || 0),
+            retailDiscount: R2(item.retailDiscount || 0),
+            wholesalePrice: R2(item.wholesalePrice || item.sellingPriceWholesale || 0),
+            wholesaleDiscount: R2(item.wholesaleDiscount || 0),
+            loosePrice: R2(item.loosePrice || item.sellingPriceLoose || 0),
+            looseDiscount: R2(item.looseDiscount || 0),
+          });
+        });
+      });
+    });
+    // Sort Newest first
+    batches.sort((a, b) => getBatchTime(b) - getBatchTime(a));
+    return batches;
+  }, [purchaseSources]);
+
+  // List of active batches for the selected item (Guarded against non-array values)
+  const selectedItemBatches = useMemo(() => {
+    if (!selectedItem) return [];
+    const res = extractBatches(selectedItem);
+    return Array.isArray(res) ? res : [];
+  }, [selectedItem, extractBatches]);
 
   const populateEditData = (item) => {
     const actualStock = getActualStock(item);
     const data = {
+      // General
       discountReceived:          item.discountReceived          ?? '',
+      buyingPrice:               item.buyingPrice ?? item.costPrice ?? '',
       expiryDate:                item.expiryDate                ?? '',
-      racks:                     item.racks                     ?? '',
+      racks:                     item.racks ?? item.rackName    ?? '',
       stock:                     actualStock,
-      retailSellingPrice:        item.retailSellingPrice        ?? '',
-      retailSellingDiscount:     item.retailSellingDiscount     ?? '',
+
+      // Retail pricing
+      sellingPriceRetail:        item.sellingPriceRetail ?? item.retailSellingPrice ?? item.sellingPrice ?? item.price ?? '',
+      retailDiscount:            item.retailDiscount ?? item.retailSellingDiscount ?? '',
       retailYourPrice:           item.retailYourPrice
-        ?? calcYourPrice(item.retailSellingPrice, item.retailSellingDiscount),
-      wholesaleSellingPrice:     item.wholesaleSellingPrice     ?? '',
-      wholesaleSellingDiscount:  item.wholesaleSellingDiscount  ?? '',
+        ?? calcYourPrice(item.sellingPriceRetail ?? item.retailSellingPrice, item.retailDiscount ?? item.retailSellingDiscount),
+
+      // Wholesale pricing
+      sellingPriceWholesale:     item.sellingPriceWholesale ?? item.wholesaleSellingPrice ?? item.wholesalePrice ?? '',
+      wholesaleDiscount:         item.wholesaleDiscount ?? item.wholesaleSellingDiscount ?? '',
       wholesaleYourPrice:        item.wholesaleYourPrice
-        ?? calcYourPrice(item.wholesaleSellingPrice, item.wholesaleSellingDiscount),
-      retailSellingPriceLoose:   item.retailSellingPriceLoose   ?? '',
-      retailSellingLooseDiscount:item.retailSellingLooseDiscount ?? '',
-      retailYourLoosePrice:      item.retailYourLoosePrice
-        ?? calcYourPrice(item.retailSellingPriceLoose, item.retailSellingLooseDiscount),
+        ?? calcYourPrice(item.sellingPriceWholesale ?? item.wholesaleSellingPrice, item.wholesaleDiscount ?? item.wholesaleSellingDiscount),
+
+      // Loose pricing
+      sellingPriceLoose:         item.sellingPriceLoose ?? item.retailSellingPriceLoose ?? item.loosePrice ?? '',
+      looseDiscount:             item.looseDiscount ?? item.retailSellingLooseDiscount ?? '',
+      looseYourPrice:            item.looseYourPrice
+        ?? calcYourPrice(item.sellingPriceLoose ?? item.retailSellingPriceLoose, item.looseDiscount ?? item.retailSellingLooseDiscount),
     };
     setEditData(data);
     setOriginalData({ ...data, _stock: actualStock });
     setHasLoosePrice(
-      !!(item.retailSellingPriceLoose || item.priceLoos || item.priceLoose || item.loosePrice || item.isLoose)
+      !!(item.sellingPriceLoose || item.retailSellingPriceLoose || item.priceLoose || item.loosePrice || item.isLoose)
     );
   };
 
@@ -321,15 +464,33 @@ export default function StockAdjustmentPage() {
     }
   }, [user]);
 
-  /* ── Load items ── */
+  /* ── Load items & Purchase streams real-time ── */
   useEffect(() => {
     if (!user) return;
     const unsub = onSnapshot(
       query(collection(db, 'items'), where('uid', '==', user.uid)),
       (snap) => setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
     );
+
+    // Stream Batch Sources (Purchases / Stock In)
+    const unsubsBatches = ['purchases', 'purchaseInvoices', 'stockIn'].map(col => {
+      return onSnapshot(
+        query(collection(db, col), where('uid', '==', user.uid)),
+        (snap) => {
+          setPurchaseSources(prev => ({
+            ...prev,
+            [col]: snap.docs.map(d => ({ id: d.id, ...d.data() }))
+          }));
+        }
+      );
+    });
+
     loadHistory().finally(() => setLoading(false));
-    return () => unsub();
+
+    return () => {
+      unsub();
+      unsubsBatches.forEach(unsubFn => unsubFn());
+    };
   }, [user, loadHistory]);
 
   /* ── Filtered items ── */
@@ -356,6 +517,7 @@ export default function StockAdjustmentPage() {
     setEditData(null);
     setOriginalData(null);
     setHasLoosePrice(false);
+    setEditingBatchId(null);
   };
 
   const handleResetForm = () => {
@@ -367,24 +529,24 @@ export default function StockAdjustmentPage() {
     setEditData((prev) => {
       const updated = { ...prev, [field]: value };
 
-      if (field === 'retailSellingPrice' || field === 'retailSellingDiscount') {
+      if (field === 'sellingPriceRetail' || field === 'retailDiscount') {
         updated.retailYourPrice = calcYourPrice(
-          field === 'retailSellingPrice' ? value : prev.retailSellingPrice,
-          field === 'retailSellingDiscount' ? value : prev.retailSellingDiscount
+          field === 'sellingPriceRetail' ? value : prev.sellingPriceRetail,
+          field === 'retailDiscount' ? value : prev.retailDiscount
         );
       }
 
-      if (field === 'wholesaleSellingPrice' || field === 'wholesaleSellingDiscount') {
+      if (field === 'sellingPriceWholesale' || field === 'wholesaleDiscount') {
         updated.wholesaleYourPrice = calcYourPrice(
-          field === 'wholesaleSellingPrice' ? value : prev.wholesaleSellingPrice,
-          field === 'wholesaleSellingDiscount' ? value : prev.wholesaleSellingDiscount
+          field === 'sellingPriceWholesale' ? value : prev.sellingPriceWholesale,
+          field === 'wholesaleDiscount' ? value : prev.wholesaleDiscount
         );
       }
 
-      if (field === 'retailSellingPriceLoose' || field === 'retailSellingLooseDiscount') {
-        updated.retailYourLoosePrice = calcYourPrice(
-          field === 'retailSellingPriceLoose' ? value : prev.retailSellingPriceLoose,
-          field === 'retailSellingLooseDiscount' ? value : prev.retailSellingLooseDiscount
+      if (field === 'sellingPriceLoose' || field === 'looseDiscount') {
+        updated.looseYourPrice = calcYourPrice(
+          field === 'sellingPriceLoose' ? value : prev.sellingPriceLoose,
+          field === 'looseDiscount' ? value : prev.looseDiscount
         );
       }
 
@@ -392,7 +554,7 @@ export default function StockAdjustmentPage() {
     });
   };
 
-  /* ── Save ── */
+  /* ── Save canonical item fields ── */
   const handleSaveEdit = async () => {
     if (!selectedItem || !editData) {
       showToast(t.selectItemError, 'error');
@@ -407,27 +569,53 @@ export default function StockAdjustmentPage() {
       const toNum = (val) =>
         val !== '' && val !== undefined && val !== null ? parseFloat(val) : '';
 
-      const newStock = parseFloat(editData.stock) || 0;
+      const newStock = Math.max(0, parseFloat(editData.stock) || 0);
 
+      // Updates canonical and synced legacy fields across all database schemas
       const updateData = {
         discountReceived:         toNum(editData.discountReceived),
+        buyingPrice:              toNum(editData.buyingPrice),
+        costPrice:                toNum(editData.buyingPrice), // legacy support
         expiryDate:               editData.expiryDate || '',
         racks:                    editData.racks      || '',
+        rackName:                 editData.racks      || '', // sync to POS schema
         stock:                    newStock,
         currentStock:             newStock,
         'stocks.Main_Store':      newStock,
-        retailSellingPrice:       toNum(editData.retailSellingPrice),
-        retailSellingDiscount:    toNum(editData.retailSellingDiscount),
+
+        // Retail canonized
+        sellingPriceRetail:       toNum(editData.sellingPriceRetail),
+        retailDiscount:           toNum(editData.retailDiscount),
         retailYourPrice:          toNum(editData.retailYourPrice),
-        wholesaleSellingPrice:    toNum(editData.wholesaleSellingPrice),
-        wholesaleSellingDiscount: toNum(editData.wholesaleSellingDiscount),
+        sellingPrice:             toNum(editData.sellingPriceRetail), // legacy support
+        price:                    toNum(editData.sellingPriceRetail), // legacy catalog support
+
+        // Retail legacy support
+        retailSellingPrice:       toNum(editData.sellingPriceRetail),
+        retailSellingDiscount:    toNum(editData.retailDiscount),
+
+        // Wholesale canonized
+        sellingPriceWholesale:    toNum(editData.sellingPriceWholesale),
+        wholesaleDiscount:        toNum(editData.wholesaleDiscount),
         wholesaleYourPrice:       toNum(editData.wholesaleYourPrice),
+        wholesalePrice:           toNum(editData.sellingPriceWholesale), // legacy support
+
+        // Wholesale legacy support
+        wholesaleSellingPrice:    toNum(editData.sellingPriceWholesale),
+        wholesaleSellingDiscount: toNum(editData.wholesaleDiscount),
       };
 
       if (hasLoosePrice) {
-        updateData.retailSellingPriceLoose    = toNum(editData.retailSellingPriceLoose);
-        updateData.retailSellingLooseDiscount = toNum(editData.retailSellingLooseDiscount);
-        updateData.retailYourLoosePrice       = toNum(editData.retailYourLoosePrice);
+        // Loose canonized
+        updateData.sellingPriceLoose         = toNum(editData.sellingPriceLoose);
+        updateData.looseDiscount             = toNum(editData.looseDiscount);
+        updateData.looseYourPrice            = toNum(editData.looseYourPrice);
+        updateData.loosePrice                = toNum(editData.sellingPriceLoose); // legacy support
+
+        // Loose legacy support
+        updateData.retailSellingPriceLoose    = toNum(editData.sellingPriceLoose);
+        updateData.retailSellingLooseDiscount = toNum(editData.looseDiscount);
+        updateData.retailYourLoosePrice       = toNum(editData.looseYourPrice);
       }
 
       await updateDoc(itemRef, updateData);
@@ -458,7 +646,101 @@ export default function StockAdjustmentPage() {
     }
   };
 
-  /* ── Sync ── */
+  /* ── Batch Qty & Price Editor Save Handler & Item Stock Recalculator ── */
+  const handleSaveBatchEdit = async (b) => {
+    setIsSavingBatch(true);
+    try {
+      const docRef = doc(db, b.invoiceCollection, b.invoiceId);
+      const docSnap = await getDoc(docRef);
+
+      if (!docSnap.exists()) {
+        throw new Error('Invoice document not found in ' + b.invoiceCollection);
+      }
+
+      const invoiceData = docSnap.data();
+      const itemsArray = [...(invoiceData.items || [])];
+
+      if (b.itemIndex >= 0 && b.itemIndex < itemsArray.length) {
+        const targetItem = { ...itemsArray[b.itemIndex] };
+        
+        // Find existing quantities and values
+        const currentRemaining = targetItem.remainingQty !== undefined ? parseFloat(targetItem.remainingQty) : parseFloat(targetItem.qty || targetItem.quantity || 0);
+        const nextRemaining = Math.max(0, parseFloat(batchEditData.remainingQty) || 0);
+        const nextNetPrice = parseFloat(batchEditData.buyingNetPrice) || 0;
+
+        // Apply changes
+        targetItem.remainingQty = nextRemaining;
+        targetItem.buyingNetPrice = nextNetPrice;
+        
+        // Synced legacy batch properties
+        if (targetItem.netPrice !== undefined) targetItem.netPrice = nextNetPrice;
+        if (targetItem.unitPrice !== undefined) targetItem.unitPrice = nextNetPrice;
+        if (targetItem.qty !== undefined && targetItem.remainingQty === undefined) targetItem.qty = nextRemaining;
+
+        itemsArray[b.itemIndex] = targetItem;
+
+        // Perform write batch to ensure transactional consistency
+        const writeBt = writeBatch(db);
+        
+        // 1. Update the purchase/invoice document
+        writeBt.update(docRef, {
+          items: itemsArray,
+          updatedAt: serverTimestamp()
+        });
+
+        // ✅ Calculate the absolute sum of all remaining batches to prevent mismatch and negative stock bugs
+        const otherBatchesSum = selectedItemBatches
+          .filter(x => x.batchId !== b.batchId)
+          .reduce((sum, x) => sum + parseFloat(x.remainingQty || 0), 0);
+        
+        const newTotalStock = Math.max(0, otherBatchesSum + nextRemaining);
+
+        // 2. Set absolute parent item's stocks directly
+        const itemRef = doc(db, 'items', selectedItem);
+        writeBt.update(itemRef, {
+          stock: newTotalStock,
+          currentStock: newTotalStock,
+          'stocks.Main_Store': newTotalStock
+        });
+
+        // 3. Log stock adjustment history
+        const diff = nextRemaining - currentRemaining;
+        if (diff !== 0) {
+          const adjRef = doc(collection(db, 'stockAdjustments'));
+          writeBt.set(adjRef, {
+            uid:       user.uid,
+            itemId:    selectedItem,
+            itemName:  items.find(i => i.id === selectedItem)?.name || 'Unknown',
+            type:      diff > 0 ? 'add' : 'reduce',
+            qty:       Math.abs(diff),
+            reason:    `Batch Qty Adjusted (Invoice #${b.invoiceId.slice(-6).toUpperCase()})`,
+            date:      new Date().toISOString().split('T')[0],
+            createdAt: serverTimestamp(),
+          });
+        }
+
+        await writeBt.commit();
+        showToast(t.batchAdjustSuccess);
+        setEditingBatchId(null);
+        setTimeout(() => loadHistory(), 500);
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('Error: ' + err.message, 'error');
+    } finally {
+      setIsSavingBatch(false);
+    }
+  };
+
+  const startEditingBatch = (b) => {
+    setEditingBatchId(b.batchId);
+    setBatchEditData({
+      remainingQty: b.remainingQty.toString(),
+      buyingNetPrice: b.buyingNetPrice.toString()
+    });
+  };
+
+  /* ── Sync Missing History ── */
   const handleSyncMissingHistory = async () => {
     const confirmed = await showConfirm(t.syncConfirm);
     if (!confirmed) return;
@@ -732,6 +1014,137 @@ export default function StockAdjustmentPage() {
         </div>
       </div>
 
+      {/* ★★★ REAL-TIME PURCHASED BATCHES (තොග විස්තර) ★ Adjustments & Auto-Sync enabled ★★★ */}
+      {selectedItem && (
+        <div style={{ ...cardStyle, borderLeft: '5px solid #2563eb' }}>
+          <div style={{ ...sectionTitleStyle, fontSize: 16, color: '#1e3a8a', marginBottom: 14 }}>
+            {t.batchesTitle}
+          </div>
+          {(Array.isArray(selectedItemBatches) ? selectedItemBatches : []).length === 0 ? (
+            <div style={{ padding: '24px 12px', textAlign: 'center', color: '#94a3b8', fontSize: 13, background: '#f8fafc', borderRadius: 10, border: '1px dashed #cbd5e1' }}>
+              📭 {t.noBatches}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
+              {(Array.isArray(selectedItemBatches) ? selectedItemBatches : []).map((b) => {
+                const isZero = b.remainingQty <= 0;
+                const isEditing = b.batchId === editingBatchId;
+
+                return (
+                  <div 
+                    key={b.batchId} 
+                    style={{ 
+                      padding: '14px 16px', borderRadius: 12, 
+                      background: isEditing ? '#fffbeb' : isZero ? '#fafafa' : '#f0f9ff', 
+                      border: isEditing ? '2px solid #fbbf24' : isZero ? '1px solid #cbd5e1' : '1px solid #93c5fd',
+                      display: 'flex', flexDirection: 'column', gap: 10,
+                      opacity: isZero && !isEditing ? 0.6 : 1
+                    }}
+                  >
+                    {/* Header Row */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 14, color: '#1e3a8a' }}>
+                          👤 {b.supplierName}
+                        </div>
+                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>
+                          📅 {fmtDate(b.date)} | Invoice: <strong style={{ color: '#475569' }}>#{b.invoiceId.slice(-6).toUpperCase()}</strong>
+                        </div>
+                      </div>
+                      
+                      {!isEditing && (
+                        <button
+                          onClick={() => startEditingBatch(b)}
+                          style={{
+                            padding: '4px 10px', background: '#3b82f6', color: 'white',
+                            border: 'none', borderRadius: 6, fontSize: 11, fontWeight: 'bold',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {t.adjustBatchBtn}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Editor Form / Viewer Grid */}
+                    {isEditing ? (
+                      <div style={{ background: '#fff', padding: 12, borderRadius: 8, border: '1px solid #fde68a' }}>
+                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                          <div style={{ flex: 1, minWidth: 120 }}>
+                            <label style={{ fontSize: 11, fontWeight: 'bold', color: '#64748b', display: 'block', marginBottom: 4 }}>
+                              {t.remaining} {t.qtyLabel}
+                            </label>
+                            <input 
+                              type="number" 
+                              step="0.01"
+                              value={batchEditData.remainingQty}
+                              onChange={(e) => setBatchEditData(prev => ({ ...prev, remainingQty: e.target.value }))}
+                              style={inputStyle}
+                            />
+                          </div>
+                          <div style={{ flex: 1, minWidth: 120 }}>
+                            <label style={{ fontSize: 11, fontWeight: 'bold', color: '#64748b', display: 'block', marginBottom: 4 }}>
+                              {t.buyingCost} (Rs.)
+                            </label>
+                            <input 
+                              type="number" 
+                              step="0.01"
+                              value={batchEditData.buyingNetPrice}
+                              onChange={(e) => setBatchEditData(prev => ({ ...prev, buyingNetPrice: e.target.value }))}
+                              style={inputStyle}
+                            />
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, marginTop: 10, justifyContent: 'flex-end' }}>
+                          <button
+                            disabled={isSavingBatch}
+                            onClick={() => setEditingBatchId(null)}
+                            style={{ padding: '6px 12px', background: '#cbd5e1', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}
+                          >
+                            {t.cancelBtn}
+                          </button>
+                          <button
+                            disabled={isSavingBatch}
+                            onClick={() => handleSaveBatchEdit(b)}
+                            style={{ padding: '6px 12px', background: '#16a34a', color: 'white', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}
+                          >
+                            {isSavingBatch ? t.saving : t.saveBtn}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 10, background: '#fff', border: '1px solid #cbd5e1', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
+                            Cost: Rs.{fmt(b.buyingNetPrice)}
+                          </span>
+                          {b.retailPrice > 0 && (
+                            <span style={{ fontSize: 10, background: '#e0f2fe', color: '#0369a1', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
+                              Retail: Rs.{fmt(b.retailPrice - (b.retailPrice * b.retailDiscount / 100))}
+                            </span>
+                          )}
+                        </div>
+
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: 15, fontWeight: 900, color: isZero ? '#64748b' : '#16a34a' }}>
+                            {fmtQ(b.remainingQty)} <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8' }}>/ {fmtQ(b.qty)}</span>
+                          </div>
+                          {isZero ? (
+                            <span style={{ fontSize: 9, background: '#f1f5f9', color: '#64748b', padding: '1px 6px', borderRadius: 4, fontWeight: 700, display: 'inline-block', marginTop: 4 }}>EMPTY</span>
+                          ) : (
+                            <span style={{ fontSize: 9, background: '#dcfce7', color: '#16a34a', padding: '1px 6px', borderRadius: 4, fontWeight: 700, display: 'inline-block', marginTop: 4 }}>ACTIVE</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Edit Form */}
       {editData && (
         <div style={cardStyle}>
@@ -757,6 +1170,10 @@ export default function StockAdjustmentPage() {
           <div style={sectionStyle}>
             <div style={sectionTitleStyle}>{t.generalInfo}</div>
             <div style={fieldRowStyle}>
+              <div style={fieldStyle}>
+                <label style={labelStyle}>{t.buyingPrice}</label>
+                <input type="number" step="0.01" min="0" value={editData.buyingPrice} onChange={(e) => handleEditChange('buyingPrice', e.target.value)} style={getFieldInputStyle('buyingPrice')} placeholder="0.00" />
+              </div>
               <div style={fieldStyle}>
                 <label style={labelStyle}>{t.discountReceived}</label>
                 <input type="number" step="0.01" min="0" value={editData.discountReceived} onChange={(e) => handleEditChange('discountReceived', e.target.value)} style={getFieldInputStyle('discountReceived')} placeholder="0" />
@@ -800,36 +1217,32 @@ export default function StockAdjustmentPage() {
             </div>
           </div>
 
-          {/* Retail */}
-          <div style={{ ...sectionStyle, border: '1px solid #bfdbfe', background: '#f0f9ff' }}>
+          {/* Retail Pricing Section */}
+          <div style={{ ...sectionStyle, border: '1px solid #bfdbfe', background: '#f0fdf4' }}>
             <div style={sectionTitleStyle}>{t.retailPricing}</div>
             <div style={fieldRowStyle}>
               <div style={fieldStyle}>
                 <label style={labelStyle}>{t.sellingPrice}</label>
-                <input type="number" step="0.01" min="0" value={editData.retailSellingPrice} onChange={(e) => handleEditChange('retailSellingPrice', e.target.value)} style={getFieldInputStyle('retailSellingPrice')} placeholder="0.00" />
+                <input type="number" step="0.01" min="0" value={editData.sellingPriceRetail} onChange={(e) => handleEditChange('sellingPriceRetail', e.target.value)} style={getFieldInputStyle('sellingPriceRetail')} placeholder="0.00" />
               </div>
               <div style={fieldStyle}>
                 <label style={labelStyle}>{t.sellingDiscount}</label>
-                <input type="number" step="0.01" min="0" max="100" value={editData.retailSellingDiscount} onChange={(e) => handleEditChange('retailSellingDiscount', e.target.value)} style={getFieldInputStyle('retailSellingDiscount')} placeholder="0" />
+                <input type="number" step="0.01" min="0" max="100" value={editData.retailDiscount} onChange={(e) => handleEditChange('retailDiscount', e.target.value)} style={getFieldInputStyle('retailDiscount')} placeholder="0" />
               </div>
-              <div style={fieldStyle}>
+              <div style={{ ...fieldStyle, minWidth: 160 }}>
                 <label style={{ ...labelStyle, color: '#166534' }}>{t.yourPrice}</label>
                 <input type="text" readOnly value={editData.retailYourPrice ? `Rs. ${editData.retailYourPrice}` : ''} style={autoInputStyle} />
               </div>
             </div>
           </div>
 
-          {/* Wholesale */}
+          {/* Wholesale Pricing Section */}
           <div style={{ ...sectionStyle, border: '1px solid #c4b5fd', background: '#f5f3ff' }}>
             <div style={sectionTitleStyle}>{t.wholesalePricing}</div>
             <div style={fieldRowStyle}>
               <div style={fieldStyle}>
                 <label style={labelStyle}>{t.sellingPrice}</label>
-                <input type="number" step="0.01" min="0" value={editData.wholesaleSellingPrice} onChange={(e) => handleEditChange('wholesaleSellingPrice', e.target.value)} style={getFieldInputStyle('wholesaleSellingPrice')} placeholder="0.00" />
-              </div>
-              <div style={fieldStyle}>
-                <label style={labelStyle}>{t.sellingDiscount}</label>
-                <input type="number" step="0.01" min="0" max="100" value={editData.wholesaleSellingDiscount} onChange={(e) => handleEditChange('wholesaleSellingDiscount', e.target.value)} style={getFieldInputStyle('wholesaleSellingDiscount')} placeholder="0" />
+                <input type="number" step="0.01" min="0" value={editData.sellingPriceWholesale} onChange={(e) => handleEditChange('sellingPriceWholesale', e.target.value)} style={getFieldInputStyle('sellingPriceWholesale')} placeholder="0.00" />
               </div>
               <div style={fieldStyle}>
                 <label style={{ ...labelStyle, color: '#166534' }}>{t.yourPrice}</label>
@@ -838,7 +1251,7 @@ export default function StockAdjustmentPage() {
             </div>
           </div>
 
-          {/* Loose */}
+          {/* Loose Pricing Section */}
           {hasLoosePrice && (
             <div style={{ ...sectionStyle, border: '2px solid #fbbf24', background: '#fffbeb' }}>
               <div style={sectionTitleStyle}>
@@ -850,15 +1263,15 @@ export default function StockAdjustmentPage() {
               <div style={fieldRowStyle}>
                 <div style={fieldStyle}>
                   <label style={labelStyle}>{t.loosePrice}</label>
-                  <input type="number" step="0.01" min="0" value={editData.retailSellingPriceLoose} onChange={(e) => handleEditChange('retailSellingPriceLoose', e.target.value)} style={getFieldInputStyle('retailSellingPriceLoose')} placeholder="0.00" />
+                  <input type="number" step="0.01" min="0" value={editData.sellingPriceLoose} onChange={(e) => handleEditChange('sellingPriceLoose', e.target.value)} style={getFieldInputStyle('sellingPriceLoose')} placeholder="0.00" />
                 </div>
                 <div style={fieldStyle}>
                   <label style={labelStyle}>{t.looseDiscount}</label>
-                  <input type="number" step="0.01" min="0" max="100" value={editData.retailSellingLooseDiscount} onChange={(e) => handleEditChange('retailSellingLooseDiscount', e.target.value)} style={getFieldInputStyle('retailSellingLooseDiscount')} placeholder="0" />
+                  <input type="number" step="0.01" min="0" max="100" value={editData.looseDiscount} onChange={(e) => handleEditChange('looseDiscount', e.target.value)} style={getFieldInputStyle('looseDiscount')} placeholder="0" />
                 </div>
-                <div style={fieldStyle}>
+                <div style={{ ...fieldStyle, minWidth: 160 }}>
                   <label style={{ ...labelStyle, color: '#166534' }}>{t.yourLoosePrice}</label>
-                  <input type="text" readOnly value={editData.retailYourLoosePrice ? `Rs. ${editData.retailYourLoosePrice}` : ''} style={autoInputStyle} />
+                  <input type="text" readOnly value={editData.looseYourPrice ? `Rs. ${editData.looseYourPrice}` : ''} style={autoInputStyle} />
                 </div>
               </div>
             </div>
