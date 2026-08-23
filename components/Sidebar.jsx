@@ -23,6 +23,7 @@ const TEXT = {
     catalogSettings: 'Catalog සැකසුම්',
     items:           'භාණ්ඩ',
     stockAdjustment: 'Adjustment',
+    stockValue:      'තොග වටිනාකම',
     purchases:       'ගැනුම්',
     expenses:        'වියදම්',
     customers:       'පාරිභෝගිකයින්',
@@ -55,6 +56,7 @@ const TEXT = {
     catalogSettings: 'Catalog Settings',
     items:           'Items',
     stockAdjustment: 'Adjustment',
+    stockValue:      'Stock Value',
     purchases:       'Purchases',
     expenses:        'Expenses',
     customers:       'Customers',
@@ -104,6 +106,7 @@ function getMenu(t) {
       items: [
         { href: '/items',            label: t.items,           icon: '📦' },
         { href: '/stock-adjustment', label: t.stockAdjustment, icon: '🗃️' },
+        { href: '/stock-value',      label: t.stockValue,      icon: '🪙' },
         { href: '/purchases',        label: t.purchases,       icon: '📥' },
         { href: '/vehicle-income',   label: t.vehicleIncome,   icon: '🚛' },
         { href: '/vehicle-expenses', label: t.vehicleExpenses, icon: '💸' },
