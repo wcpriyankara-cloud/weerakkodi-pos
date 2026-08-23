@@ -1,11 +1,12 @@
 'use client';
 
 // app/(protected)/stock-value/page.jsx
-// ✅ Total Stock Value Report Page
-// ✅ Cost, Selling, and Expected Profit summary
+// ✅ Total Stock Value Report Page (Updated for exact Purchase Discount sync)
+// ✅ Cost (After Discount Received), Selling, and Expected Profit summary
 // ✅ Filtering by Category, Rack, Stock Status
 // ✅ CSV Export capability
 // ✅ Real-time data sync from Firestore
+// ✅ Fully synced with purchase form database fields (buyingDiscount & buyingNetPrice)
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { db } from '@/lib/firebase';
@@ -19,7 +20,7 @@ import { useLang } from '@/hooks/useLang';
 const TEXT = {
   si: {
     pageTitle:       '💰 මුළු තොග වටිනාකම',
-    subtitle:        'දැනට ඇති සියලුම භාණ්ඩ වල මුළු වටිනාකම',
+    subtitle:        'දැනට ඇති සියලුම භාණ්ඩ වල මුළු වටිනාකම (ලැබුණු වට්ටම් අඩුකර ඇත)',
     totalItems:      'මුළු භාණ්ඩ ගණන',
     totalUnits:      'මුළු ඒකක ගණන',
     totalCost:       'මුළු ගැනුම් වටිනාකම',
@@ -49,7 +50,7 @@ const TEXT = {
     category:        'වර්ගය',
     rack:            'රාක්කය',
     stockQty:        'ප්‍රමාණය',
-    buyingPrice:     'ගැනුම් මිල',
+    buyingPrice:     'ගැනුම් මිල (Net)',
     sellingPrice:    'විකුණුම් මිල',
     costValue:       'ගැනුම් වටිනාකම',
     sellValue:       'විකුණුම් වටිනාකම',
@@ -71,7 +72,7 @@ const TEXT = {
   },
   en: {
     pageTitle:       '💰 Total Stock Value',
-    subtitle:        'Total value of all current inventory items',
+    subtitle:        'Total value of all current inventory items (buying discounts applied)',
     totalItems:      'Total Items',
     totalUnits:      'Total Units',
     totalCost:       'Total Cost Value',
@@ -101,7 +102,7 @@ const TEXT = {
     category:        'Category',
     rack:            'Rack',
     stockQty:        'Qty',
-    buyingPrice:     'Buying Price',
+    buyingPrice:     'Buying Price (Net)',
     sellingPrice:    'Selling Price',
     costValue:       'Cost Value',
     sellValue:       'Sell Value',
@@ -146,7 +147,35 @@ const getActualStock = (item) => {
   return Math.max(0, s, ms, cs);
 };
 
-const getBuyingPrice = (item) => R2(item?.buyingPrice || item?.costPrice || 0);
+// ✅ Dynamically gets the exact discount percentage from DB
+const getBuyingDiscountPercent = (item) => {
+  if (!item) return 0;
+  return R2(
+    item.buyingDiscount !== undefined ? item.buyingDiscount :
+    item.discountPercent !== undefined ? item.discountPercent :
+    item.discountReceived !== undefined ? item.discountReceived :
+    item.discount || 0
+  );
+};
+
+// ✅ Recalculates Net Buying Price using exact DB parameters (buyingNetPrice, buyingDiscount)
+const getBuyingPrice = (item) => {
+  if (!item) return 0;
+
+  // 1. If exact pre-calculated Net Buying Price is saved in Firestore, use it directly!
+  const dbNetPrice = R2(item.buyingNetPrice || item.netCost || item.netPrice || 0);
+  if (dbNetPrice > 0) return dbNetPrice;
+
+  // 2. Fallback: Calculate manually using buying price and discount percent
+  const bp = R2(item.buyingPrice || item.costPrice || item.purchasePrice || 0);
+  const discPercent = getBuyingDiscountPercent(item);
+
+  if (bp <= 0) return 0;
+  if (discPercent > 0) {
+    return R2(bp - (bp * discPercent / 100)); // ශුද්ධ ගැනුම් මිල ගණනය කිරීම
+  }
+  return bp;
+};
 
 const getSellingPrice = (item, mode = 'retail') => {
   if (!item) return 0;
@@ -180,7 +209,7 @@ const getCategory = (i) => i?.category || i?.categoryName || '';
 /* ═══════════════════════════════════════
    STAT CARD COMPONENT
 ═══════════════════════════════════════ */
-const StatCard = ({ icon, title, value, subtitle, color, bgColor }) => (
+const StatCard = React.memo(({ icon, title, value, subtitle, color, bgColor }) => (
   <div style={{
     background: bgColor || 'white',
     padding: '16px 18px',
@@ -199,7 +228,8 @@ const StatCard = ({ icon, title, value, subtitle, color, bgColor }) => (
     <div style={{ fontSize: 22, fontWeight: 900, color: color, marginTop: 4 }}>{value}</div>
     {subtitle && <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>{subtitle}</div>}
   </div>
-);
+));
+StatCard.displayName = 'StatCard';
 
 /* ═══════════════════════════════════════
    MAIN COMPONENT
@@ -253,12 +283,20 @@ export default function StockValuePage() {
   const enrichedItems = useMemo(() => {
     return items.map(item => {
       const stock = getActualStock(item);
-      const cost = getBuyingPrice(item);
+      const cost = getBuyingPrice(item); // exact net buying price is pulled here
       const sellPrice = getYourPrice(item, priceMode);
       const costValue = R2(stock * cost);
       const sellValue = R2(stock * sellPrice);
       const profit = R2(sellValue - costValue);
-      return { ...item, _stock: stock, _cost: cost, _sellPrice: sellPrice, _costValue: costValue, _sellValue: sellValue, _profit: profit };
+      return { 
+        ...item, 
+        _stock: stock, 
+        _cost: cost, 
+        _sellPrice: sellPrice, 
+        _costValue: costValue, 
+        _sellValue: sellValue, 
+        _profit: profit 
+      };
     });
   }, [items, priceMode]);
 
@@ -319,18 +357,18 @@ export default function StockValuePage() {
   }, [filteredItems]);
 
   /* ── Clear filters ── */
-  const clearFilters = () => {
+  const clearFilters = useCallback(() => {
     setSearchText('');
     setFilterCategory('');
     setFilterRack('');
     setFilterStatus('');
     setSortBy('name');
-  };
+  }, []);
 
   const hasFilters = searchText || filterCategory || filterRack || filterStatus || sortBy !== 'name';
 
   /* ── CSV Export ── */
-  const exportCSV = () => {
+  const exportCSV = useCallback(() => {
     if (!filteredItems.length) return;
     const headers = [
       t.itemName, t.code, t.category, t.rack, t.stockQty,
@@ -338,9 +376,9 @@ export default function StockValuePage() {
     ];
     const rows = filteredItems.map(i => [
       `"${(i.name || '').replace(/"/g, '""')}"`,
-      i.itemCode || i.code || '',
-      getCategory(i),
-      getRack(i),
+      `"${i.itemCode || i.code || ''}"`,
+      `"${getCategory(i)}"`,
+      `"${getRack(i)}"`,
       i._stock,
       i._cost,
       i._sellPrice,
@@ -358,11 +396,9 @@ export default function StockValuePage() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-  };
+  }, [filteredItems, t]);
 
-  /* ═══════════════════════════════════════
-     STYLES
-  ═══════════════════════════════════════ */
+  /* ── Styles ── */
   const cardStyle = {
     background: 'white',
     padding: 16,
@@ -381,7 +417,6 @@ export default function StockValuePage() {
     outline: 'none',
   };
 
-  /* ── Loading ── */
   if (loading) {
     return (
       <div style={{ textAlign: 'center', padding: 50 }}>
@@ -396,9 +431,6 @@ export default function StockValuePage() {
     );
   }
 
-  /* ═══════════════════════════════════════
-     RENDER
-  ═══════════════════════════════════════ */
   return (
     <div style={{ maxWidth: 1400, margin: '0 auto', padding: 16 }}>
       {/* Header */}
@@ -558,6 +590,8 @@ export default function StockValuePage() {
             ) : filteredItems.map(item => {
               const zero = item._stock <= 0;
               const low = item._stock > 0 && item._stock <= 5;
+              const discPercent = getBuyingDiscountPercent(item);
+              const hasDiscount = discPercent > 0;
               return (
                 <tr key={item.id} style={{ borderBottom: '1px solid #f1f5f9', background: zero ? '#fef2f2' : low ? '#fffbeb' : 'white' }}>
                   <td style={{ padding: '10px', fontWeight: 600, color: '#0f172a' }}>
@@ -586,7 +620,14 @@ export default function StockValuePage() {
                       {zero ? '🔴' : low ? '🟡' : '🟢'} {fmtQ(item._stock)}
                     </span>
                   </td>
-                  <td style={{ padding: '10px', textAlign: 'right', color: '#64748b' }}>Rs.{fmt(item._cost)}</td>
+                  <td style={{ padding: '10px', textAlign: 'right', color: '#0f172a', fontWeight: 'bold' }}>
+                    Rs.{fmt(item._cost)}
+                    {hasDiscount && (
+                      <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 'bold', marginTop: 3 }}>
+                        🏷️ Disc: {discPercent}%
+                      </div>
+                    )}
+                  </td>
                   <td style={{ padding: '10px', textAlign: 'right', color: '#64748b' }}>Rs.{fmt(item._sellPrice)}</td>
                   <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, color: '#b45309' }}>Rs.{fmt(item._costValue)}</td>
                   <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, color: '#7c3aed' }}>Rs.{fmt(item._sellValue)}</td>
@@ -624,8 +665,8 @@ export default function StockValuePage() {
 
       {/* Footer note */}
       <div style={{ marginTop: 20, padding: 12, background: '#eff6ff', borderRadius: 8, border: '1px solid #bfdbfe', fontSize: 12, color: '#1e40af' }}>
-        💡 <strong>සටහන:</strong> මෙම වටිනාකම් තෝරාගත් <strong>{priceMode === 'retail' ? t.priceRetail : priceMode === 'wholesale' ? t.priceWholesale : t.priceLoose}</strong> මිල අනුව ගණනය කර ඇත.
-        වෙනත් මිල අනුව බැලීමට ඉහළ ඇති <strong>{t.priceMode}</strong> Toggle එක භාවිතා කරන්න.
+        💡 <strong>සටහන:</strong> ගැනුම් මිල ගණනය කර ඇත්තේ ලැබුණු වට්ටම (<strong>Buying Discount % / Discount Received %</strong>) අඩු කිරීමෙන් පසුවය. 
+        එමෙන්ම මෙම වටිනාකම් තෝරාගත් <strong>{priceMode === 'retail' ? t.priceRetail : priceMode === 'wholesale' ? t.priceWholesale : t.priceLoose}</strong> මිල අනුව දළ ලාභය ගණනය කර පෙන්වයි.
       </div>
     </div>
   );
