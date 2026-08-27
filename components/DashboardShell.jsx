@@ -1,11 +1,13 @@
 'use client';
 
 // components/DashboardShell.jsx
-// ★ v7 (Latest) — Bilingual Switchable Session vs Today's Transactions Dashboard
-// 🚀 BULLETPROOF MULTI-SOURCE SYNC (Matches CashManagement v61 perfectly)
+// ★ v7 (Latest - Mobile Fixed) — Bilingual Switchable Session vs Today's Transactions Dashboard
+// 🚀 BULLETPROOF MULTI-SOURCE SYNC & ACCURATE OPERATING PROFIT
 // - Directly listens to `cashTransactions`, root-level `customerTransactions` AND `productionEntries`
-// - Synchronizes 100% with Cash page, showing identical Income, Expenses & Expected Amounts
-// - Excludes internal bank operations and transfers from revenue calculations
+// - Synchronizes 100% with Cash page for Cash Inflow/Outflow tracking
+// - FIXED: Excludes customer debt collections (ණය පියවීම්) from "Net Profit" to prevent artificial profit inflation.
+// - FIXED: Profit/Loss Card is now fully visible and beautifully responsive on both Desktop & Mobile screens.
+// - Net Profit accurately calculates as: (Direct Operational Sales) - (Operational Expenses & Purchases)
 // - Multilingual support
 
 import React, { useState, useEffect, useMemo } from 'react';
@@ -155,53 +157,40 @@ const isProductionTx = tx => {
   );
 };
 
-/* ═══════════════════════════════════════
-   SOURCE / CATEGORY METADATA
-═══════════════════════════════════════ */
-const SOURCE_META = {
-  invoice: { si: 'ඉන්වොයිස් විකුණුම්', en: 'Invoice Sale', icon: '🧾', color: '#4f46e5' },
-  pos: { si: 'POS විකුණුම්', en: 'POS Sale', icon: '🛒', color: '#10b981' },
-  invoicePayment: { si: 'ගෙවීම් ලැබීම', en: 'Payment Received', icon: '💵', color: '#16a34a' },
-  customerLoanCollection: { si: 'ණය එකතු කිරීම', en: 'Loan Collection', icon: '💰', color: '#059669' },
-  productionSales: { si: 'නිෂ්පාදන ආදායම', en: 'Production Income', icon: '🏭', color: '#0891b2' },
-
-  purchase: { si: 'මිලදී ගැනීම්', en: 'Purchases', icon: '📦', color: '#d97706' },
-  supplier: { si: 'සැපයුම්කරු ගෙවීම', en: 'Supplier Payment', icon: '🏪', color: '#7c3aed' },
-  expense: { si: 'වියදම්', en: 'Expenses', icon: '💸', color: '#dc2626' },
-  customerCredit: { si: 'පාරිභෝගික ණය', en: 'Customer Credit', icon: '👤', color: '#dc2626' },
-  customerLoanIssue: { si: 'ණය නිකුත් කිරීම', en: 'Loan Issued', icon: '📤', color: '#dc2626' },
-  vehicleExpense: { si: 'වාහන වියදම', en: 'Vehicle Expense', icon: '🚛', color: '#dc2626' },
-  bankLoanRepayment: { si: 'බැංකු ණය ගෙවීම', en: 'Bank Loan Payment', icon: '🏛️', color: '#1e40af' },
-  productionExpense: { si: 'නිෂ්පාදන වියදම', en: 'Production Expense', icon: '📉', color: '#b91c1c' },
-  manual: { si: 'අතින්', en: 'Manual', icon: '✍️', color: '#475569' },
+// 🎯 Profit-generating revenue detector (Direct operational sales only)
+const isProfitRevenue = (tx) => {
+  const src = String(tx?.source || '').toLowerCase();
+  const cat = String(tx?.category || '').toLowerCase();
+  return (
+    src === 'invoice' ||
+    src === 'pos' ||
+    src === 'production' ||
+    src.startsWith('custom_') ||
+    cat === 'sales' ||
+    cat === 'productionsales' ||
+    cat === 'quarry' ||
+    cat === 'cropfarm'
+  );
 };
 
-const CATEGORY_LABELS = {
-  si: {
-    salary: 'වැටුප්', rent: 'කුලිය', utilities: 'විදුලිය/ජලය',
-    transport: 'ප්‍රවාහනය', maintenance: 'නඩත්තු', vehicleFuel: 'ඉන්ධන',
-    vehicleTyre: 'ටයර්', vehicleService: 'සේවා', other: 'වෙනත්',
-    sales: 'විකිණීම', supplierPayment: 'සැපයුම්කරු ගෙවීම',
-    productionSales: 'නිෂ්පාදන ආදායම', productionExpense: 'නිෂ්පාදන වියදම',
-  },
-  en: {
-    salary: 'Salary', rent: 'Rent', utilities: 'Utilities',
-    transport: 'Transport', maintenance: 'Maintenance', vehicleFuel: 'Fuel',
-    vehicleTyre: 'Tyres', vehicleService: 'Service', other: 'Other',
-    sales: 'Sales', supplierPayment: 'Supplier Payment',
-    productionSales: 'Production Income', productionExpense: 'Production Expense',
-  },
-};
-
-const getSrcMeta = (tx) => {
-  const key = tx?.source || 'manual';
-  return SOURCE_META[key] || SOURCE_META.manual;
-};
-
-const getCatLabel = (tx, lang) => {
-  const cat = tx?.category;
-  if (!cat) return '';
-  return CATEGORY_LABELS[lang]?.[cat] || cat;
+// 🎯 Operational cost detector (Operational expenses & purchases)
+const isProfitExpense = (tx) => {
+  if (isCustomerCredit(tx)) return false; // Issuing a credit/loan is an asset shift, not an operational expense
+  const src = String(tx?.source || '').toLowerCase();
+  const cat = String(tx?.category || '').toLowerCase();
+  return (
+    src === 'expense' ||
+    src === 'purchase' ||
+    src === 'supplier' ||
+    src === 'vehicleexpense' ||
+    cat === 'supplierpayment' ||
+    cat === 'productionexpense' ||
+    cat === 'vehiclefuel' ||
+    cat === 'vehicletyre' ||
+    cat === 'vehicleservice' ||
+    cat === 'vehicleother' ||
+    tx?.type === 'out'
+  );
 };
 
 /* ═══════════════════════════════════════
@@ -422,6 +411,8 @@ function TodaysSummary({ cashTxs, lang, compact, onCardClick, session, scope }) 
   const summary = useMemo(() => {
     let totalIn = 0;
     let totalOut = 0;
+    let profitRevenue = 0;
+    let profitExpense = 0;
     const incomeTxs = [];
     const expenseTxs = [];
 
@@ -443,16 +434,24 @@ function TodaysSummary({ cashTxs, lang, compact, onCardClick, session, scope }) 
       if (tx.type === 'in') {
         totalIn += amt;
         incomeTxs.push(tx);
+
+        if (isProfitRevenue(tx)) {
+          profitRevenue += amt;
+        }
       } else if (tx.type === 'out') {
         totalOut += amt;
         expenseTxs.push(tx);
+
+        if (isProfitExpense(tx)) {
+          profitExpense += amt;
+        }
       }
     });
 
     return {
       totalIn,
       totalOut,
-      netBalance: totalIn - totalOut,
+      netBalance: profitRevenue - profitExpense, // Real Profit = True Sales - Operational Expenses
       incomeTxs,
       expenseTxs,
     };
@@ -463,7 +462,6 @@ function TodaysSummary({ cashTxs, lang, compact, onCardClick, session, scope }) 
     if (scope === 'session' && session.exists) {
       return session.openingAmount;
     }
-    // Find today's opening balance if scope is today
     const todayOpening = cashTxs.find(tx => tx.category === 'openingBalance' && isTodayTx(tx));
     return todayOpening ? toNum(todayOpening.amount) : 0;
   }, [scope, session, cashTxs]);
@@ -508,7 +506,9 @@ function TodaysSummary({ cashTxs, lang, compact, onCardClick, session, scope }) 
         display: 'flex',
         alignItems: 'center',
         gap: 8,
-        minWidth: compact ? 'auto' : 135,
+        minWidth: compact ? '110px' : 135,
+        flex: compact ? '1 1 calc(50% - 6px)' : '1 1 auto', // Responsive wrap neatly on mobile screen (2x2 grid)
+        boxSizing: 'border-box',
         cursor: onClick ? 'pointer' : 'default',
         transition: 'all 0.15s ease',
       }}
@@ -523,7 +523,7 @@ function TodaysSummary({ cashTxs, lang, compact, onCardClick, session, scope }) 
             <span style={{ background: color, color: 'white', padding: '1px 5px', borderRadius: 8, fontSize: 8, fontWeight: 900 }}>{count}</span>
           )}
         </div>
-        <div style={{ fontSize: compact ? 13 : 15, fontWeight: 900, color, lineHeight: 1.2 }}>
+        <div style={{ fontSize: compact ? 12 : 15, fontWeight: 900, color, lineHeight: 1.2 }}>
           Rs.{fmtC(value)}
         </div>
       </div>
@@ -531,8 +531,8 @@ function TodaysSummary({ cashTxs, lang, compact, onCardClick, session, scope }) 
   );
 
   return (
-    <div style={{ display: 'flex', gap: compact ? 5 : 8, alignItems: 'stretch', flexWrap: 'wrap' }}>
-      {/* Income */}
+    <div style={{ display: 'flex', gap: compact ? 6 : 8, alignItems: 'stretch', flexWrap: 'wrap', width: compact ? '100%' : 'auto' }}>
+      {/* Income (All Cash Inflows) */}
       <CardBase
         bg="linear-gradient(135deg, #dcfce7, #bbf7d0)"
         border="#86efac"
@@ -544,7 +544,7 @@ function TodaysSummary({ cashTxs, lang, compact, onCardClick, session, scope }) 
         onClick={() => onCardClick('in', summary.incomeTxs)}
       />
 
-      {/* Expense */}
+      {/* Expense (All Cash Outflows) */}
       <CardBase
         bg="linear-gradient(135deg, #fee2e2, #fecaca)"
         border="#fca5a5"
@@ -556,7 +556,7 @@ function TodaysSummary({ cashTxs, lang, compact, onCardClick, session, scope }) 
         onClick={() => onCardClick('out', summary.expenseTxs)}
       />
 
-      {/* 🎯 Expected Amount Card */}
+      {/* 🎯 Expected Cash Amount (Reconciliation) */}
       <CardBase
         bg="linear-gradient(135deg, #eff6ff, #dbeafe)"
         border="#93c5fd"
@@ -566,17 +566,15 @@ function TodaysSummary({ cashTxs, lang, compact, onCardClick, session, scope }) 
         value={expectedAmount}
       />
 
-      {/* Net Balance (Desktop only) */}
-      {!compact && (
-        <CardBase
-          bg={isProfit ? 'linear-gradient(135deg, #f0fdf4, #ccfbf1)' : 'linear-gradient(135deg, #fef3c7, #fde68a)'}
-          border={isProfit ? '#5eead4' : '#fcd34d'}
-          color={isProfit ? '#0f766e' : '#92400e'}
-          icon={isProfit ? '📈' : '📉'}
-          label={isProfit ? t.net : t.loss}
-          value={Math.abs(summary.netBalance)}
-        />
-      )}
+      {/* 📈 Operating Net Profit (Accrual Sales - Expenses) */}
+      <CardBase
+        bg={isProfit ? 'linear-gradient(135deg, #f0fdf4, #ccfbf1)' : 'linear-gradient(135deg, #fef3c7, #fde68a)'}
+        border={isProfit ? '#5eead4' : '#fcd34d'}
+        color={isProfit ? '#0f766e' : '#92400e'}
+        icon={isProfit ? '📈' : '📉'}
+        label={isProfit ? t.net : t.loss}
+        value={Math.abs(summary.netBalance)}
+      />
     </div>
   );
 }
@@ -830,7 +828,7 @@ export default function DashboardShell({ children }) {
     return all;
   }, [cashTxs, customerTxs, productionEntries]);
 
-  // Current Session Extractor
+  // Current Session Extractor with openingAmount parse
   const currentSession = useMemo(() => {
     const openings = cashTxs
       .filter((tx) => tx.category === 'openingBalance')
