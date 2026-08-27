@@ -1,10 +1,12 @@
 ﻿'use client';
 
 // components/InvoiceList.jsx
+// ✅ Integrated with correct @/firebaseConfig wrapper
+// ✅ InvoiceOutputManager integrated cleanly for receipts
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
-import { db } from '@/lib/firebase';
+import { db } from '@/firebaseConfig'; // ★★★ CORRECTED FIREBASE IMPORT ★★★
 import { useUserAuth } from '@/context/UserContext';
 import {
   collection, query, where, getDocs, getDoc,
@@ -915,4 +917,4 @@ const S = {
   mb:{ position:'relative', width:'100%', maxWidth:480, background:'white', borderTopLeftRadius:20, borderTopRightRadius:20, boxShadow:'0 -8px 32px rgba(0,0,0,0.2)' },
   ls:{ display:'block', fontWeight:700, fontSize:13, color:'#334155', marginBottom:5 },
   greenBtn:{ width:'100%', padding:13, background:'#16a34a', color:'white', border:'none', borderRadius:10, fontWeight:800, fontSize:16, cursor:'pointer' },
-};
+}; 

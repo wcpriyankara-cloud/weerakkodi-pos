@@ -1,21 +1,26 @@
 ﻿'use client';
 
-// components/Customers.jsx
+// components/Customers.jsx  ·  v3
+// ✅ Integrated with separate Customer Loan Management system
 // ✅ Real InvoiceOutputManager import
-// ✅ forceVisibility for balance display
 // ✅ Fresh Firestore balance read
-// ✅ Portal payment support
+// ✅ Portal payment support + Loan Quick Status Link
+// 🚀 FIXED v3: Payments & Credits now sync perfectly with Cash & Bank Register
+//    - Timestamp.now() added (client-side ms → instant filter match)
+//    - 24-hour time format (HH:mm) for reliable parsing
+//    - Extra compatibility fields (note, createdBy)
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { db } from '@/shared/firebase-config';
+import { db } from '@/firebaseConfig';
 import { useUserAuth } from '@/context/UserContext';
 import {
   collection, query, where,
   addDoc, updateDoc, doc, getDocs, getDoc,
   serverTimestamp, increment, onSnapshot,
+  Timestamp,               // ★★★ NEW: required for client-side timestamp
 } from 'firebase/firestore';
 
-// ✅ REAL InvoiceOutputManager — not debug version
+// ✅ REAL InvoiceOutputManager
 import InvoiceOutputManager from './InvoiceOutputManager';
 
 /* ════════════════════════════════════════
@@ -31,6 +36,20 @@ const fmt = (v) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+// ★★★ NEW: 24-hour format (HH:mm) — CashManagement parses this reliably
+const nowHHMM24 = () => {
+  const d = new Date();
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+
+// ★★★ NEW: Local date string (YYYY-MM-DD) — avoids UTC offset bugs
+const localDateStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+};
 
 const slugify = (s) =>
   String(s || 'customer').toLowerCase().trim()
@@ -89,7 +108,9 @@ const T = {
     creditNote: 'ණය විස්තරය (Optional)', addCredit: 'ණය ඇතුළු කරන්න',
     newBalance: 'නව ශේෂය', currentBalance: 'වත්මන් ශේෂය',
     creditInfoMsg: 'Cash Management හි "ණය (OUT)" ලෙස පෙනෙනු ඇත.',
+    paymentInfoMsg: 'Cash & Bank Register හි "ලැබීම (IN)" ලෙස ස්වයංක්‍රීයව සටහන් වේ.',
     fetchingBalance: 'Balance ලබාගනිමින්...',
+    activeLoan: '💰 සක්‍රීය ණයක් ඇත',
   },
   en: {
     title: 'Customers', addNew: 'New Customer', refresh: '🔄 Refresh',
@@ -113,12 +134,14 @@ const T = {
     creditNote: 'Credit Description (Optional)', addCredit: 'Add Credit',
     newBalance: 'New Balance', currentBalance: 'Current Balance',
     creditInfoMsg: 'Will appear as "Credit (OUT)" in Cash Management.',
+    paymentInfoMsg: 'Automatically recorded as "Cash In" in Cash & Bank Register.',
     fetchingBalance: 'Fetching balance...',
+    activeLoan: '💰 Active Loan Exist',
   },
 };
 
 /* ════════════════════════════════════════
-   PAYMENT MODAL
+   PAYMENT MODAL  ★★★ FIXED CASH SYNC ★★★
 ════════════════════════════════════════ */
 function PaymentModal({ customer, onClose, onSuccess, t, user }) {
   const [amount,      setAmount     ] = useState('');
@@ -128,7 +151,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
   const [freshBal,    setFreshBal   ] = useState(null);
   const [fetchingBal, setFetchingBal] = useState(true);
 
-  /* ★★★ Read FRESH balance from Firestore at modal open ★★★ */
   useEffect(() => {
     let active = true;
     (async () => {
@@ -161,34 +183,100 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
     const payAmt = nn(amount);
     if (payAmt <= 0) return alert(t.amountReceived);
     if (fetchingBal) return alert('Balance loading...');
+    if (!user?.uid) return alert(t.loginRequired);
 
-    /* ★★★ Capture before any awaits ★★★ */
     const prevBal = currentBal;
     const newBal  = prevBal - payAmt;
 
     setSaving(true);
     try {
-      const refNo   = `PAY${Date.now().toString(36).toUpperCase().slice(-8)}`;
-      const date    = new Date().toISOString().split('T')[0];
-      const now     = new Date();
-      const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+      const refNo    = `PAY${Date.now().toString(36).toUpperCase().slice(-8)}`;
+      const dateStr  = localDateStr();          // ★ Local date (no UTC shift)
+      const timeStr  = nowHHMM24();             // ★ 24-hour format "14:35"
+      const nowTs    = Timestamp.now();         // ★★★ CRITICAL: client-side ms
+      const now      = new Date();
 
-      await addDoc(collection(db, 'customerTransactions'), {
-        uid: user.uid, customerId: customer.id,
-        customerName: customer.name || '', customerPhone: customer.phone || '',
-        type: 'payment', amount: payAmt, method,
-        note: note || '', status: 'confirmed',
-        createdAt: serverTimestamp(), date, time: timeStr,
+      /* ── 1. Customer transaction record ── */
+      const cusTxnRef = await addDoc(collection(db, 'customerTransactions'), {
+        uid: user.uid,
+        customerId: customer.id,
+        customerName: customer.name || '',
+        customerPhone: customer.phone || '',
+        type: 'payment',
+        amount: payAmt,
+        method,
+        note: note || '',
+        status: 'confirmed',
+        refNo,
+        createdAt: serverTimestamp(),
+        timestamp: nowTs,
+        date: dateStr,
+        time: timeStr,
       });
 
+      /* ── 2. Update customer outstanding balance ── */
       await updateDoc(doc(db, 'customers', customer.id), {
         currentBalance: increment(-payAmt),
+        lastPaymentAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+      });
+
+      /* ── 3. ★★★ CRITICAL SYNC → Cash & Bank Register (type: 'in') ★★★ ── */
+      await addDoc(collection(db, `users/${user.uid}/cashTransactions`), {
+        type: 'in',
+        source: 'invoicePayment',
+        category: 'invoicePayment',
+        description: `💵 පාරිභෝගික ගෙවීම් ලැබීම [${customer.name || 'Customer'}]${note ? ' | ' + note : ''}`,
+        amount: payAmt,
+        paymentMethod: method,               // cash | bank | card | cheque
+        customerId: customer.id,
+        customerName: customer.name || '',
+        customerPhone: customer.phone || '',
+        customerTxnId: cusTxnRef.id,
+        reference: refNo,
+        notes: note || '',
+        note: note || '',
+        previousOutstanding: prevBal,
+        newOutstanding: newBal,
+        date: dateStr,
+        time: timeStr,
+        timestamp: nowTs,                    // ★★★ THE FIX ★★★
+        createdAt: serverTimestamp(),
+        createdBy: user?.email || '',
+        uid: user.uid,
+        isAutomatic: true,
+      });
+
+      /* ── 4. If bank payment → also record in bankTransactions (optional) ── */
+      if (method === 'bank' && customer.defaultBankAccountId) {
+        try {
+          await addDoc(collection(db, `users/${user.uid}/bankTransactions`), {
+            type: 'deposit',
+            source: 'invoicePayment',
+            category: 'invoicePayment',
+            accountId: customer.defaultBankAccountId,
+            amount: payAmt,
+            description: `පාරිභෝගික ගෙවීම — ${customer.name}`,
+            reference: refNo,
+            date: nowTs,
+            createdAt: serverTimestamp(),
+          });
+          await updateDoc(doc(db, `users/${user.uid}/bankAccounts`, customer.defaultBankAccountId), {
+            currentBalance: increment(payAmt),
+            liveBalance: increment(payAmt),
+            updatedAt: serverTimestamp(),
+          });
+        } catch (bankErr) {
+          console.warn('Bank sync skipped:', bankErr.message);
+        }
+      }
+
+      console.log('[Customers] ✅ Payment synced to cashTransactions:', {
+        amount: payAmt, date: dateStr, time: timeStr, source: 'invoicePayment',
       });
 
       const methodMap = { cash: 'cash', bank: 'etransfer', card: 'card', cheque: 'cheque', online: 'etransfer' };
 
-      /* ★★★ INLINE SYNTHETIC INVOICE ★★★ */
       const synthetic = {
         _isReceipt:   true,
         _receiptType: 'payment',
@@ -214,13 +302,12 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
         paymentMethod: methodMap[method] || 'cash',
         remarks: note || '', invoiceRemark: note || '',
 
-        /* ★★★ CRITICAL BALANCE VALUES ★★★ */
         previousOutstanding:    prevBal,
         newOutstanding:         newBal,
         customerCurrentBalance: newBal,
 
         createdAt: { toDate: () => now },
-        date, status: 'completed', type: 'receipt',
+        date: dateStr, status: 'completed', type: 'receipt',
         _collection: 'customerTransactions',
       };
 
@@ -242,7 +329,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
         </div>
         <div style={{ padding: '10px 0 20px' }}>
 
-          {/* Customer info */}
           <div style={{ marginBottom: 16, padding: 14, background: '#f0fdf4', borderRadius: 12, border: '1px solid #bbf7d0' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               {customer.profilePicture ? (
@@ -267,7 +353,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
             </div>
           </div>
 
-          {/* Amount */}
           <div style={{ marginBottom: 14 }}>
             <label style={S.label}>{t.amountReceived} *</label>
             <input
@@ -297,7 +382,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
             )}
           </div>
 
-          {/* Method */}
           <div style={{ marginBottom: 14 }}>
             <label style={S.label}>{t.paymentMethod}</label>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6 }}>
@@ -320,18 +404,21 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
             </div>
           </div>
 
-          {/* Note */}
-          <div style={{ marginBottom: 18 }}>
+          <div style={{ marginBottom: 14 }}>
             <label style={S.label}>{t.paymentNote}</label>
             <input type="text" value={note} onChange={(e) => setNote(e.target.value)}
               style={S.input} placeholder="ගෙවීම් විස්තරය..." />
+          </div>
+
+          <div style={{ marginBottom: 16, padding: '10px 14px', background: '#eff6ff', borderRadius: 10, border: '1px solid #bfdbfe', fontSize: 12, color: '#1e40af' }}>
+            ℹ️ {t.paymentInfoMsg}
           </div>
 
           <div style={{ display: 'flex', gap: 10 }}>
             <button onClick={onClose} style={S.cancelBtn}>{t.cancel}</button>
             <button onClick={handleSave} disabled={saving || nn(amount) <= 0 || fetchingBal}
               style={{ ...S.saveBtn, opacity: (saving || nn(amount) <= 0 || fetchingBal) ? 0.6 : 1 }}>
-              {saving ? '⏳...' : fetchingBal ? '⏳...' : `💰 ${t.receiveNow}`}
+              {saving ? '⏳ සුරකිමින්...' : fetchingBal ? '⏳...' : `💰 ${t.receiveNow}`}
             </button>
           </div>
         </div>
@@ -341,7 +428,7 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
 }
 
 /* ════════════════════════════════════════
-   CREDIT MODAL
+   CREDIT MODAL  ★★★ FIXED CASH SYNC ★★★
 ════════════════════════════════════════ */
 function CreditModal({ customer, onClose, onSuccess, t, user }) {
   const [amount,      setAmount     ] = useState('');
@@ -350,7 +437,6 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
   const [freshBal,    setFreshBal   ] = useState(null);
   const [fetchingBal, setFetchingBal] = useState(true);
 
-  /* ★★★ Fresh balance from Firestore ★★★ */
   useEffect(() => {
     let active = true;
     (async () => {
@@ -374,43 +460,74 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
     const creditAmt = nn(amount);
     if (creditAmt <= 0) return alert('Enter valid amount');
     if (fetchingBal) return alert('Balance loading...');
+    if (!user?.uid) return alert(t.loginRequired);
 
-    /* ★★★ Capture before awaits ★★★ */
     const prevBal = currentBal;
     const newBal  = prevBal + creditAmt;
 
     setSaving(true);
     try {
       const refNo   = `CRD${Date.now().toString(36).toUpperCase().slice(-8)}`;
-      const date    = new Date().toISOString().split('T')[0];
+      const dateStr = localDateStr();
+      const timeStr = nowHHMM24();
+      const nowTs   = Timestamp.now();        // ★★★ CRITICAL
       const now     = new Date();
-      const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
 
+      /* ── 1. Customer transaction record ── */
       const cusTxnRef = await addDoc(collection(db, 'customerTransactions'), {
-        uid: user.uid, customerId: customer.id,
-        customerName: customer.name || '', customerPhone: customer.phone || '',
-        type: 'credit', amount: creditAmt,
-        note: note || t.addCreditTitle, status: 'confirmed',
-        source: 'manual_credit', createdAt: serverTimestamp(),
-        date, time: timeStr, createdBy: user.email || 'Unknown',
+        uid: user.uid,
+        customerId: customer.id,
+        customerName: customer.name || '',
+        customerPhone: customer.phone || '',
+        type: 'credit',
+        amount: creditAmt,
+        note: note || t.addCreditTitle,
+        status: 'confirmed',
+        source: 'manual_credit',
+        refNo,
+        createdAt: serverTimestamp(),
+        timestamp: nowTs,
+        date: dateStr,
+        time: timeStr,
+        createdBy: user.email || 'Unknown',
       });
 
+      /* ── 2. Update balance ── */
       await updateDoc(doc(db, 'customers', customer.id), {
         currentBalance: increment(creditAmt),
         updatedAt: serverTimestamp(),
       });
 
+      /* ── 3. ★★★ Cash Register sync (type: 'out') ★★★ ── */
       await addDoc(collection(db, `users/${user.uid}/cashTransactions`), {
-        type: 'out', source: 'customerCredit', category: 'customerCredit',
-        description: `👤 ${customer.name} — ණය${note ? ' | ' + note : ''}`,
-        amount: creditAmt, paymentMethod: 'credit',
-        customerId: customer.id, customerName: customer.name || '',
-        customerPhone: customer.phone || '', customerTxnId: cusTxnRef.id,
-        notes: note || '', date, time: timeStr,
-        createdAt: serverTimestamp(), uid: user.uid, isAutomatic: true,
+        type: 'out',
+        source: 'customerCredit',
+        category: 'customerCredit',
+        description: `👤 ${customer.name || 'Customer'} — ණය ලබාදීම${note ? ' | ' + note : ''}`,
+        amount: creditAmt,
+        paymentMethod: 'credit',
+        customerId: customer.id,
+        customerName: customer.name || '',
+        customerPhone: customer.phone || '',
+        customerTxnId: cusTxnRef.id,
+        reference: refNo,
+        notes: note || '',
+        note: note || '',
+        previousOutstanding: prevBal,
+        newOutstanding: newBal,
+        date: dateStr,
+        time: timeStr,
+        timestamp: nowTs,                     // ★★★ THE FIX ★★★
+        createdAt: serverTimestamp(),
+        createdBy: user?.email || '',
+        uid: user.uid,
+        isAutomatic: true,
       });
 
-      /* ★★★ INLINE SYNTHETIC INVOICE ★★★ */
+      console.log('[Customers] ✅ Credit synced to cashTransactions:', {
+        amount: creditAmt, date: dateStr, time: timeStr, source: 'customerCredit',
+      });
+
       const synthetic = {
         _isReceipt:   true,
         _receiptType: 'credit',
@@ -436,13 +553,12 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
         paymentMethod: 'credit',
         remarks: note || '', invoiceRemark: note || '',
 
-        /* ★★★ CRITICAL BALANCE VALUES ★★★ */
         previousOutstanding:    prevBal,
         newOutstanding:         newBal,
         customerCurrentBalance: newBal,
 
         createdAt: { toDate: () => now },
-        date, status: 'completed', type: 'receipt',
+        date: dateStr, status: 'completed', type: 'receipt',
         _collection: 'customerTransactions',
       };
 
@@ -464,7 +580,6 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
         </div>
         <div style={{ padding: '10px 0 20px' }}>
 
-          {/* Customer info */}
           <div style={{ marginBottom: 16, padding: 14, background: '#fef2f2', borderRadius: 12, border: '1px solid #fecaca' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               {customer.profilePicture ? (
@@ -491,7 +606,6 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
             </div>
           </div>
 
-          {/* Amount */}
           <div style={{ marginBottom: 14 }}>
             <label style={S.label}>{t.creditAmount} *</label>
             <input
@@ -523,62 +637,10 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
             <button onClick={onClose} style={S.cancelBtn}>{t.cancel}</button>
             <button onClick={handleSave} disabled={saving || nn(amount) <= 0 || fetchingBal}
               style={{ ...S.saveBtn, background: 'linear-gradient(135deg,#dc2626,#b91c1c)', opacity: (saving || nn(amount) <= 0 || fetchingBal) ? 0.6 : 1 }}>
-              {saving ? '⏳...' : fetchingBal ? '⏳...' : `➕ ${t.addCredit}`}
+              {saving ? '⏳ සුරකිමින්...' : fetchingBal ? '⏳...' : `➕ ${t.addCredit}`}
             </button>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════
-   RENTAL MODAL
-════════════════════════════════════════ */
-function RentalModal({ customer, onClose, lang }) {
-  const { user } = useUserAuth();
-  const [rentals, setRentals] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!user?.uid || !customer?.id) return;
-    const q = query(
-      collection(db, 'rentalBookings'),
-      where('uid', '==', user.uid),
-      where('customerId', '==', customer.id)
-    );
-    const unsub = onSnapshot(q, snap => {
-      setRentals(snap.docs.map(d => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
-      setLoading(false);
-    }, () => setLoading(false));
-    return () => unsub();
-  }, [user?.uid, customer?.id]);
-
-  return (
-    <div style={S.overlay}>
-      <div style={{ ...S.modal, maxWidth: 700 }}>
-        <div style={S.modalHead}>
-          <h3 style={{ margin: 0 }}>🏗️ {lang === 'si' ? 'කුලී ඉතිහාසය' : 'Rental History'}</h3>
-          <button onClick={onClose} style={S.closeBtn}>✕</button>
-        </div>
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: 30 }}>⏳</div>
-        ) : rentals.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: 30, color: '#94a3b8' }}>
-            📭 {lang === 'si' ? 'කුලී ඉතිහාසය නොමැත' : 'No rental history'}
-          </div>
-        ) : (
-          <div style={{ display: 'grid', gap: 10 }}>
-            {rentals.map(r => (
-              <div key={r.id} style={{ background: '#f8fafc', padding: 14, borderRadius: 12, border: '1px solid #e2e8f0' }}>
-                <div style={{ fontWeight: 700 }}>📦 {r.itemName || '-'}</div>
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>📅 {r.startDate} → {r.expectedReturnDate}</div>
-                <div style={{ fontSize: 14, fontWeight: 700, marginTop: 6 }}>Rs.{fmt(nn(r.totalAmount))}</div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -592,6 +654,7 @@ export default function Customers({ lang = 'si' }) {
   const { user, loading: authLoading } = useUserAuth();
 
   const [customers,      setCustomers    ] = useState([]);
+  const [activeLoans,    setActiveLoans  ] = useState([]);
   const [loading,        setLoading      ] = useState(true);
   const [lastFetchTs,    setLastFetchTs  ] = useState(0);
   const [fetchErrMsg,    setFetchErrMsg  ] = useState('');
@@ -609,9 +672,7 @@ export default function Customers({ lang = 'si' }) {
 
   const [paymentCust,   setPaymentCust  ] = useState(null);
   const [creditCust,    setCreditCust   ] = useState(null);
-  const [rentalCust,    setRentalCust   ] = useState(null);
 
-  /* ★★★ outputInvoice for InvoiceOutputManager ★★★ */
   const [outputInvoice, setOutputInvoice] = useState(null);
 
   /* ── Fetch customers ── */
@@ -651,6 +712,20 @@ export default function Customers({ lang = 'si' }) {
     }
   }, [user?.uid, t.quotaMsg, t.offlineMsg]);
 
+  /* ── Realtime Sync: Active Loans ── */
+  useEffect(() => {
+    if (!user?.uid) return;
+    const q = query(
+      collection(db, `users/${user.uid}/customerLoans`),
+      where('status', '==', 'active')
+    );
+    const unsub = onSnapshot(q,
+      snap => setActiveLoans(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+      err  => console.warn('Loans listener:', err.message)
+    );
+    return () => unsub();
+  }, [user?.uid]);
+
   useEffect(() => { if (!authLoading) fetchCustomers(); }, [authLoading, fetchCustomers]);
 
   /* ── Add customer ── */
@@ -679,6 +754,17 @@ export default function Customers({ lang = 'si' }) {
     finally { setIsSaving(false); }
   };
 
+  /* ── Active Loan finder ── */
+  const getCustomerActiveLoan = useCallback((phone) => {
+    if (!phone) return null;
+    const cleanPhone = phone.replace(/\s+/g, '');
+    return activeLoans.find(loan => {
+      const loanPhone = (loan.customerPhone || '').replace(/\s+/g, '');
+      if (!loanPhone) return false;
+      return loanPhone.includes(cleanPhone) || cleanPhone.includes(loanPhone);
+    });
+  }, [activeLoans]);
+
   /* ── Stats ── */
   const stats = useMemo(() => ({
     total:      customers.length,
@@ -702,15 +788,15 @@ export default function Customers({ lang = 'si' }) {
     return res;
   }, [customers, searchTerm, showCreditOnly, sortBy]);
 
-  const totalPages = Math.ceil(filtered.length / perPage);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
   const paged = useMemo(() => filtered.slice((page - 1) * perPage, page * perPage), [filtered, page, perPage]);
   useEffect(() => { setPage(1); }, [searchTerm, showCreditOnly, sortBy, perPage]);
 
   const BalBadge = ({ bal }) => {
     const b = nn(bal);
     if (b > 0.01)  return <div style={{ fontWeight: 800, color: '#dc2626', fontSize: 16 }}>Rs.{fmt(b)}</div>;
-    if (b < -0.01) return <div style={{ fontWeight: 800, color: '#2563eb', fontSize: 14 }}>-Rs.{fmt(Math.abs(b))} <span style={{ fontSize: 10, background: '#eff6ff', color: '#2563eb', padding: '1px 5px', borderRadius: 8 }}>💰{t.overpaid}</span></div>;
-    return <div style={{ fontWeight: 600, color: '#16a34a', fontSize: 13, background: '#dcfce7', padding: '4px 12px', borderRadius: 20 }}>✅ {t.settled}</div>;
+    if (b < -0.01) return <div style={{ fontWeight: 800, color: '#2563eb', fontSize: 14 }}>-Rs.{fmt(Math.abs(b))} <span style={{ fontSize: 10, background: '#eff6ff', color: '#2563eb', padding: '1px 5px', borderRadius: 8 }}>💰 {t.overpaid}</span></div>;
+    return <div style={{ fontWeight: 600, color: '#16a34a', fontSize: 13, background: '#dcfce7', padding: '4px 12px', borderRadius: 20, display: 'inline-block' }}>✅ {t.settled}</div>;
   };
 
   if (authLoading || loading) return (
@@ -721,21 +807,19 @@ export default function Customers({ lang = 'si' }) {
     </div>
   );
 
-  /* ════════════════════════════════════════
-     RENDER
-  ════════════════════════════════════════ */
   return (
     <div style={S.container}>
 
-      {/* ★★★ REAL InvoiceOutputManager with forceVisibility ★★★ */}
-     {outputInvoice && (
-  <InvoiceOutputManager
-    invoice={outputInvoice}
-    initialMode="whatsapp"
-    onClose={() => setOutputInvoice(null)}
-  />
-)}
-      {/* Modals */}
+      {/* Invoice Receipt Output */}
+      {outputInvoice && (
+        <InvoiceOutputManager
+          invoice={outputInvoice}
+          initialMode="whatsapp"
+          onClose={() => setOutputInvoice(null)}
+        />
+      )}
+
+      {/* Payment Modal */}
       {paymentCust && (
         <PaymentModal
           customer={paymentCust} t={t} user={user}
@@ -749,6 +833,7 @@ export default function Customers({ lang = 'si' }) {
         />
       )}
 
+      {/* Credit Modal */}
       {creditCust && (
         <CreditModal
           customer={creditCust} t={t} user={user}
@@ -762,11 +847,7 @@ export default function Customers({ lang = 'si' }) {
         />
       )}
 
-      {rentalCust && (
-        <RentalModal customer={rentalCust} lang={lang} onClose={() => setRentalCust(null)} />
-      )}
-
-      {/* ── Header ── */}
+      {/* Header */}
       <div style={S.header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 28 }}>👥</span>
@@ -784,7 +865,6 @@ export default function Customers({ lang = 'si' }) {
         </div>
       </div>
 
-      {/* Error banner */}
       {fetchErrMsg && (
         <div style={{ background: '#fef3c7', border: '1px solid #fde068', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#92400e', fontWeight: 600 }}>
           {fetchErrMsg}
@@ -793,11 +873,11 @@ export default function Customers({ lang = 'si' }) {
 
       {lastFetchTs > 0 && (
         <div style={{ fontSize: 11, color: '#94a3b8', textAlign: 'right', marginBottom: 8 }}>
-          ⏱️ {t.lastUpdated}: {new Date(lastFetchTs).toLocaleTimeString()} | 📦 {customers.length}
+          ⏱️ {t.lastUpdated}: {new Date(lastFetchTs).toLocaleTimeString()}
         </div>
       )}
 
-      {/* Stats */}
+      {/* Stats Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(155px,1fr))', gap: 10, marginBottom: 16 }}>
         {[
           { bg: 'linear-gradient(135deg,#fef2f2,#fee2e2)', bc: '#fca5a5', tc: '#991b1b', vc: '#dc2626', icon: '💸', label: t.totalReceivables, value: `Rs.${fmt(stats.totalRec)}` },
@@ -848,7 +928,7 @@ export default function Customers({ lang = 'si' }) {
         {t.showing} {paged.length} {t.of} {filtered.length}
       </div>
 
-      {/* Table view */}
+      {/* TABLE VIEW */}
       {viewMode === 'table' && (
         <div style={{ overflowX: 'auto', borderRadius: 12, border: '1px solid #e2e8f0', background: 'white' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
@@ -867,87 +947,115 @@ export default function Customers({ lang = 'si' }) {
                   <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div>
                   <div>{t.noData}</div>
                 </td></tr>
-              ) : paged.map((cus, idx) => (
-                <tr key={cus.id}
-                  style={{ borderBottom: '1px solid #f1f5f9', transition: 'background 0.15s' }}
-                  onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
-                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                >
-                  <td style={S.td}>{(page - 1) * perPage + idx + 1}</td>
-                  <td style={S.td}>
-                    {cus.profilePicture ? (
-                      <img src={cus.profilePicture} style={{ width: 42, height: 42, borderRadius: '50%', objectFit: 'cover', border: '2px solid #e2e8f0' }} alt="" />
-                    ) : (
-                      <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'linear-gradient(135deg,#3b82f6,#6366f1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: 'white', fontSize: 16 }}>
-                        {(cus.name || '?')[0].toUpperCase()}
+              ) : paged.map((cus, idx) => {
+                const activeLoan = getCustomerActiveLoan(cus.phone);
+                return (
+                  <tr key={cus.id}
+                    style={{ borderBottom: '1px solid #f1f5f9', transition: 'background 0.15s' }}
+                    onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                  >
+                    <td style={S.td}>{(page - 1) * perPage + idx + 1}</td>
+                    <td style={S.td}>
+                      {cus.profilePicture ? (
+                        <img src={cus.profilePicture} style={{ width: 42, height: 42, borderRadius: '50%', objectFit: 'cover', border: '2px solid #e2e8f0' }} alt="" />
+                      ) : (
+                        <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'linear-gradient(135deg,#3b82f6,#6366f1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: 'white', fontSize: 16 }}>
+                          {(cus.name || '?')[0].toUpperCase()}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ ...S.td, cursor: 'pointer' }} onClick={() => window.location.href = `/customers/${cus.id}`}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 700, color: '#1e293b', fontSize: 15 }}>{cus.name}</span>
+                        {activeLoan && (
+                          <span 
+                            onClick={(e) => { e.stopPropagation(); window.location.href = '/loans'; }}
+                            style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #86efac', padding: '2px 6px', borderRadius: 6, fontSize: 10, fontWeight: 800, cursor: 'pointer' }}
+                            title={`Remaining: Rs.${fmt(activeLoan.remainingBalance)}`}
+                          >
+                            {t.activeLoan}
+                          </span>
+                        )}
                       </div>
-                    )}
-                  </td>
-                  <td style={{ ...S.td, cursor: 'pointer' }} onClick={() => window.location.href = `/customers/${cus.id}`}>
-                    <div style={{ fontWeight: 700, color: '#1e293b', fontSize: 15 }}>{cus.name}</div>
-                    {cus.email && <div style={{ fontSize: 11, color: '#94a3b8' }}>📧 {cus.email}</div>}
-                  </td>
-                  <td style={S.td}>{cus.phone || '-'}</td>
-                  <td style={S.td}>{cus.address || '-'}</td>
-                  <td style={{ ...S.td, textAlign: 'right' }}><BalBadge bal={cus.currentBalance} /></td>
-                  <td style={{ ...S.td, textAlign: 'center' }}>
-                    <div style={{ display: 'flex', justifyContent: 'center', gap: 6 }}>
-                      <button
-                        onClick={e => { e.stopPropagation(); setCreditCust(cus); }}
-                        style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5', whiteSpace: 'nowrap' }}>
-                        ➕ {t.addCreditTitle}
-                      </button>
-                      <button
-                        onClick={e => { e.stopPropagation(); setPaymentCust(cus); }}
-                        style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#dcfce7', color: '#16a34a', border: '1px solid #86efac', whiteSpace: 'nowrap' }}>
-                        💰 {t.receivePayment}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                      {cus.email && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>📧 {cus.email}</div>}
+                    </td>
+                    <td style={S.td}>{cus.phone || '-'}</td>
+                    <td style={S.td}>{cus.address || '-'}</td>
+                    <td style={{ ...S.td, textAlign: 'right' }}><BalBadge bal={cus.currentBalance} /></td>
+                    <td style={{ ...S.td, textAlign: 'center' }}>
+                      <div style={{ display: 'flex', justifyContent: 'center', gap: 6 }}>
+                        <button
+                          onClick={e => { e.stopPropagation(); setCreditCust(cus); }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5', whiteSpace: 'nowrap' }}>
+                          ➕ {t.addCreditTitle}
+                        </button>
+                        <button
+                          onClick={e => { e.stopPropagation(); setPaymentCust(cus); }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#dcfce7', color: '#16a34a', border: '1px solid #86efac', whiteSpace: 'nowrap' }}>
+                          💰 {t.receivePayment}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* Cards view */}
+      {/* CARDS VIEW */}
       {viewMode === 'cards' && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(320px,1fr))', gap: 12 }}>
           {paged.length === 0 ? (
             <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: 50, color: '#94a3b8' }}>
               <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div><div>{t.noData}</div>
             </div>
-          ) : paged.map(cus => (
-            <div key={cus.id} style={{ background: 'white', borderRadius: 14, padding: 16, border: '1px solid #e2e8f0', borderLeft: `5px solid ${nn(cus.currentBalance) > 0.01 ? '#dc2626' : nn(cus.currentBalance) < -0.01 ? '#2563eb' : '#16a34a'}` }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, cursor: 'pointer' }}
-                onClick={() => window.location.href = `/customers/${cus.id}`}>
-                {cus.profilePicture ? (
-                  <img src={cus.profilePicture} style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover' }} alt="" />
-                ) : (
-                  <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'linear-gradient(135deg,#3b82f6,#6366f1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: 'white', fontSize: 20 }}>
-                    {(cus.name || '?')[0].toUpperCase()}
+          ) : paged.map(cus => {
+            const activeLoan = getCustomerActiveLoan(cus.phone);
+            return (
+              <div key={cus.id} style={{ background: 'white', borderRadius: 14, padding: 16, border: '1px solid #e2e8f0', borderLeft: `5px solid ${nn(cus.currentBalance) > 0.01 ? '#dc2626' : nn(cus.currentBalance) < -0.01 ? '#2563eb' : '#16a34a'}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, cursor: 'pointer' }}
+                  onClick={() => window.location.href = `/customers/${cus.id}`}>
+                  {cus.profilePicture ? (
+                    <img src={cus.profilePicture} style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover' }} alt="" />
+                  ) : (
+                    <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'linear-gradient(135deg,#3b82f6,#6366f1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: 'white', fontSize: 20 }}>
+                      {(cus.name || '?')[0].toUpperCase()}
+                    </div>
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 16, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cus.name}</div>
+                    <div style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>{cus.phone || '-'}</div>
+                  </div>
+                  <BalBadge bal={cus.currentBalance} />
+                </div>
+                
+                {activeLoan && (
+                  <div 
+                    onClick={() => window.location.href = '/loans'}
+                    style={{ marginBottom: 10, padding: '8px 12px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 10, fontSize: 11, fontWeight: 700, color: '#16a34a', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+                  >
+                    <span>💸 {t.activeLoan} ({activeLoan.collectionMethod?.toUpperCase() || '-'})</span>
+                    <span>Rs.{fmt(activeLoan.remainingBalance)} ➡️</span>
                   </div>
                 )}
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, fontSize: 16, color: '#1e293b' }}>{cus.name}</div>
-                  <div style={{ fontSize: 13, color: '#64748b' }}>{cus.phone || '-'}</div>
+
+                {cus.address && <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>📍 {cus.address}</div>}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button onClick={e => { e.stopPropagation(); setCreditCust(cus); }}
+                    style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #fca5a5', background: '#fef2f2', color: '#dc2626', fontSize: 13, cursor: 'pointer', fontWeight: 700 }}>
+                    ➕ {t.addCreditTitle}
+                  </button>
+                  <button onClick={e => { e.stopPropagation(); setPaymentCust(cus); }}
+                    style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #86efac', background: '#dcfce7', color: '#16a34a', fontSize: 13, cursor: 'pointer', fontWeight: 700 }}>
+                    💰 {t.receivePayment}
+                  </button>
                 </div>
-                <BalBadge bal={cus.currentBalance} />
               </div>
-              {cus.address && <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>📍 {cus.address}</div>}
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button onClick={e => { e.stopPropagation(); setCreditCust(cus); }}
-                  style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #fca5a5', background: '#fef2f2', color: '#dc2626', fontSize: 13, cursor: 'pointer', fontWeight: 700 }}>
-                  ➕ {t.addCreditTitle}
-                </button>
-                <button onClick={e => { e.stopPropagation(); setPaymentCust(cus); }}
-                  style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #86efac', background: '#dcfce7', color: '#16a34a', fontSize: 13, cursor: 'pointer', fontWeight: 700 }}>
-                  💰 {t.receivePayment}
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

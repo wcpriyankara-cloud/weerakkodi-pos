@@ -6,7 +6,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useUserAuth } from '@/context/UserContext';
-import { BUSINESS_TYPES } from './production/constants';
+import { BUSINESS_TYPES } from '@/components/production/constants';
 
 const TEXT = {
   si: {
@@ -15,7 +15,7 @@ const TEXT = {
     sales:           'විකුණුම්',
     operations:      'මෙහෙයුම්',
     management:      'කළමනාකරණය',
-    finance:         'මුල්‍ය',
+    finance:         'මුදල් පොත',
     production:      'නිෂ්පාදනය',
     pos:             'POS',
     invoices:        'ඉන්වොයිස්',
@@ -41,6 +41,7 @@ const TEXT = {
     english:         'English',
     sinhala:         'සිංහල',
     allProduction:   'සියලු නිෂ්පාදන',
+    cashManagement:  'මුදල් පොත (Cash)',
   },
   en: {
     appName:         'Weerakkodi POS',
@@ -74,6 +75,7 @@ const TEXT = {
     english:         'English',
     sinhala:         'Sinhala',
     allProduction:   'All Production',
+    cashManagement:  'Cash Book',
   },
 };
 
@@ -122,7 +124,8 @@ function getMenu(t) {
     {
       section: t.finance,
       items: [
-        { href: '/expenses', label: t.expenses, icon: '💰' },
+        { href: '/cash-management', label: t.cashManagement, icon: '💵' },
+        { href: '/expenses',        label: t.expenses,       icon: '💰' },
       ],
     },
     {
