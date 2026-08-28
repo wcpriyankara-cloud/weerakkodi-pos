@@ -1,6 +1,10 @@
 'use client';
 
 // components/Sidebar.jsx
+// ═══════════════════════════════════════════════════════════
+// v28.3 — Fixed App-Wide Real-Time Language Broadcasting Sync
+//        + Production/Catalog Submenus + Mobile Responsive Controls
+// ═══════════════════════════════════════════════════════════
 
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -537,7 +541,7 @@ function ProductionSubmenu({ item, active, collapsed, onClick, lang }) {
 }
 
 /* ═══════════════════════════════════════
-   SIDEBAR ITEM
+   ★ SIDEBAR ITEM
    ═══════════════════════════════════════ */
 function SidebarItem({ item, active, collapsed, onClick }) {
   return (
@@ -613,7 +617,7 @@ function SidebarItem({ item, active, collapsed, onClick }) {
 }
 
 /* ═══════════════════════════════════════
-   MAIN SIDEBAR
+   ★ MAIN SIDEBAR (BROADCASTING UPDATED)
    ═══════════════════════════════════════ */
 export default function Sidebar({
   isOpen,
@@ -640,8 +644,22 @@ export default function Sidebar({
   const sidebarWidth = isMobile ? 280 : (isCollapsed ? 70 : 280);
   const handleNavigate = () => { if (isMobile) onClose?.(); };
 
+  // ★★★ BROADCAST APP-WIDE LANGUAGE CHANGE EVENT ★★★
   const handleLangChange = (nextLang) => {
     if (nextLang !== 'si' && nextLang !== 'en') return;
+    try {
+      // 1. Save chosen language globally in LocalStorage
+      localStorage.setItem('language', nextLang);
+      
+      // 2. Dispatch a custom window event for other active client pages/tabs
+      window.dispatchEvent(
+        new CustomEvent('app-language-change', { detail: nextLang })
+      );
+    } catch (e) {
+      console.warn('Language dispatch error:', e);
+    }
+    
+    // 3. Update local state
     setLang?.(nextLang);
   };
 
