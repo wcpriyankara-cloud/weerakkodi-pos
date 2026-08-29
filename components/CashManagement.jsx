@@ -1,16 +1,18 @@
 'use client';
 
-// components/CashManagement.jsx v61-updated
-// 🚀 FINAL PRO BULLETPROOF RECONCILIATION & MULTI-SOURCE SYNC
+// components/CashManagement.jsx v63-updated
+// 🚀 FINAL PRO BULLETPROOF RECONCILIATION & MULTI-SOURCE SYNC WITH LOANS & CHITS
+// - Fixed sessionTotalOut ReferenceError
 // - Directly listens to `cashTransactions`, root-level `customerTransactions` AND `productionEntries`
 // - Real-time bypass logic automatically tracks custom businesses ("custom_xxxx") with zero delay
 // - Bulletproof duplication filter matches entryId and batchNumber to avoid double counting
+// - Syncs all Bank Loan repayments & Chit/Group Savings transactions from BankLoanManagement
 // - Sinhala live "ආරම්භක + ලැබීම් - වියදම් = අපේක්ශිත මුදල" dynamic equation widget
 // - New Bank Account insertion modal inside Banks tab
 // - CLOSING BALANCE RECONCILIATION: Live expected amount & discrepancy difference calculator in Closing Modal
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { db } from '@/firebaseConfig';
+import { db } from '@/shared/firebase-config';
 import { useUserAuth } from '@/context/UserContext';
 import {
   collection, onSnapshot, query, doc,
@@ -42,7 +44,6 @@ const msToLocalTime = ms => { if (ms <= 0) return ''; const d = new Date(ms); re
 const todayStr = () => msToLocalDate(Date.now());
 const nowHHMM = () => { const d = new Date(); return `${padZ(d.getHours())}:${padZ(d.getMinutes())}`; };
 
-// 🚀 RESOLVEMS: Extremely lenient, guarantees parsing of any custom timestamp or date-string
 const resolveMs = tx => {
   if (!tx) return 0;
   let ms = toMs(tx?.timestamp);
@@ -54,7 +55,7 @@ const resolveMs = tx => {
   if (ds && /^\d{4}-\d{2}-\d{2}$/.test(ds)) {
     const ts = (tx?.time && typeof tx.time === 'string') ? tx.time.trim() : '';
     let timePart = '12:00';
-    if (ts) {
+    if (ds && ts) {
       const m24 = ts.match(/^(\d{1,2}):(\d{2})$/);
       const m12 = ts.match(/^(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)$/);
       if (m24) timePart = `${padZ(m24[1])}:${m24[2]}`;
@@ -69,7 +70,7 @@ const resolveMs = tx => {
     const d = new Date(`${ds}T${timePart}:00`);
     if (!isNaN(d.getTime())) return d.getTime();
   }
-  return Date.now(); // Fallback to now so it is never hidden
+  return Date.now();
 };
 
 const getDisplayDate = tx => {
@@ -104,20 +105,11 @@ const rangeStart = f => {
     default: return 0;
   }
 };
+
 const rangeEnd = f => {
   const d = new Date();
   if (f === 'yesterday') return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   return Date.now() + 86400000;
-};
-
-const resolveInvMs = inv => {
-  const ms1 = toMs(inv?.createdAt); if (ms1 > 0) return ms1;
-  const ms2 = toMs(inv?.timestamp); if (ms2 > 0) return ms2;
-  if (inv?.date && typeof inv.date === 'string') {
-    const d = new Date(`${inv.date}T00:00:00`);
-    if (!isNaN(d.getTime())) return d.getTime();
-  }
-  return 0;
 };
 
 const diffDaysFrom = dateStr => {
@@ -170,6 +162,36 @@ const getCashTxProfit = tx => {
   return null;
 };
 
+/* ═══ VEHICLE EXPENSE META HELPERS ═══ */
+const VEH_META = {
+  fuel: { label: 'ඉන්ධන (Fuel)', icon: '⛽', color: '#ea580c', bg: '#fff7ed', border: '#fdba74' },
+  tyre: { label: 'ටයර් (Tyre)', icon: '🛞', color: '#7c3aed', bg: '#faf5ff', border: '#c4b5fd' },
+  service: { label: 'සර්විස් (Service)', icon: '🔧', color: '#0284c7', bg: '#f0fdf4', border: '#bae6fd' },
+  other: { label: 'වෙනත් (Other)', icon: '📋', color: '#475569', bg: '#f8fafc', border: '#cbd5e1' },
+};
+const getVehMeta = type => VEH_META[type] || VEH_META.other;
+
+const vehicleFuelStats = form => {
+  const litres = toNum(form.fuelLitres);
+  const price = toNum(form.pricePerLitre);
+  const kb = toNum(form.kmBefore);
+  const ka = toNum(form.kmAfter);
+  const kmDriven = ka > kb ? ka - kb : 0;
+  const kmPerLitre = litres > 0 && kmDriven > 0 ? kmDriven / litres : 0;
+  const amountAuto = litres * price;
+  return { kmDriven, kmPerLitre, amountAuto };
+};
+
+const vehicleTyreStats = form => {
+  const ik = toNum(form.installedKm);
+  const ck = toNum(form.currentKm);
+  const ek = toNum(form.expectedLifeKm);
+  const kmUsed = ck > ik ? ck - ik : 0;
+  const remainingKm = Math.max(0, ek - kmUsed);
+  const daysUsed = diffDaysFrom(form.installedDate);
+  return { kmUsed, remainingKm, daysUsed };
+};
+
 /* ═══ SOURCE DETECTION ═══ */
 const SRC = {
   purchase: { si: 'මිලදී ගැනීම', icon: '📦', color: '#d97706' },
@@ -187,12 +209,14 @@ const SRC = {
   production: { si: 'නිෂ්පාදන/සේවා', icon: '🏭', color: '#0f766e' },
   productionSales: { si: 'නිෂ්පාදන ආදායම', icon: '🏭', color: '#059669' },
   productionExpense: { si: 'නිෂ්පාදන වියදම', icon: '📉', color: '#b91c1c' },
+  bankLoanRepayment: { si: 'ණය වාරික ගෙවීම', icon: '🏦', color: '#dc2626' },
+  chitFundPayment: { si: 'සීට්ටු/සමිති ගෙවීම', icon: '🎫', color: '#ea580c' },
+  chitFundReceipt: { si: 'සීට්ටු/සමිති ලැබීම', icon: '💰', color: '#16a34a' },
 };
 
 const isPurch = tx => tx && (tx._isPurchDoc || tx.source === 'purchase' || tx.source === 'supplier' || tx.category === 'supplierPayment');
 const isBalanceTx = tx => tx && (tx.source === 'balance' || tx.category === 'openingBalance' || tx.category === 'closingBalance');
 const isOpeningTx = tx => tx && tx.category === 'openingBalance';
-const isClosingTx = tx => tx && tx.category === 'closingBalance';
 
 const isCustomerCredit = tx => {
   if (!tx) return false;
@@ -200,9 +224,7 @@ const isCustomerCredit = tx => {
   const cat = String(tx.category || '').toLowerCase();
   const type = String(tx.type || '').toLowerCase();
   return (
-    src === 'customercredit' ||
-    cat === 'customercredit' ||
-    src === 'credit' ||
+    src === 'customercredit' || cat === 'customercredit' || src === 'credit' ||
     (type === 'out' && !!tx.customerId && !tx.invoiceId && (tx.paymentMethod === 'credit' || src === 'manual_credit'))
   );
 };
@@ -213,12 +235,8 @@ const isCustomerPayment = tx => {
   const cat = String(tx.category || '').toLowerCase();
   const type = String(tx.type || '').toLowerCase();
   return (
-    src === 'invoicepayment' ||
-    cat === 'invoicepayment' ||
-    src === 'customerpayment' ||
-    cat === 'customerpayment' ||
-    src === 'payment' ||
-    (type === 'in' && !!tx.customerId)
+    src === 'invoicepayment' || cat === 'invoicepayment' || src === 'customerpayment' ||
+    cat === 'customerpayment' || src === 'payment' || (type === 'in' && !!tx.customerId)
   );
 };
 
@@ -229,24 +247,15 @@ const isVehicleExpense = tx => tx && (tx.source === 'vehicleExpense' || tx.categ
 const isBankMovement = tx => isBankDeposit(tx) || isBankWithdraw(tx);
 const isAnyBankTx = tx => isBankDeposit(tx) || isBankWithdraw(tx) || isBankTransfer(tx);
 
-// 🚀 v61 UPDATED DETECTOR: Detects standard production + dynamically added custom businesses ("custom_xxxx")
 const isProductionTx = tx => {
   if (!tx) return false;
   const src = String(tx.source || '').toLowerCase();
   const cat = String(tx.category || '').toLowerCase();
   return (
-    src === 'production' ||
-    src.startsWith('custom_') ||
-    src === 'quarry' ||
-    src === 'cropfarm' ||
-    src === 'vehiclerepair' ||
-    src === 'tyreshop' ||
-    src === 'vehiclewash' ||
-    cat === 'productionsales' ||
-    cat === 'productionexpense' ||
-    cat === 'quarry' ||
-    cat === 'cropfarm' ||
-    cat.startsWith('custom_')
+    src === 'production' || src.startsWith('custom_') || src === 'quarry' ||
+    src === 'cropfarm' || src === 'vehiclerepair' || src === 'tyreshop' ||
+    src === 'vehiclewash' || cat === 'productionsales' || cat === 'productionexpense' ||
+    cat === 'quarry' || cat === 'cropfarm' || cat.startsWith('custom_')
   );
 };
 
@@ -265,6 +274,9 @@ const srcCfg = tx => {
   if (isProductionIncome(tx)) return SRC.productionSales;
   if (isProductionExpense(tx)) return SRC.productionExpense;
   if (isProductionTx(tx)) return SRC.production;
+  if (tx?.category === 'bankLoanRepayment') return SRC.bankLoanRepayment;
+  if (tx?.category === 'chitFundPayment') return SRC.chitFundPayment;
+  if (tx?.category === 'chitFundReceipt') return SRC.chitFundReceipt;
   if (tx?.source === 'supplier' || tx?.category === 'supplierPayment') return tx._isPurchDoc ? SRC.purchase : SRC.supplier;
   if (isPurch(tx)) return SRC.purchase;
   if (isBalanceTx(tx)) return SRC.balance;
@@ -282,6 +294,9 @@ const catLabel = cat => ({
   vehicleFuel: 'වාහන ඉන්ධන', vehicleTyre: 'ටයර්', vehicleService: 'වාහන සේවා', vehicleOther: 'අනෙකුත් වාහන වියදම්',
   petrolExpense: 'ඩීසල් / ඉන්ධන', salary: 'කම්කරු', maintenance: 'නඩත්තු', transport: 'ප්‍රවාහනය',
   utilities: 'විදුලිය / ජලය', rent: 'කුලිය', other: 'වෙනත්',
+  bankLoanRepayment: 'ණය වාරික ගෙවීම',
+  chitFundPayment: 'සීට්ටු/සමිති වාරික ගෙවීම',
+  chitFundReceipt: 'සීට්ටු ලැබීම / ලාභාංශ',
 }[cat] || cat || '—');
 
 /* ═══ DENOMINATIONS ═══ */
@@ -332,7 +347,7 @@ const DenominationInput = ({ denominations, onChange, disabled }) => {
   const total = calcDenomTotal(denominations);
   return (
     <div>
-      <div style={{ fontSize: 13, fontWeight: 800, color: '#166534', marginBottom: 10 }}>💵 නෝට්ටු</div>
+      <div style={{ fontSize: 13, fontWeight: 800, color: '#16a34a', marginBottom: 10 }}>💵 නෝට්ටු</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(155px, 1fr))', gap: 8, marginBottom: 16 }}>
         {NOTES.map(n => <DenomCard key={n.value} n={n} isNote value={denominations[n.value]} onChange={val => onChange({ ...denominations, [n.value]: val })} disabled={disabled} />)}
       </div>
@@ -351,7 +366,7 @@ const DenominationInput = ({ denominations, onChange, disabled }) => {
   );
 };
 
-/* ═══ BALANCE ENTRY MODAL (With Expected Amount & Live Variance) ═══ */
+/* ═══ BALANCE ENTRY MODAL ═══ */
 const BalanceEntryModal = ({ isOpen, onClose, type, user, bankAccounts, expectedAmount = 0 }) => {
   const [denominations, setDenominations] = useState(initDenom());
   const [bankBalances, setBankBalances] = useState({});
@@ -374,7 +389,6 @@ const BalanceEntryModal = ({ isOpen, onClose, type, user, bankAccounts, expected
   const cashTotal = useMemo(() => calcDenomTotal(denominations), [denominations]);
   const bankTotal = useMemo(() => Object.values(bankBalances).reduce((s, v) => s + toNum(v), 0), [bankBalances]);
   const grandTotal = cashTotal + bankTotal;
-
   const variance = grandTotal - expectedAmount;
 
   const handleSave = async () => {
@@ -391,23 +405,11 @@ const BalanceEntryModal = ({ isOpen, onClose, type, user, bankAccounts, expected
       });
 
       const payload = {
-        type: isOpening ? 'in' : 'out', 
-        source: 'balance', 
-        category, 
-        amount: grandTotal, 
-        cashAmount: cashTotal, 
-        bankAmount: bankTotal,
-        denominations: denomData, 
-        bankBalances: bankBalancesObj, 
-        bankSnapshot,
-        description: `${icon} ${title} — Rs.${fmtC(grandTotal)}`, 
-        notes: notes || '',
-        date: todayStr(), 
-        time: nowHHMM(), 
-        timestamp: Timestamp.now(), 
-        createdAt: serverTimestamp(),
-        createdBy: user?.email || '', 
-        uid: user.uid,
+        type: isOpening ? 'in' : 'out', source: 'balance', category, amount: grandTotal, cashAmount: cashTotal, bankAmount: bankTotal,
+        denominations: denomData, bankBalances: bankBalancesObj, bankSnapshot,
+        description: `${icon} ${title} — Rs.${fmtC(grandTotal)}`, notes: notes || '',
+        date: todayStr(), time: nowHHMM(), timestamp: Timestamp.now(), createdAt: serverTimestamp(),
+        createdBy: user?.email || '', uid: user.uid,
       };
 
       if (!isOpening) {
@@ -416,13 +418,9 @@ const BalanceEntryModal = ({ isOpen, onClose, type, user, bankAccounts, expected
       }
 
       await addDoc(collection(db, `users/${user.uid}/cashTransactions`), payload);
-      
       let msg = `✅ ${title}!\n💵 ${fmtC(cashTotal)} | 🏦 ${fmtC(bankTotal)} | 📊 ${fmtC(grandTotal)}`;
-      if (!isOpening) {
-        msg += `\n🎯 අපේක්ෂිත මුදල: Rs.${fmtC(expectedAmount)}\n⚖️ වෙනස: Rs.${fmtC(variance)}`;
-      }
-      alert(msg);
-      onClose();
+      if (!isOpening) msg += `\n🎯 අපේක්ෂිත මුදල: Rs.${fmtC(expectedAmount)}\n⚖️ වෙනස: Rs.${fmtC(variance)}`;
+      alert(msg); onClose();
     } catch (err) { alert('❌ ' + err.message); }
     setSaving(false);
   };
@@ -436,29 +434,18 @@ const BalanceEntryModal = ({ isOpen, onClose, type, user, bankAccounts, expected
           <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: 'white', borderRadius: '50%', width: 36, height: 36, fontSize: 18, cursor: 'pointer' }}>✕</button>
         </div>
         <div style={{ padding: '20px 24px' }}>
-          
           {!isOpening && (
             <div style={{ background: '#f8fafc', borderRadius: 16, padding: '16px 20px', border: '2px solid #cbd5e1', marginBottom: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
                 <div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>🎯 අපේක්ශිත මුදල (Expected)</div>
                 <div style={{ fontSize: 22, fontWeight: 900, color: '#1e40af', marginTop: 4 }}>Rs.{fmtC(expectedAmount)}</div>
               </div>
-              <div style={{
-                borderRadius: 10, padding: '8px 12px', textAlign: 'right',
-                background: variance === 0 ? '#eff6ff' : variance > 0 ? '#f0fdf4' : '#fef2f2',
-                border: `1px solid ${variance === 0 ? '#93c5fd' : variance > 0 ? '#86efac' : '#fca5a5'}`
-              }}>
+              <div style={{ borderRadius: 10, padding: '8px 12px', textAlign: 'right', background: variance === 0 ? '#eff6ff' : variance > 0 ? '#f0fdf4' : '#fef2f2', border: `1px solid ${variance === 0 ? '#93c5fd' : variance > 0 ? '#86efac' : '#fca5a5'}` }}>
                 <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700 }}>⚖️ මුදලේ වෙනස (Discrepancy)</div>
-                <div style={{
-                  fontSize: 20, fontWeight: 900, marginTop: 4,
-                  color: variance === 0 ? '#2563eb' : variance > 0 ? '#16a34a' : '#dc2626'
-                }}>
-                  {variance > 0 ? '+' : ''}Rs.{fmtC(variance)}
-                </div>
+                <div style={{ fontSize: 20, fontWeight: 900, marginTop: 4, color: variance === 0 ? '#2563eb' : variance > 0 ? '#16a34a' : '#dc2626' }}>{variance > 0 ? '+' : ''}Rs.{fmtC(variance)}</div>
               </div>
             </div>
           )}
-
           <div style={{ background: '#f8fafc', borderRadius: 16, padding: 20, border: '2px solid #e2e8f0', marginBottom: 20 }}>
             <h3 style={{ margin: '0 0 16px', fontSize: 16 }}>💵 මුදල් ගණනය</h3>
             <DenominationInput denominations={denominations} onChange={setDenominations} disabled={saving} />
@@ -523,8 +510,7 @@ const BankCashModal = ({ isOpen, mode, onClose, onSave, bankAccounts, saving }) 
   if (!isOpen) return null;
   const isDeposit = mode === 'deposit'; const color = isDeposit ? '#059669' : '#2563eb';
   const iconE = isDeposit ? '🏦' : '💵'; const title = isDeposit ? 'මුදල් බැංකුගත කිරීම' : 'බැංකුවෙන් මුදල් ගැනීම';
-  const aa = bankAccounts.filter(a => a.isActive !== false); const selAcc = aa.find(a => a.id === accountId);
-  const amt = toNum(amount); const canSave = accountId && amt > 0;
+  const aa = bankAccounts.filter(a => a.isActive !== false); const amt = toNum(amount); const canSave = accountId && amt > 0;
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 15 }}>
       <div style={{ background: 'white', borderRadius: 20, width: '100%', maxWidth: 520 }}>
@@ -605,45 +591,22 @@ const InterBankTransferModal = ({ isOpen, onClose, onSave, bankAccounts, saving 
   );
 };
 
-/* ═══ NEW: ADD BANK ACCOUNT MODAL ═══ */
+/* ═══ ADD BANK ACCOUNT MODAL ═══ */
 const AddBankAccountModal = ({ isOpen, onClose, user, saving, setSaving }) => {
-  const [bankName, setBankName] = useState('');
-  const [accountName, setAccountName] = useState('');
-  const [accountNumber, setAccountNumber] = useState('');
-  const [openingBalance, setOpeningBalance] = useState('');
-
-  useEffect(() => {
-    if (!isOpen) return;
-    setBankName(''); setAccountName(''); setAccountNumber(''); setOpeningBalance('');
-  }, [isOpen]);
-
+  const [bankName, setBankName] = useState(''); const [accountName, setAccountName] = useState('');
+  const [accountNumber, setAccountNumber] = useState(''); const [openingBalance, setOpeningBalance] = useState('');
+  useEffect(() => { if (!isOpen) return; setBankName(''); setAccountName(''); setAccountNumber(''); setOpeningBalance(''); }, [isOpen]);
   if (!isOpen) return null;
-
   const handleSave = async () => {
-    if (!bankName || !accountName || !accountNumber) {
-      return alert('❌ කරුණාකර තරු (*) ලකුණු කළ සියලුම ක්ෂේත්‍ර පුරවන්න.');
-    }
+    if (!bankName || !accountName || !accountNumber) return alert('❌ කරුණාකර තරු (*) ලකුණු කළ සියලුම ක්ෂේත්‍ර පුරවන්න.');
     setSaving(true);
     try {
       const initBal = toNum(openingBalance);
-      await addDoc(collection(db, `users/${user.uid}/bankAccounts`), {
-        bankName: bankName.trim(),
-        accountName: accountName.trim(),
-        accountNumber: accountNumber.trim(),
-        currentBalance: initBal,
-        liveBalance: initBal,
-        currency: 'LKR',
-        isActive: true,
-        createdAt: serverTimestamp(),
-      });
-      alert('✅ නව බැංකු ගිණුම සාර්ථකව ඇතුළත් කරන ලදී!');
-      onClose();
-    } catch (err) {
-      alert('❌ ' + err.message);
-    }
+      await addDoc(collection(db, `users/${user.uid}/bankAccounts`), { bankName: bankName.trim(), accountName: accountName.trim(), accountNumber: accountNumber.trim(), currentBalance: initBal, liveBalance: initBal, currency: 'LKR', isActive: true, createdAt: serverTimestamp() });
+      alert('✅ නව බැංකු ගිණුම සාර්ථකව ඇතුළත් කරන ලදී!'); onClose();
+    } catch (err) { alert('❌ ' + err.message); }
     setSaving(false);
   };
-
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 15 }}>
       <div style={{ background: 'white', borderRadius: 20, width: '100%', maxWidth: 480 }}>
@@ -652,25 +615,11 @@ const AddBankAccountModal = ({ isOpen, onClose, user, saving, setSaving }) => {
           <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: 'white', borderRadius: '50%', width: 32, height: 32, fontSize: 16, cursor: 'pointer' }}>✕</button>
         </div>
         <div style={{ padding: '20px 24px' }}>
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 4 }}>බැංකුවේ නම (Bank Name) *</label>
-            <input type="text" value={bankName} onChange={e => setBankName(e.target.value)} placeholder="उदा: Sampath Bank, BOC" style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 14, boxSizing: 'border-box' }} />
-          </div>
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 4 }}>ගිණුම් හිමියාගේ නම (Account Name) *</label>
-            <input type="text" value={accountName} onChange={e => setAccountName(e.target.value)} placeholder="ගිණුමේ නම" style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 14, boxSizing: 'border-box' }} />
-          </div>
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 4 }}>ගිණුම් අංකය (Account Number) *</label>
-            <input type="text" value={accountNumber} onChange={e => setAccountNumber(e.target.value)} placeholder="ගිණුම් අංකය" style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 14, boxSizing: 'border-box' }} />
-          </div>
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 4 }}>ආරම්භක ශේෂය (Opening Balance)</label>
-            <input type="number" step="0.01" value={openingBalance} onChange={e => setOpeningBalance(e.target.value)} placeholder="0.00" style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 14, boxSizing: 'border-box' }} />
-          </div>
-          <button onClick={handleSave} disabled={saving} style={{ width: '100%', padding: 14, border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 800, color: 'white', background: 'linear-gradient(135deg,#2563eb,#1d4ed8)', cursor: saving ? 'not-allowed' : 'pointer' }}>
-            {saving ? '⏳...' : '💾 ගිණුම සුරකින්න'}
-          </button>
+          <div style={{ marginBottom: 14 }}><label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 4 }}>බැංකුවේ නම (Bank Name) *</label><input type="text" value={bankName} onChange={e => setBankName(e.target.value)} placeholder="Sampath Bank, BOC" style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 14, boxSizing: 'border-box' }} /></div>
+          <div style={{ marginBottom: 14 }}><label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 4 }}>ගිණුම් හිමියාගේ නම (Account Name) *</label><input type="text" value={accountName} onChange={e => setAccountName(e.target.value)} placeholder="ගිණුමේ නම" style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 14, boxSizing: 'border-box' }} /></div>
+          <div style={{ marginBottom: 14 }}><label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 4 }}>ගිණුම් අංකය (Account Number) *</label><input type="text" value={accountNumber} onChange={e => setAccountNumber(e.target.value)} placeholder="ගිණුම් අංකය" style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 14, boxSizing: 'border-box' }} /></div>
+          <div style={{ marginBottom: 20 }}><label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 4 }}>ආරම්භක ශේෂය (Opening Balance)</label><input type="number" step="0.01" value={openingBalance} onChange={e => setOpeningBalance(e.target.value)} placeholder="0.00" style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 14, boxSizing: 'border-box' }} /></div>
+          <button onClick={handleSave} disabled={saving} style={{ width: '100%', padding: 14, border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 800, color: 'white', background: 'linear-gradient(135deg,#2563eb,#1d4ed8)', cursor: saving ? 'not-allowed' : 'pointer' }}>{saving ? '⏳...' : '💾 ගිණුම සුරකින්න'}</button>
         </div>
       </div>
     </div>
@@ -811,7 +760,6 @@ const VehicleExpenseTab = ({ user, bankAccounts }) => {
 /* ═══ DETAIL PANELS ═══ */
 const BalanceDetailPanel = ({ tx }) => {
   const isOpening = tx.category === 'openingBalance';
-  const denom = tx.denominations || {};
   const snap = Array.isArray(tx.bankSnapshot) ? tx.bankSnapshot : Object.entries(tx.bankBalances || {}).map(([id, info]) => ({ accountId: id, ...info }));
   return (
     <div style={{ marginTop: 10, padding: 14, background: isOpening ? '#ecfdf5' : '#f5f3ff', borderRadius: 12, border: `2px solid ${isOpening ? '#6ee7b7' : '#c4b5fd'}` }}>
@@ -908,7 +856,6 @@ const BankTransferPanel = ({ tx }) => (
   </div>
 );
 
-// 🚀 v61 DETAIL PANEL: Rich summary interface for custom quarry, crop and service records
 const ProductionDetailPanel = ({ tx }) => {
   const isIncome = tx.type === 'in'; 
   const ac = isIncome ? '#059669' : '#dc2626';
@@ -931,73 +878,40 @@ const ProductionDetailPanel = ({ tx }) => {
           <div style={{ fontSize: 10, color: '#64748b', fontWeight: 600, marginTop: 4 }}>ගෙවීම් ක්‍රමය: {tx.paymentMethod === 'cash' ? '💵 Cash' : '🏦 Bank'}</div>
         </div>
       </div>
-
-      {/* Outputs (Quarry) Details */}
-      {Array.isArray(tx.outputs) && tx.outputs.length > 0 && (
-        <div style={{ background: 'white', borderRadius: 8, padding: 10, marginTop: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 750, color: '#475569', marginBottom: 6 }}>📦 නිෂ්පාදන ලැබීම් විස්තර:</div>
-          {tx.outputs.map((o, idx) => (
-            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0', borderBottom: idx < tx.outputs.length - 1 ? '1px dashed #f1f5f9' : 'none' }}>
-              <span>🪨 {o.product === 'stone34' ? '3/4 කළු ගල්' : o.product}</span>
-              <b>{o.qty} {o.unit} × Rs.{fmtC(o.unitPrice)}</b>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Harvest (Crop Farm) Details */}
-      {Array.isArray(tx.harvests) && tx.harvests.length > 0 && (
-        <div style={{ background: 'white', borderRadius: 8, padding: 10, marginTop: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 750, color: '#475569', marginBottom: 6 }}>🌿 අස්වනු විස්තර:</div>
-          {tx.harvests.map((h, idx) => (
-            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0', borderBottom: idx < tx.harvests.length - 1 ? '1px dashed #f1f5f9' : 'none' }}>
-              <span>🍃 {h.crop === 'tea' ? 'තේ දළු' : h.crop}</span>
-              <b>{h.qty} {h.unit} × Rs.{fmtC(h.pricePerUnit || h.rate)}</b>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Service Details */}
-      {Array.isArray(tx.serviceItems) && tx.serviceItems.length > 0 && (
-        <div style={{ background: 'white', borderRadius: 8, padding: 10, marginTop: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 750, color: '#475569', marginBottom: 6 }}>🔧 සේවා විස්තර:</div>
-          {tx.serviceItems.map((s, idx) => (
-            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0', borderBottom: idx < tx.serviceItems.length - 1 ? '1px dashed #f1f5f9' : 'none' }}>
-              <span>🛠️ {s.name}</span>
-              <b>Rs.{fmtC(s.rate)}</b>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Parts Used Details */}
-      {Array.isArray(tx.partsUsed) && tx.partsUsed.length > 0 && (
-        <div style={{ background: 'white', borderRadius: 8, padding: 10, marginTop: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 750, color: '#475569', marginBottom: 6 }}>⚙️ භාවිතා කළ අමතර කොටස්:</div>
-          {tx.partsUsed.map((p, idx) => (
-            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0', borderBottom: idx < tx.partsUsed.length - 1 ? '1px dashed #f1f5f9' : 'none' }}>
-              <span>⛓️ {p.name} (x{p.qty})</span>
-              <b>Rs.{fmtC(toNum(p.sellPrice) * toNum(p.qty))}</b>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Expense Items Details */}
-      {Array.isArray(tx.expenseItems) && tx.expenseItems.length > 0 && (
-        <div style={{ background: 'white', borderRadius: 8, padding: 10, marginTop: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 750, color: '#dc2626', marginBottom: 6 }}>📉 වියදම් විස්තර:</div>
-          {tx.expenseItems.map((e, idx) => (
-            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0', borderBottom: idx < tx.expenseItems.length - 1 ? '1px dashed #f1f5f9' : 'none' }}>
-              <span>💸 {e.description || e.itemName || 'අනෙකුත් වියදම්'}</span>
-              <b>Rs.{fmtC(e.amount)}</b>
-            </div>
-          ))}
-        </div>
-      )}
-
       {tx.notes && <div style={{ marginTop: 8, fontSize: 11, color: '#64748b', fontStyle: 'italic' }}>📝 සටහන: {tx.notes}</div>}
+    </div>
+  );
+};
+
+const BankLoanRepaymentDetailPanel = ({ tx }) => (
+  <div style={{ marginTop: 10, padding: 14, background: '#fef2f2', borderRadius: 12, border: '2px solid #fca5a5' }}>
+    <div style={{ fontSize: 14, fontWeight: 800, color: '#dc2626', marginBottom: 8 }}>🏦 බැංකු ණය වාරික ගෙවීම (Repayment)</div>
+    <div style={{ background: 'white', borderRadius: 10, padding: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}><span>මූල්‍ය ආයතනය:</span><b>{tx.institutionName || 'Unknown'}</b></div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}><span>ගෙවීමේ ක්‍රමය:</span><b>{tx.paymentMethod === 'cash' ? '💵 Cash' : '🏦 Bank'}</b></div>
+      {tx.bankName && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}><span>ගිණුම:</span><b>{tx.bankName} {tx.bankAccountName ? `(${tx.bankAccountName})` : ''}</b></div>}
+      {tx.referenceNo && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}><span>යොමු අංකය (Ref):</span><b>{tx.referenceNo}</b></div>}
+    </div>
+    {tx.notes && <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>📝 සටහන්: {tx.notes}</div>}
+  </div>
+);
+
+const ChitFundDetailPanel = ({ tx }) => {
+  const isPayment = tx.category === 'chitFundPayment';
+  const clr = isPayment ? '#dc2626' : '#16a34a';
+  const bg = isPayment ? '#fef2f2' : '#f0fdf4';
+  const bc = isPayment ? '#fca5a5' : '#86efac';
+  return (
+    <div style={{ marginTop: 10, padding: 14, background: bg, borderRadius: 12, border: `2px solid ${bc}` }}>
+      <div style={{ fontSize: 14, fontWeight: 800, color: clr, marginBottom: 8 }}>
+        {isPayment ? '🎫 සීට්ටු / සමිති වාරික ගෙවීම (Payment OUT)' : '💰 සීට්ටු ලැබීම / සමිති මුදල් ලැබීම (Receipt IN)'}
+      </div>
+      <div style={{ background: 'white', borderRadius: 10, padding: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}><span>සමිතිය/සීට්ටුව:</span><b>{tx.fundName || 'Unknown'}</b></div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}><span>ගනුදෙනු ක්‍රමය:</span><b>{tx.paymentMethod === 'cash' ? '💵 Cash' : '🏦 Bank'}</b></div>
+        {tx.referenceNo && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}><span>යොමු අංකය:</span><b>{tx.referenceNo}</b></div>}
+        {tx.description && <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}><span>විස්තරය:</span><b>{tx.description}</b></div>}
+      </div>
     </div>
   );
 };
@@ -1022,19 +936,21 @@ const CashTxProfitPanel = ({ tx }) => {
   );
 };
 
-/* ═══ MAIN COMPONENT ═══ */
+/* ═══════════════════════════════════════
+   MAIN CONTAINER COMPONENT
+   ═══════════════════════════════════════ */
 export default function CashManagement() {
   const { user } = useUserAuth();
   const [activeTab, setActiveTab] = useState('register');
   const [cashTxs, setCashTxs] = useState([]);
   const [customerTxs, setCustomerTxs] = useState([]);
-  const [productionEntries, setProductionEntries] = useState([]); // 🚀 Real-time collection read
+  const [productionEntries, setProductionEntries] = useState([]);
   const [bankAccounts, setBankAccounts] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all');
-  const [dateFilter, setDateFilter] = useState('today'); // Default: 'today'
+  const [dateFilter, setDateFilter] = useState('today');
   const [expandedTx, setExpandedTx] = useState(null);
   const [balanceModal, setBalanceModal] = useState({ isOpen: false, type: 'opening' });
   const [bankCashModal, setBankCashModal] = useState({ isOpen: false, mode: 'deposit' });
@@ -1044,48 +960,32 @@ export default function CashManagement() {
   const [manualForm, setManualForm] = useState({ type: 'out', category: 'other', amount: '', description: '', paymentMethod: 'cash', bankAccountId: '' });
   const [saving, setSaving] = useState(false);
 
-  // ══════════════════════════════════════════════════════
-  // FIRESTORE REAL-TIME LISTENERS
-  // ══════════════════════════════════════════════════════
+  // Firestore Listeners
   useEffect(() => {
     if (!user?.uid) return;
     setLoading(true);
 
-    // Listener A: users/{uid}/cashTransactions (Subcollection)
     const unsubCash = onSnapshot(query(collection(db, `users/${user.uid}/cashTransactions`)), (snap) => {
-      const txs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setCashTxs(txs); setLoading(false);
-    }, err => { console.error("Cash TX subcollection error:", err); setLoading(false); });
+      setCashTxs(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setLoading(false);
+    }, () => setLoading(false));
 
-    // Listener B: customerTransactions (Root collection)
     const unsubCust = onSnapshot(query(collection(db, 'customerTransactions'), where('uid', '==', user.uid)), (snap) => {
       setCustomerTxs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, err => { console.warn("customerTransactions read skipped or blocked:", err.message); });
+    });
 
-    // Listener C: users/{uid}/bankAccounts
     const unsubBanks = onSnapshot(query(collection(db, `users/${user.uid}/bankAccounts`)), (snap) => {
       setBankAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
-    // Listener D: users/{uid}/purchases
     const unsubPurch = onSnapshot(query(collection(db, `users/${user.uid}/purchases`)), (snap) => {
       setPurchases(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
-    // 🚀 Listener E: productionEntries (Root collection - Safe real-time bypass read)
     const unsubProd = onSnapshot(query(collection(db, 'productionEntries'), where('uid', '==', user.uid)), (snap) => {
-      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      console.log(`[CashManagement] Syncing ${docs.length} productionEntries directly`);
-      setProductionEntries(docs);
-    }, err => { console.warn("productionEntries read failed:", err.message); });
+      setProductionEntries(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
 
-    return () => { 
-      unsubCash(); 
-      unsubCust(); 
-      unsubBanks(); 
-      unsubPurch(); 
-      unsubProd();
-    };
+    return () => { unsubCash(); unsubCust(); unsubBanks(); unsubPurch(); unsubProd(); };
   }, [user]);
 
   const currentSession = useMemo(() => {
@@ -1095,16 +995,9 @@ export default function CashManagement() {
     return { exists: true, startMs: resolveMs(latest), openingAmount: toNum(latest.amount), openingCash: toNum(latest.cashAmount), openingBank: toNum(latest.bankAmount), openingDate: getDisplayDate(latest), openingTime: getDisplayTime(latest), txId: latest.id };
   }, [cashTxs]);
 
-  // ══════════════════════════════════════════════════════
-  // IN-MEMORY MERGING WITH PRO DUPLICATION-FILTERING (🚀 PRO-LOGIC)
-  // ══════════════════════════════════════════════════════
   const mergedTransactions = useMemo(() => {
     const all = [...cashTxs];
-
-    // Build tracking set from cashTransactions to prevent duplicate records
-    const trackedCustTxnIds = new Set();
-    const trackedProdIds = new Set();
-    const trackedBatches = new Set();
+    const trackedCustTxnIds = new Set(); const trackedProdIds = new Set(); const trackedBatches = new Set();
 
     cashTxs.forEach(tx => {
       if (tx.customerTxnId) trackedCustTxnIds.add(tx.customerTxnId);
@@ -1112,131 +1005,52 @@ export default function CashManagement() {
       if (tx.entryId) trackedProdIds.add(tx.entryId);
       if (tx.expenseId) trackedProdIds.add(tx.expenseId);
       if (tx.batchNumber) trackedBatches.add(tx.batchNumber);
-
-      if (isCustomerPayment(tx) || isCustomerCredit(tx)) {
-        trackedCustTxnIds.add(`${tx.customerId}_${tx.amount}_${tx.date}`);
-      }
+      if (isCustomerPayment(tx) || isCustomerCredit(tx)) trackedCustTxnIds.add(`${tx.customerId}_${tx.amount}_${tx.date}`);
     });
 
-    // Merge untracked records from root customerTransactions collection
     customerTxs.forEach(ct => {
       const fingerprint = `${ct.customerId}_${ct.amount}_${ct.date}`;
       if (trackedCustTxnIds.has(ct.id) || trackedCustTxnIds.has(fingerprint)) return;
-
       const normType = String(ct.type || '').trim().toLowerCase();
       const isPay = normType === 'payment' || normType === 'in';
-      const ts = resolveMs(ct);
-
       all.push({
-        id: ct.id,
-        customerTxnId: ct.id,
-        type: isPay ? 'in' : 'out',
-        source: isPay ? 'invoicePayment' : 'customerCredit',
-        category: isPay ? 'invoicePayment' : 'customerCredit',
-        amount: toNum(ct.amount),
-        description: isPay 
-          ? `💵 පාරිභෝගික ගෙවීම් ලැබීම [${ct.customerName || 'පාරිභෝගිකයා'}]` 
-          : `👤 පාරිභෝගික ණය ලබාදීම [${ct.customerName || 'පාරිභෝගිකයා'}]`,
-        paymentMethod: ct.method || ct.paymentMethod || 'cash',
-        customerId: ct.customerId,
-        customerName: ct.customerName || '',
-        customerPhone: ct.customerPhone || '',
-        notes: ct.note || ct.notes || '',
-        date: ct.date || '',
-        time: ct.time || '',
-        timestamp: ts,
-        createdAt: ct.createdAt,
+        id: ct.id, customerTxnId: ct.id, type: isPay ? 'in' : 'out', source: isPay ? 'invoicePayment' : 'customerCredit', category: isPay ? 'invoicePayment' : 'customerCredit', amount: toNum(ct.amount),
+        description: isPay ? `💵 පාරිභෝගික ගෙවීම් ලැබීම [${ct.customerName || 'Customer'}]` : `👤 පාරිභෝගික ණය ලබාදීම [${ct.customerName || 'Customer'}]`,
+        paymentMethod: ct.method || ct.paymentMethod || 'cash', customerId: ct.customerId, customerName: ct.customerName || '', customerPhone: ct.customerPhone || '', notes: ct.note || ct.notes || '', date: ct.date || '', time: ct.time || '', timestamp: resolveMs(ct), createdAt: ct.createdAt,
       });
     });
 
-    // 🚀 Merge untracked records from productionEntries (Direct Bypass)
     productionEntries.forEach(pe => {
       if (trackedProdIds.has(pe.id)) return;
       if (pe.batchNumber && trackedBatches.has(pe.batchNumber)) return;
-
       const ts = resolveMs(pe);
-
-      // A) Income/Receipt record
       if (!pe.isStandaloneExpense) {
         const paidAmt = toNum(pe.totalPaid || pe.grandTotal);
         if (paidAmt > 0) {
-          all.push({
-            id: pe.id + '_inc',
-            entryId: pe.id,
-            type: 'in',
-            source: pe.businessType || 'production',
-            category: 'productionSales',
-            amount: paidAmt,
-            description: `🏭 නිෂ්පාදන ලැබීම [${pe.businessName || 'නිෂ්පාදන'}]`,
-            paymentMethod: pe.paymentMethod || 'cash',
-            customerName: pe.customerName || '',
-            customerPhone: pe.customerPhone || '',
-            vehicleNo: pe.vehicleNumber || '',
-            notes: pe.remark || '',
-            date: pe.date || '',
-            time: pe.time || '',
-            timestamp: ts,
-            createdAt: pe.createdAt,
-            batchNumber: pe.batchNumber,
-            outputs: pe.outputs || [],
-            harvests: pe.harvests || [],
-            serviceItems: pe.serviceItems || [],
-            partsUsed: pe.partsUsed || [],
-          });
+          all.push({ id: pe.id + '_inc', entryId: pe.id, type: 'in', source: pe.businessType || 'production', category: 'productionSales', amount: paidAmt, description: `🏭 නිෂ්පාදන ලැබීම [${pe.businessName || 'නිෂ්පාදන'}]`, paymentMethod: pe.paymentMethod || 'cash', customerName: pe.customerName || '', customerPhone: pe.customerPhone || '', vehicleNo: pe.vehicleNumber || '', notes: pe.remark || '', date: pe.date || '', time: pe.time || '', timestamp: ts, createdAt: pe.createdAt, batchNumber: pe.batchNumber, outputs: pe.outputs || [], harvests: pe.harvests || [], serviceItems: pe.serviceItems || [], partsUsed: pe.partsUsed || [] });
         }
       }
-
-      // B) Expense record
       if (pe.isStandaloneExpense || (Array.isArray(pe.expenseItems) && pe.expenseItems.length > 0)) {
         const costAmt = toNum(pe.totalCost || pe.amount);
         if (costAmt > 0) {
-          all.push({
-            id: pe.id + '_exp',
-            expenseId: pe.id,
-            type: 'out',
-            source: pe.businessType || 'production',
-            category: 'productionExpense',
-            amount: costAmt,
-            description: `📉 නිෂ්පාදන වියදම [${pe.businessName || 'නිෂ්පාදන'}]`,
-            paymentMethod: pe.paymentMethod || 'cash',
-            notes: pe.remark || pe.description || '',
-            date: pe.date || '',
-            time: pe.time || '',
-            timestamp: ts,
-            createdAt: pe.createdAt,
-            batchNumber: pe.batchNumber,
-            expenseItems: pe.expenseItems || [],
-          });
+          all.push({ id: pe.id + '_exp', expenseId: pe.id, type: 'out', source: pe.businessType || 'production', category: 'productionExpense', amount: costAmt, description: `📉 නිෂ්පාදන වියදම [${pe.businessName || 'නිෂ්පාදන'}]`, paymentMethod: pe.paymentMethod || 'cash', notes: pe.remark || pe.description || '', date: pe.date || '', time: pe.time || '', timestamp: ts, createdAt: pe.createdAt, batchNumber: pe.batchNumber, expenseItems: pe.expenseItems || [] });
         }
       }
     });
 
-    // Merge purchases
     const cashTxIds = new Set(cashTxs.map(tx => tx.purchaseId).filter(Boolean));
     purchases.forEach(p => {
       if (p.id && !cashTxIds.has(p.id)) {
-        all.push({
-          id: p.id, _isPurchDoc: true, source: 'purchase', type: 'out', category: 'supplierPayment',
-          amount: toNum(p.paidAmount || p.grandTotal),
-          grandTotal: toNum(p.grandTotal), paidAmount: toNum(p.paidAmount),
-          supplierName: p.supplierName || 'Supplier', invoiceNo: p.invoiceNo || '',
-          items: p.items || [], paymentMethod: p.paymentMethod || 'cash',
-          date: p.purchaseDate || p.date || '', timestamp: p.timestamp || p.createdAt,
-        });
+        all.push({ id: p.id, _isPurchDoc: true, source: 'purchase', type: 'out', category: 'supplierPayment', amount: toNum(p.paidAmount || p.grandTotal), grandTotal: toNum(p.grandTotal), paidAmount: toNum(p.paidAmount), supplierName: p.supplierName || 'Supplier', invoiceNo: p.invoiceNo || '', items: p.items || [], paymentMethod: p.paymentMethod || 'cash', date: p.purchaseDate || p.date || '', timestamp: p.timestamp || p.createdAt });
       }
     });
 
     return all.sort((a, b) => resolveMs(b) - resolveMs(a));
   }, [cashTxs, customerTxs, purchases, productionEntries]);
 
-  // ══════════════════════════════════════════════════════
-  // TOTAL CASH BALANCE CALCULATION (DIRECT RECONCILIATION)
-  // ══════════════════════════════════════════════════════
   const cashBalance = useMemo(() => {
     let sum = 0;
-    const trackedCustTxnIds = new Set();
-    const trackedProdIds = new Set();
-    const trackedBatches = new Set();
+    const trackedCustTxnIds = new Set(); const trackedProdIds = new Set(); const trackedBatches = new Set();
     
     cashTxs.forEach(tx => {
       if (tx.customerTxnId) trackedCustTxnIds.add(tx.customerTxnId);
@@ -1252,31 +1066,18 @@ export default function CashManagement() {
 
     customerTxs.forEach(ct => {
       if (trackedCustTxnIds.has(ct.id)) return;
-      const isCash = (ct.method || ct.paymentMethod || 'cash') === 'cash';
-      if (isCash) {
+      if ((ct.method || ct.paymentMethod || 'cash') === 'cash') {
         const amt = toNum(ct.amount);
-        const normType = String(ct.type || '').trim().toLowerCase();
-        const isPay = normType === 'payment' || normType === 'in';
-        if (isPay) sum += amt; else sum -= amt;
+        if (String(ct.type || '').trim().toLowerCase() === 'payment') sum += amt; else sum -= amt;
       }
     });
 
     productionEntries.forEach(pe => {
       if (trackedProdIds.has(pe.id)) return;
       if (pe.batchNumber && trackedBatches.has(pe.batchNumber)) return;
-
-      const isCash = pe.paymentMethod === 'cash';
-      if (isCash) {
-        // Cash Sale received
-        if (!pe.isStandaloneExpense) {
-          const paidAmt = toNum(pe.totalPaid || pe.grandTotal);
-          sum += paidAmt;
-        }
-        // Cash Expense paid
-        if (pe.isStandaloneExpense || (Array.isArray(pe.expenseItems) && pe.expenseItems.length > 0)) {
-          const costAmt = toNum(pe.totalCost);
-          sum -= costAmt;
-        }
+      if (pe.paymentMethod === 'cash') {
+        if (!pe.isStandaloneExpense) sum += toNum(pe.totalPaid || pe.grandTotal);
+        if (pe.isStandaloneExpense || (Array.isArray(pe.expenseItems) && pe.expenseItems.length > 0)) sum -= toNum(pe.totalCost);
       }
     });
 
@@ -1299,10 +1100,15 @@ export default function CashManagement() {
     return { totalIn, totalOut, net: totalIn - totalOut, txCount };
   }, [mergedTransactions, currentSession]);
 
+  // ★ EXPLICIT EQUATION VARIABLES ★
+  const sessionOpeningAmount = useMemo(() => currentSession.exists ? currentSession.openingAmount : 0, [currentSession]);
+  const sessionTotalIn = useMemo(() => sessionMetrics.totalIn, [sessionMetrics]);
+  const sessionTotalOut = useMemo(() => sessionMetrics.totalOut, [sessionMetrics]);
+  const expectedAmount = useMemo(() => sessionOpeningAmount + sessionTotalIn - sessionTotalOut, [sessionOpeningAmount, sessionTotalIn, sessionTotalOut]);
+
   const getFilterRange = (filter) => {
     if (filter === 'currentSession') {
-      if (!currentSession.exists) return { start: rangeStart('today'), end: rangeEnd('today') };
-      return { start: currentSession.startMs, end: Date.now() + 86400000 };
+      return { start: currentSession.exists ? currentSession.startMs : rangeStart('today'), end: Date.now() + 86400000 };
     }
     return { start: rangeStart(filter), end: rangeEnd(filter) };
   };
@@ -1313,11 +1119,7 @@ export default function CashManagement() {
     return mergedTransactions.filter(tx => {
       if (dateFilter !== 'allTime') {
         const ms = resolveMs(tx);
-        if (ms === 0 && dateFilter === 'today') {
-          // Keep unparsed dates
-        } else if (ms > 0 && (ms < sTime || ms >= eTime)) {
-          return false;
-        }
+        if (ms > 0 && (ms < sTime || ms >= eTime)) return false;
       }
       if (filterType === 'in' && tx.type !== 'in') return false;
       if (filterType === 'out' && tx.type !== 'out') return false;
@@ -1327,12 +1129,11 @@ export default function CashManagement() {
       if (filterType === 'bank' && !isAnyBankTx(tx)) return false;
       if (filterType === 'vehicle' && !isVehicleExpense(tx)) return false;
       if (filterType === 'production' && !isProductionTx(tx)) return false;
+      if (filterType === 'loans' && tx.category !== 'bankLoanRepayment') return false;
+      if (filterType === 'chitfunds' && tx.category !== 'chitFundPayment' && tx.category !== 'chitFundReceipt') return false;
 
       if (q) {
-        const hay = [
-          tx.description, tx.notes, tx.note, tx.supplierName, tx.customerName,
-          tx.category, catLabel(tx.category), tx.reference, String(tx.amount),
-        ].filter(Boolean).join(' ').toLowerCase();
+        const hay = [tx.description, tx.notes, tx.note, tx.supplierName, tx.customerName, tx.fundName, tx.institutionName, tx.category, catLabel(tx.category)].filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -1343,8 +1144,7 @@ export default function CashManagement() {
     if (!user?.uid || !accountId || amount <= 0) return;
     setSaving(true);
     try {
-      const isDeposit = mode === 'deposit';
-      const changeAmount = isDeposit ? amount : -amount;
+      const isDeposit = mode === 'deposit'; const changeAmount = isDeposit ? amount : -amount;
       const ts = Timestamp.now(); const batch = writeBatch(db);
       batch.set(doc(collection(db, `users/${user.uid}/bankTransactions`)), { type: isDeposit ? 'deposit' : 'withdraw', source: isDeposit ? 'bankDeposit' : 'bankWithdraw', category: isDeposit ? 'bankDeposit' : 'bankWithdraw', accountId, amount, reference: reference || '', description: description || (isDeposit ? 'මුදල් තැන්පතුව' : 'ආපසු ගැනීම්'), date: ts, createdAt: serverTimestamp() });
       batch.set(doc(collection(db, `users/${user.uid}/cashTransactions`)), { type: isDeposit ? 'out' : 'in', source: isDeposit ? 'bankDeposit' : 'bankWithdraw', category: isDeposit ? 'bankDeposit' : 'bankWithdraw', amount, bankAccountId: accountId, reference: reference || '', description: description || (isDeposit ? '🏦 බැංකුගත කිරීම' : '💵 බැංකුවෙන් ගැනීම්'), paymentMethod: 'cash', date: todayStr(), time: nowHHMM(), timestamp: ts, createdAt: serverTimestamp(), createdBy: user?.email || '', uid: user.uid });
@@ -1392,30 +1192,12 @@ export default function CashManagement() {
     setSaving(false);
   };
 
-  // 🚀 LIVE DIAGNOSTIC HEADER STATS
-  const customerPaymentCount = useMemo(() => mergedTransactions.filter(tx => isCustomerPayment(tx)).length, [mergedTransactions]);
-  const customerCreditCount = useMemo(() => mergedTransactions.filter(tx => isCustomerCredit(tx)).length, [mergedTransactions]);
-  const rawCustomerCount = useMemo(() => mergedTransactions.filter(tx => !!tx.customerId).length, [mergedTransactions]);
-
-  // 🧮 DYNAMIC RECONCILIATION EQUATION CALCULATIONS (ආරම්භක + ලැබීම් - වියදම් = අපේක්ශිත මුදල)
-  const sessionOpeningAmount = useMemo(() => currentSession.exists ? currentSession.openingAmount : 0, [currentSession]);
-  const sessionTotalIn = useMemo(() => sessionMetrics.totalIn, [sessionMetrics]);
-  const sessionTotalOut = useMemo(() => sessionMetrics.totalOut, [sessionMetrics]);
-  const expectedAmount = useMemo(() => sessionOpeningAmount + sessionTotalIn - sessionTotalOut, [sessionOpeningAmount, sessionTotalIn, sessionTotalOut]);
-
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', padding: '16px', fontFamily: 'sans-serif', boxSizing: 'border-box' }}>
-      
-      {/* 🟢 Live diagnostic indicator header bar */}
-      <div style={{ background: '#ecfdf5', border: '2px solid #10b981', borderRadius: 12, padding: '10px 14px', marginBottom: 14, fontSize: 12, color: '#065f46', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
-        <div><b>⚡ Real-time Multi-Source Active Connection:</b> Loaded Customer/Production Txns = <b>{rawCustomerCount + productionEntries.length}</b></div>
-        <div>Payments = <b style={{ color: '#16a34a' }}>{customerPaymentCount}</b> | Credits = <b style={{ color: '#dc2626' }}>{customerCreditCount}</b></div>
-      </div>
-
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 28, fontWeight: 900, color: '#0f172a' }}>📊 Cash & Bank Register</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#64748b', fontWeight: 600 }}>මූල්‍ය ප්‍රවාහ · v61 · Total Transactions: {mergedTransactions.length}</p>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#64748b', fontWeight: 600 }}>මූල්‍ය ප්‍රවාහ කළමනාකරණය</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={() => setBalanceModal({ isOpen: true, type: 'opening' })} style={{ padding: '10px 14px', background: 'linear-gradient(135deg,#059669,#10b981)', color: 'white', border: 'none', borderRadius: 10, fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>🌅 ආරම්භක ශේෂය</button>
@@ -1427,11 +1209,11 @@ export default function CashManagement() {
         <div style={{ background: 'linear-gradient(135deg, #ecfdf5, #d1fae5)', border: '2px solid #6ee7b7', borderRadius: 14, padding: '14px 18px', marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#166534' }}>වත්මන් සැසිය</div>
-            <div style={{ fontSize: 15, fontWeight: 900, color: '#065f46' }}>📅 {fmtDate(currentSession.openingDate)} · 🕐 {currentSession.openingTime} · {sessionMetrics.txCount} ගනුදෙනු</div>
+            <div style={{ fontSize: 15, fontWeight: 900, color: '#065f46' }}>📅 {fmtDate(currentSession.openingDate)} · {sessionMetrics.txCount} ගනුදෙනු</div>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ background: 'white', padding: '8px 14px', borderRadius: 10, textAlign: 'center' }}><div style={{ fontSize: 10 }}>ආරම්භක</div><div style={{ fontWeight: 900, color: '#059669' }}>Rs.{fmtC(currentSession.openingAmount)}</div></div>
-            <div style={{ background: '#dcfce7', padding: '8px 14px', borderRadius: 10, textAlign: 'center' }}><div style={{ fontSize: 10 }}>💰 ලැබීම්</div><div style={{ fontWeight: 900, color: '#166534' }}>Rs.{fmtC(sessionMetrics.totalIn)}</div></div>
+            <div style={{ background: '#dcfce7', padding: '8px 14px', borderRadius: 10, textAlign: 'center' }}><div style={{ fontSize: 10 }}>💰 ලැබීම්</div><div style={{ fontWeight: 900, color: '#16a34a' }}>Rs.{fmtC(sessionMetrics.totalIn)}</div></div>
             <div style={{ background: '#fee2e2', padding: '8px 14px', borderRadius: 10, textAlign: 'center' }}><div style={{ fontSize: 10 }}>💸 වියදම්</div><div style={{ fontWeight: 900, color: '#991b1b' }}>Rs.{fmtC(sessionMetrics.totalOut)}</div></div>
           </div>
         </div>
@@ -1445,7 +1227,6 @@ export default function CashManagement() {
         <div style={{ background: 'linear-gradient(135deg, #1e40af, #3b82f6)', color: 'white', borderRadius: 16, padding: 20 }}>
           <div style={{ fontSize: 12, opacity: 0.85 }}>🏦 BANK TOTAL</div>
           <div style={{ fontSize: 30, fontWeight: 900, marginTop: 8 }}>Rs.{fmtC(bankBalanceSum)}</div>
-          <div style={{ fontSize: 11, marginTop: 4 }}>ගිණුම් {bankAccounts.length}</div>
         </div>
         <div style={{ background: 'linear-gradient(135deg, #1e293b, #475569)', color: 'white', borderRadius: 16, padding: 20 }}>
           <div style={{ fontSize: 12, opacity: 0.85 }}>📊 TOTAL LIQUID</div>
@@ -1453,44 +1234,29 @@ export default function CashManagement() {
         </div>
       </div>
 
-      {/* 🧮 DYNAMIC EXPECTED AMOUNT CALCULATION BANNER (ආරම්භක + ලැබීම් - වියදම් = අපේක්ශිත මුදල) */}
-      <div style={{ background: '#ffffff', border: '2px solid #e2e8f0', borderRadius: 16, padding: '20px', marginBottom: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-        <div style={{ fontSize: 14, fontWeight: 800, color: '#334155', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span>🧮 වත්මන් සැසියේ මුදල් ගැලපීම (Session Expected Reconciliation)</span>
-          <span style={{ fontSize: 11, background: '#f1f5f9', padding: '2px 8px', borderRadius: 6, color: '#64748b', fontWeight: 700 }}>සූත්‍රය: ආරම්භක + ලැබීම් - වියදම්</span>
-        </div>
+      {/* 🧮 DYNAMIC RECONCILIATION EQUATION WIDGET */}
+      <div style={{ background: '#ffffff', border: '2px solid #e2e8f0', borderRadius: 16, padding: '20px', marginBottom: 24 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: '#334155', marginBottom: 14 }}>🧮 වත්මන් සැසියේ මුදල් ගැලපීම (Session Expected Reconciliation)</div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-          
-          {/* Card 1: ආරම්භක */}
           <div style={{ flex: '1 1 180px', background: '#f8fafc', padding: '14px', borderRadius: 12, border: '1px solid #e2e8f0', textAlign: 'center' }}>
             <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, marginBottom: 4 }}>🌅 ආරම්භක ශේෂය</div>
             <div style={{ fontSize: 18, fontWeight: 900, color: '#0f766e' }}>Rs.{fmtC(sessionOpeningAmount)}</div>
           </div>
-
-          <div style={{ fontSize: 22, fontWeight: 900, color: '#94a3b8', width: '20px', textAlign: 'center' }}>+</div>
-
-          {/* Card 2: ලැබීම් */}
+          <div style={{ fontSize: 22, fontWeight: 900, color: '#94a3b8' }}>+</div>
           <div style={{ flex: '1 1 180px', background: '#f0fdf4', padding: '14px', borderRadius: 12, border: '1px solid #bbf7d0', textAlign: 'center' }}>
             <div style={{ fontSize: 11, color: '#166534', fontWeight: 700, marginBottom: 4 }}>💰 සියලු ලැබීම් (+)</div>
             <div style={{ fontSize: 18, fontWeight: 900, color: '#16a34a' }}>Rs.{fmtC(sessionTotalIn)}</div>
           </div>
-
-          <div style={{ fontSize: 22, fontWeight: 900, color: '#94a3b8', width: '20px', textAlign: 'center' }}>-</div>
-
-          {/* Card 3: වියදම් */}
+          <div style={{ fontSize: 22, fontWeight: 900, color: '#94a3b8' }}>-</div>
           <div style={{ flex: '1 1 180px', background: '#fef2f2', padding: '14px', borderRadius: 12, border: '1px solid #fecaca', textAlign: 'center' }}>
             <div style={{ fontSize: 11, color: '#991b1b', fontWeight: 700, marginBottom: 4 }}>💸 සියලු වියදම් (-)</div>
             <div style={{ fontSize: 18, fontWeight: 900, color: '#dc2626' }}>Rs.{fmtC(sessionTotalOut)}</div>
           </div>
-
-          <div style={{ fontSize: 22, fontWeight: 900, color: '#94a3b8', width: '20px', textAlign: 'center' }}>=</div>
-
-          {/* Card 4: Expected (අපේක්ශිත මුදල) */}
+          <div style={{ fontSize: 22, fontWeight: 900, color: '#94a3b8' }}>=</div>
           <div style={{ flex: '1 1 200px', background: 'linear-gradient(135deg, #eff6ff, #dbeafe)', padding: '14px', borderRadius: 12, border: '2px solid #3b82f6', textAlign: 'center' }}>
             <div style={{ fontSize: 11, color: '#1e40af', fontWeight: 800, marginBottom: 4 }}>🎯 අපේක්ශිත මුදල</div>
             <div style={{ fontSize: 20, fontWeight: 900, color: '#2563eb' }}>Rs.{fmtC(expectedAmount)}</div>
           </div>
-
         </div>
       </div>
 
@@ -1517,10 +1283,12 @@ export default function CashManagement() {
               <option value="all">සියලු වර්ග</option>
               <option value="in">💰 ලැබීම්</option>
               <option value="out">💸 වියදම්</option>
+              <option value="loans">🏦 බැංකු ණය (Loans)</option>
+              <option value="chitfunds">🎫 සීට්ටු / සමිති</option>
               <option value="customer">👤 පාරිභෝගික</option>
               <option value="sales">🧾 විකුණුම්</option>
               <option value="purchase">📦 මිලදී ගැනීම්</option>
-              <option value="bank">🏦 බැංකු</option>
+              <option value="bank">🏦 බැංකු ගනුදෙනු</option>
               <option value="vehicle">🚛 වාහන</option>
               <option value="production">🏭 නිෂ්පාදන</option>
             </select>
@@ -1532,74 +1300,56 @@ export default function CashManagement() {
               <option value="thisMonth">🗓️ මේ මාසයේ</option>
               <option value="allTime">🌐 සමස්තය</option>
             </select>
-            <div style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: '#64748b' }}>📊 {filteredTransactions.length} / {mergedTransactions.length}</div>
           </div>
 
-          {filteredTransactions.length === 0 ? (
-            <div style={{ background: 'white', borderRadius: 14, padding: 40, textAlign: 'center', color: '#94a3b8' }}>
-              <div style={{ fontSize: 36 }}>🔍</div>
-              <div style={{ marginTop: 10, fontWeight: 700 }}>ගනුදෙනු නොමැත</div>
-              <div style={{ marginTop: 8, fontSize: 12 }}>Raw cashTxs: {cashTxs.length} · Merged: {mergedTransactions.length}</div>
-              {cashTxs.length > 0 && filteredTransactions.length === 0 && (
-                <div style={{ marginTop: 10, padding: 10, background: '#fef3c7', borderRadius: 8, fontSize: 11, color: '#92400e' }}>
-                  💡 Try filter: "🌐 සමස්තය" or check date filter
-                </div>
-              )}
-            </div>
-          ) : (
-            <div style={{ display: 'grid', gap: 10 }}>
-              {filteredTransactions.map(tx => {
-                const cfg = srcCfg(tx); const isExp = expandedTx === tx.id;
-                const pmIcon = tx.paymentMethod === 'cash' ? '💵' : tx.paymentMethod === 'bank' ? '🏦' : tx.paymentMethod === 'card' ? '💳' : tx.paymentMethod === 'cheque' ? '🧾' : '📝';
-                return (
-                  <div key={tx.id} style={{ background: 'white', borderRadius: 14, border: '1px solid #e2e8f0', borderLeft: `6px solid ${tx.type === 'in' ? '#10b981' : '#ef4444'}`, overflow: 'hidden' }}>
-                    <div onClick={() => setExpandedTx(isExp ? null : tx.id)} style={{ padding: 14, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 22, width: 42, height: 42, background: '#f1f5f9', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{cfg.icon}</div>
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ fontWeight: 800, fontSize: 14, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tx.description || catLabel(tx.category)}</div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-                            <span style={{ background: '#f1f5f9', padding: '2px 8px', borderRadius: 6, fontSize: 10, fontWeight: 700, color: '#475569' }}>{cfg.si}</span>
-                            <span style={{ fontSize: 11, color: '#64748b' }}>📅 {getDisplayDate(tx)} {getDisplayTime(tx) && `@ ${getDisplayTime(tx)}`}</span>
-                            <span style={{ fontSize: 11, color: '#94a3b8' }}>{pmIcon}</span>
-                            {tx.customerName && <span style={{ fontSize: 10, background: '#f0fdf4', color: '#16a34a', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>👤 {tx.customerName}</span>}
-                          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {filteredTransactions.map(tx => {
+              const cfg = srcCfg(tx); const isExp = expandedTx === tx.id;
+              const pmIcon = tx.paymentMethod === 'cash' ? '💵' : tx.paymentMethod === 'bank' ? '🏦' : tx.paymentMethod === 'card' ? '💳' : tx.paymentMethod === 'cheque' ? '🧾' : '📝';
+              return (
+                <div key={tx.id} style={{ background: 'white', borderRadius: 14, border: '1px solid #e2e8f0', borderLeft: `6px solid ${tx.type === 'in' ? '#10b981' : '#ef4444'}`, overflow: 'hidden' }}>
+                  <div onClick={() => setExpandedTx(isExp ? null : tx.id)} style={{ padding: 14, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 22, width: 42, height: 42, background: '#f1f5f9', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{cfg.icon}</div>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontWeight: 800, fontSize: 14, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tx.description || catLabel(tx.category)}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                          <span style={{ background: '#f1f5f9', padding: '2px 8px', borderRadius: 6, fontSize: 10, fontWeight: 700, color: '#475569' }}>{cfg.si}</span>
+                          <span style={{ fontSize: 11, color: '#64748b' }}>📅 {getDisplayDate(tx)} {getDisplayTime(tx) && `@ ${getDisplayTime(tx)}`}</span>
+                          <span style={{ fontSize: 11, color: '#94a3b8' }}>{pmIcon}</span>
                         </div>
                       </div>
-                      <div style={{ fontSize: 18, fontWeight: 900, color: tx.type === 'in' ? '#10b981' : '#ef4444', marginLeft: 10, flexShrink: 0 }}>
-                        {tx.type === 'in' ? '+' : '−'}Rs.{fmtC(tx.amount)}
-                      </div>
                     </div>
-                    {isExp && (
-                      <div style={{ padding: '0 14px 14px', borderTop: '1px solid #f1f5f9' }}>
-                        {isBalanceTx(tx) && <BalanceDetailPanel tx={tx} />}
-                        {isPurch(tx) && <PurchaseDetailPanel tx={tx} />}
-                        {(isCustomerCredit(tx) || isCustomerPayment(tx)) && <CustomerCreditPanel tx={tx} />}
-                        {isBankMovement(tx) && <BankMovementPanel tx={tx} />}
-                        {isBankTransfer(tx) && <BankTransferPanel tx={tx} />}
-                        {isVehicleExpense(tx) && <VehicleExpensePanel tx={tx} />}
-                        {isProductionTx(tx) && <ProductionDetailPanel tx={tx} />}
-                        {isSalesTx(tx) && <CashTxProfitPanel tx={tx} />}
-                      </div>
-                    )}
+                    <div style={{ fontSize: 18, fontWeight: 900, color: tx.type === 'in' ? '#10b981' : '#ef4444', marginLeft: 10, flexShrink: 0 }}>
+                      {tx.type === 'in' ? '+' : '−'}Rs.{fmtC(tx.amount)}
+                    </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
+                  {isExp && (
+                    <div style={{ padding: '0 14px 14px', borderTop: '1px solid #f1f5f9' }}>
+                      {isBalanceTx(tx) && <BalanceDetailPanel tx={tx} />}
+                      {isPurch(tx) && <PurchaseDetailPanel tx={tx} />}
+                      {(isCustomerCredit(tx) || isCustomerPayment(tx)) && <CustomerCreditPanel tx={tx} />}
+                      {isBankMovement(tx) && <BankMovementPanel tx={tx} />}
+                      {isBankTransfer(tx) && <BankTransferPanel tx={tx} />}
+                      {isVehicleExpense(tx) && <VehicleExpensePanel tx={tx} />}
+                      {isProductionTx(tx) && <ProductionDetailPanel tx={tx} />}
+                      {tx.category === 'bankLoanRepayment' && <BankLoanRepaymentDetailPanel tx={tx} />}
+                      {(tx.category === 'chitFundPayment' || tx.category === 'chitFundReceipt') && <ChitFundDetailPanel tx={tx} />}
+                      {isSalesTx(tx) && <CashTxProfitPanel tx={tx} />}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       ) : activeTab === 'banks' ? (
         <div>
-          {/* ➕ Bank account insert button */}
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-            <button onClick={() => setAddBankModal(true)} style={{ padding: '10px 16px', background: 'linear-gradient(135deg,#2563eb,#3b82f6)', color: 'white', border: 'none', borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
-              ➕ නව ගිණුමක් එකතු කරන්න
-            </button>
+            <button onClick={() => setAddBankModal(true)} style={{ padding: '10px 16px', background: 'linear-gradient(135deg,#2563eb,#3b82f6)', color: 'white', border: 'none', borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: 'pointer' }}>➕ නව ගිණුමක් එකතු කරන්න</button>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
-            {bankAccounts.length === 0 ? (
-              <div style={{ padding: 40, textAlign: 'center', color: '#94a3b8', background: 'white', borderRadius: 16, border: '1px solid #e2e8f0', gridColumn: '1 / -1' }}>බැංකු ගිණුම් නොමැත.</div>
-            ) : bankAccounts.map(acc => (
+            {bankAccounts.map(acc => (
               <div key={acc.id} style={{ background: 'white', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0' }}>
                 <span style={{ background: '#eff6ff', color: '#2563eb', padding: '4px 10px', borderRadius: 8, fontSize: 11, fontWeight: 800 }}>🏦 {acc.bankName}</span>
                 <h3 style={{ margin: '12px 0 4px' }}>{acc.accountName}</h3>
@@ -1616,20 +1366,9 @@ export default function CashManagement() {
         <VehicleExpenseTab user={user} bankAccounts={bankAccounts} />
       ) : null}
 
-      {/* 🌅 / 🌆 Balance Entry Modal — Passed computed Expected Balance from user's current session */}
-      <BalanceEntryModal 
-        isOpen={balanceModal.isOpen} 
-        onClose={() => setBalanceModal({ isOpen: false, type: 'opening' })} 
-        type={balanceModal.type} 
-        user={user} 
-        bankAccounts={bankAccounts} 
-        expectedAmount={expectedAmount}
-      />
-
+      <BalanceEntryModal isOpen={balanceModal.isOpen} onClose={() => setBalanceModal({ isOpen: false, type: 'opening' })} type={balanceModal.type} user={user} bankAccounts={bankAccounts} expectedAmount={expectedAmount} />
       <BankCashModal isOpen={bankCashModal.isOpen} mode={bankCashModal.mode} onClose={() => setBankCashModal({ isOpen: false, mode: 'deposit' })} onSave={handleBankCashSave} bankAccounts={bankAccounts} saving={saving} />
       <InterBankTransferModal isOpen={transferModal} onClose={() => setTransferModal(false)} onSave={handleInterBankTransferSave} bankAccounts={bankAccounts} saving={saving} />
-      
-      {/* 🏦 Bank addition Modal rendered */}
       <AddBankAccountModal isOpen={addBankModal} onClose={() => setAddBankModal(false)} user={user} saving={saving} setSaving={setSaving} />
 
       {manualTxModal && (
