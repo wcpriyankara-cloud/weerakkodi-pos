@@ -52,8 +52,6 @@ const hasStoredBalanceSnapshot = (invoice) => {
 
 /* ══════════════════════════════════════════
    ★★★ OUTSTANDING INFO — FIXED
-   Shows balance for customers with outstanding
-   even when invoice is fully paid
 ══════════════════════════════════════════ */
 const getOutstandingInfo = (invoice, customer) => {
   const dbBal = R2(customer?.currentBalance ?? 0);
@@ -61,10 +59,9 @@ const getOutstandingInfo = (invoice, customer) => {
     creditDue:0, isCreditSale:false, isReturnCreditAdj:false, returnCreditAmount:0,
     previousBalance:0, newBalance:0, isReceipt:false, isPayment:false, isCredit:false,
     isInvoiceSettlement:false, settledAmount:0,
-    hasCustomerBalance:false,  // ★ NEW
+    hasCustomerBalance:false,
   };
 
-  /* ── Portal / Invoice Payment ── */
   if (isPortalInvoicePayment(invoice)) {
     const rows = Array.isArray(invoice?.appliedInvoices) ? invoice.appliedInvoices : [];
     const settled = invoice?.amount!=null ? R2(invoice.amount) : R2(rows.reduce((s,r)=>s+R2(r?.appliedAmount||0),0));
@@ -79,7 +76,6 @@ const getOutstandingInfo = (invoice, customer) => {
     return { ...empty, previousBalance:hasStored?R2(invoice.previousOutstanding):inferredPrev, newBalance:hasStored?R2(invoice.newOutstanding):inferredNew, isReceipt:true, isPayment:true, isInvoiceSettlement:true, settledAmount:settled, hasCustomerBalance:Math.abs(dbBal)>0.01 };
   }
 
-  /* ── Manual Receipt ── */
   if (isReceiptDoc(invoice)) {
     const amount = R2(invoice?.netAmount||invoice?.amount||0);
     const isPay = invoice?._receiptType==='payment', isCred = invoice?._receiptType==='credit';
@@ -90,7 +86,6 @@ const getOutstandingInfo = (invoice, customer) => {
     return { ...empty, creditDue:isCred?amount:0, isCreditSale:isCred, previousBalance:prevBal, newBalance:newBal, isReceipt:true, isPayment:isPay, isCredit:isCred, settledAmount:amount, hasCustomerBalance:Math.abs(dbBal)>0.01 };
   }
 
-  /* ── Return ── */
   if (isReturnDoc(invoice)) {
     const rs = getReturnSettlementInfo(invoice);
     if (rs.method==='credit' && rs.creditAmt>0) {
@@ -102,11 +97,6 @@ const getOutstandingInfo = (invoice, customer) => {
     return { ...empty, previousBalance:dbBal, newBalance:dbBal, hasCustomerBalance:Math.abs(dbBal)>0.01 };
   }
 
-  /* ══════════════════════════════════════════
-     ★★★ REGULAR INVOICE — FIXED
-     Shows customer outstanding even when
-     this invoice is fully paid (balance = 0)
-  ══════════════════════════════════════════ */
   const net    = R2(invoice?.netAmount);
   const paid   = R2(invoice?.payAmount);
   const bal    = R2(invoice?.balance);
@@ -114,10 +104,7 @@ const getOutstandingInfo = (invoice, customer) => {
 
   const isCreditSale = method === 'credit' || bal < -0.01;
   const creditDue    = isCreditSale ? Math.max(0, R2(net - paid)) : 0;
-
-  // ★★★ Customer has outstanding balance (debt or deposit) — show even if this bill is paid
   const hasCustomerBalance = Math.abs(dbBal) > 0.01;
-
   const hasStored = hasStoredBalanceSnapshot(invoice);
 
   let previousBalance, newBalance;
@@ -126,25 +113,21 @@ const getOutstandingInfo = (invoice, customer) => {
     previousBalance = R2(invoice.previousOutstanding);
     newBalance      = R2(invoice.newOutstanding);
   } else if (isCreditSale) {
-    // This invoice added credit — previous = dbBal - creditDue
     previousBalance = R2(dbBal - creditDue);
     newBalance      = R2(previousBalance + creditDue);
   } else if (hasCustomerBalance) {
-    // ★★★ Fully paid invoice but customer has outstanding
-    // dbBal = current total balance (includes this + all previous invoices)
-    // This bill didn't add any credit — so prev = new = dbBal
     previousBalance = dbBal;
     newBalance      = dbBal;
   } else {
     previousBalance = 0;
-    newBalance      = 0;
+    newBalance = 0;
   }
 
   return {
     ...empty,
     creditDue,
     isCreditSale,
-    hasCustomerBalance,  // ★★★ NEW — used by build functions
+    hasCustomerBalance,
     previousBalance: R2(previousBalance),
     newBalance:      R2(newBalance),
   };
@@ -167,7 +150,6 @@ const LANG = {
     prevBalance:'Prev Balance:', newBalanceLabel:'New Balance:',
     totalDue:'TOTAL DUE', returnCreditAdj:'Credit Reduced:',
     balanceReduced:'Balance Adjusted by Return',
-    // ★ Customer outstanding labels
     customerOutstanding:'Customer Outstanding',
     customerDeposit:'Customer Deposit',
     portalTitle:'View Your Account',
@@ -205,7 +187,6 @@ const LANG = {
     prevBalance:'පෙර ණය ශේෂය:', newBalanceLabel:'නව ණය ශේෂය:',
     totalDue:'මුළු ණය ශේෂය', returnCreditAdj:'ණය ශේෂයෙන් අඩු:',
     balanceReduced:'ආපසු භාරයෙන් ණය ශේෂය සකසන ලදී',
-    // ★ Customer outstanding labels
     customerOutstanding:'පාරිභෝගික ණය ශේෂය',
     customerDeposit:'පාරිභෝගික අතිරේක ගෙවීම',
     portalTitle:'ඔබේ ගිණුම බලන්න',
@@ -281,10 +262,10 @@ function LanguageSelector({lang,onChange,modeLabel}){
 
 const LANG_BADGE={en:{color:'#2563eb',label:'EN'},si:{color:'#16a34a',label:'සිං'},mixed:{color:'#7c3aed',label:'Mix'}};
 function LangBadge({lang}){const b=LANG_BADGE[lang]||{color:'#64748b',label:lang};return(<span style={{fontSize:9,fontWeight:800,padding:'1px 5px',borderRadius:4,background:b.color,color:'#fff',marginLeft:4,verticalAlign:'middle'}}>{b.label}</span>);}
-const MODES=[{key:'print',icon:'🖨️',label:'Print',color:'#2563eb'},{key:'whatsapp',icon:'📲',label:'WhatsApp',color:'#25D366'},{key:'sms',icon:'📱',label:'SMS',color:'#f59e0b'},{key:'share',icon:'🔗',label:'Share',color:'#7c3aed'}];/* ══════════════════════════════════════════
+const MODES=[{key:'print',icon:'🖨️',label:'Print',color:'#2563eb'},{key:'whatsapp',icon:'📲',label:'WhatsApp',color:'#25D366'},{key:'sms',icon:'📱',label:'SMS',color:'#f59e0b'},{key:'share',icon:'🔗',label:'Share',color:'#7c3aed'}];
+
+/* ══════════════════════════════════════════
    BUILD RECEIPT HTML
-   ★ Previous/New balance shown for full-paid invoices if customer has outstanding
-   ★ Portal link shown for returns too
 ══════════════════════════════════════════ */
 function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en') {
   const v=visibility||DEFAULT_VISIBILITY, biz=settings||{}, items=invoice?.items||[];
@@ -311,17 +292,23 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en')
   const isReceiptType = isReceipt || isInvoiceSettlement || isPortalPay;
   const showCustomerOutstandingSection = !isRet && (isCreditSale || hasCustomerBalance);
 
+  const bizAlign = biz.logoAlign || 'center';
+
   const row=(l,r,fs=14)=>`<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:${fs}px;font-weight:900;color:#000;line-height:1.3"><span>${esc(l)}</span><span style="text-align:right;max-width:58%;word-break:break-word;margin-left:4px">${esc(r)}</span></div>`;
-  const center=(t,fs=12)=>`<div style="text-align:center;font-weight:900;color:#000;font-size:${fs}px">${esc(t)}</div>`;
+  const center=(t,fs=12)=>`<div style="text-align:${bizAlign};font-weight:900;color:#000;font-size:${fs}px;width:100%;word-break:break-word;">${esc(t)}</div>`;
   const div1=`<div style="border-top:2px dashed #000;margin:5px 0"></div>`;
   const div2=`<div style="border-top:1px dashed #000;margin:4px 0"></div>`;
   const div3=`<div style="border-top:3px solid #000;margin:5px 0"></div>`;
 
   let html='';
-  if(v.showBusinessLogo&&biz.logo) html+=`<div style="text-align:center;margin-bottom:4px"><img src="${esc(biz.logo)}" crossorigin="anonymous" style="max-height:50px;max-width:80%;object-fit:contain"/></div>`;
+  if(v.showBusinessLogo&&biz.logo) {
+    const lWidth = biz.logoWidth || 120;
+    const isGray = biz.logoGrayscale ? 'filter:grayscale(100%);' : '';
+    html+=`<div style="text-align:${bizAlign};margin-bottom:6px;width:100%;"><img src="${esc(biz.logo)}" crossorigin="anonymous" style="max-height:100px;max-width:${lWidth}px;width:auto;display:inline-block;object-fit:contain;${isGray}"/></div>`;
+  }
   if(v.showBusinessName) html+=center(biz.businessName||(isRet?L.returnTitle:isPortalPay?'Payment Receipt':L.invoiceTitle),20);
-  if(isRet) html+=`<div style="text-align:center;margin:4px 0"><span style="background:#fef2f2;color:#dc2626;font-size:13px;font-weight:900;padding:3px 14px;border-radius:20px;border:2px solid #fecaca">${esc(L.returnBadge)}</span></div>`;
-  if(isPortalPay&&!isRet) html+=`<div style="text-align:center;margin:4px 0"><span style="background:#f0fdf4;color:#16a34a;font-size:13px;font-weight:900;padding:3px 14px;border-radius:20px;border:2px solid #bbf7d0">💰 Payment Receipt</span></div>`;
+  if(isRet) html+=`<div style="text-align:${bizAlign};margin:4px 0"><span style="background:#fef2f2;color:#dc2626;font-size:13px;font-weight:900;padding:3px 14px;border-radius:20px;border:2px solid #fecaca">${esc(L.returnBadge)}</span></div>`;
+  if(isPortalPay&&!isRet) html+=`<div style="text-align:${bizAlign};margin:4px 0"><span style="background:#f0fdf4;color:#16a34a;font-size:13px;font-weight:900;padding:3px 14px;border-radius:20px;border:2px solid #bbf7d0">💰 Payment Receipt</span></div>`;
   if(v.showBusinessAddress&&biz.address) html+=center(biz.address,11);
   if(v.showBusinessPhone&&biz.phone) html+=center(`Tel: ${biz.phone}`,11);
   html+=div1;
@@ -395,7 +382,6 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en')
     } else if(!isRet&&!isPortalPay) html+=row(L.paid,`Rs.${fmt(payAmount)}`,15);
   }
 
-  /* ★★★ OUTSTANDING / CUSTOMER BALANCE SECTION ★★★ */
   if(!isRet){
     if(isReceiptType){
       if(v.showPreviousBalance||v.showNewBalance){
@@ -433,7 +419,6 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en')
 
   if(v.showRemarks&&remarks) html+=div2+`<div style="font-size:12px;font-weight:900;color:#000;padding:2px 0;word-break:break-word">${esc(L.note)} ${esc(remarks)}</div>`;
 
-  /* ★★★ PORTAL LINK — Returns included ★★★ */
   if(v.showPortalLink&&portalLink){
     const ptitle=isRet?(L.portalTitleReturn||L.portalTitle):L.portalTitle;
     const pbg=isRet?'#fef2f2':'#eff6ff', pbd=isRet?'#fecaca':'#bfdbfe', pcolor=isRet?'#dc2626':'#1e40af';
@@ -441,7 +426,7 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en')
   }
 
   html+=div3;
-  if(v.showFooterMessage) html+=center(biz.footerMessage||(isRet?'Return Processed!':isPortalPay?'Payment Confirmed!':'Thank You!'),14);
+  if(v.showFooterMessage) html+=center(biz.footerMessage||(isRet?'Return Processed!':'Thank You!'),14);
   html+=center(L.computerGenerated,9);
   return html;
 }
@@ -463,9 +448,19 @@ function buildWAMessage(invoice,customer,settings,visibility,langKey='en'){
   const showCustomerOutstandingSection=!isRet&&(isCreditSale||hasCustomerBalance);
 
   let msg='';
+  
+  /* WhatsApp/Share Image preview dynamically embedded (Only HTTP public URL can trigger thumbnail preview) */
+  if (v.showBusinessLogo && biz.logo && biz.logo.startsWith('http')) {
+    msg += `${biz.logo}\n\n`;
+  }
+  
+  /* Business Info Block with proper markdown formatting */
   if(v.showBusinessName) msg+=`${isRet?'↩️':isPortalPay?'💰':'🧾'} *${biz.businessName||(isRet?L.returnTitle:isPortalPay?'Payment Receipt':L.invoiceTitle)}*\n`;
+  if(v.showBusinessAddress && biz.address) msg+=`📍 _${biz.address.replace(/\n/g, ', ')}_\n`;
+  if(v.showBusinessPhone && biz.phone) msg+=`📞 Tel: ${biz.phone}\n`;
   if(isRet) msg+=`*${L.returnBadge}*\n`;
   msg+=`━━━━━━━━━━━━━━\n`;
+  
   if(v.showInvoiceNo){msg+=`📋 *${isRet?L.returnNo:isPortalPay?'Receipt:':L.no}* ${invoiceNo}\n`;if(isRet&&invoice?.originalInvoiceNo)msg+=`🧾 *${L.originalInvoice}* ${invoice.originalInvoiceNo}\n`;}
   if(v.showDate) msg+=`📅 *${L.date}* ${fmtDate(invoice?.createdAt)}\n`;
   if(v.showCustomerName) msg+=`👤 *${L.customer}* ${invoice?.customerName||'Cash'}\n`;
@@ -500,7 +495,6 @@ function buildWAMessage(invoice,customer,settings,visibility,langKey='en'){
   msg+=`\n━━━━━━━━━━━━━━\n`;
   if(v.showFooterMessage) msg+=`✅ *${biz.footerMessage||(isRet?'Return Processed!':'Thank You!')}*\n`;
 
-  /* ★★★ PORTAL LINK — RETURNS INCLUDED ★★★ */
   if(v.showPortalLink&&portalLink){
     const label=isRet?(L.waPortalLabelReturn||L.waPortalLabel):L.waPortalLabel;
     msg+=`\n${label}\n${portalLink}\n`;
@@ -549,19 +543,21 @@ function buildSMSMessage(invoice,customer,settings,visibility,langKey='en'){
     if(isReturnCreditAdj){if(v.showPreviousBalance)msg+=`${L.smsPrevBal}:Rs.${fmt(previousBalance)}\n`;msg+=`${L.smsCreditReduced}:-Rs.${fmt(returnCreditAmount)}\n`;if(v.showNewBalance)msg+=`${L.smsNewBal}:Rs.${fmt(newBalance)}\n`;}
   }
 
-  /* ★★★ PORTAL LINK — RETURNS INCLUDED ★★★ */
   if(v.showPortalLink&&portalLink) msg+=`${L.smsAccount}:${portalLink}\n`;
 
   const remarks=invoice?.remarks||invoice?.invoiceRemark||invoice?.note||'';
   if(v.showRemarks&&remarks) msg+=`${L.smsNote}:${remarks}\n`;
   if(v.showFooterMessage) msg+=biz.footerMessage||(isRet?'Return Processed!':'Thank You!');
   return msg;
-}/* ══════════════════════════════════════════
+}
+
+/* ══════════════════════════════════════════
    MAIN COMPONENT
 ══════════════════════════════════════════ */
 export default function InvoiceOutputManager({invoice,onClose,initialMode='print',forceVisibility=null}){
   const {user}=useUserAuth();
   const [settings,setSettings]=useState(null);
+  const [settingsDocId,setSettingsDocId]=useState(null);
   const [customer,setCustomer]=useState(null);
   const [activeTab,setActiveTab]=useState('preview');
   const [outputMode,setOutputMode]=useState(initialMode);
@@ -571,6 +567,17 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
   const [settingsExpanded,setSettingsExpanded]=useState({});
   const [modeSettings,setModeSettings]=useState(buildDefaultModeSettings);
   const [settingsMode,setSettingsMode]=useState('print');
+  
+  /* Editable business profile state variables */
+  const [bizLogo, setBizLogo] = useState('');
+  const [bizLogoWidth, setBizLogoWidth] = useState(120);
+  const [bizLogoAlign, setBizLogoAlign] = useState('center');
+  const [bizLogoGrayscale, setBizLogoGrayscale] = useState(false);
+  const [bizName, setBizName] = useState('');
+  const [bizAddress, setBizAddress] = useState('');
+  const [bizPhone, setBizPhone] = useState('');
+  const [bizFooter, setBizFooter] = useState('');
+  const [editBizExpanded, setEditBizExpanded] = useState(false);
 
   const isReturn=isReturnDoc(invoice);
   const isPortalPay=isPortalInvoicePayment(invoice);
@@ -588,6 +595,89 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
   const editingLang=getModeSettings(settingsMode).lang;
   const editingVisibility=getModeSettings(settingsMode).visibility;
 
+  /* Smart Image Compressor & Automatic Cloud Upload Engine */
+  const handleLogoUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      showToast('❌ Image එක විශාල වැඩියි. (Max: 5MB)');
+      return;
+    }
+
+    showToast('⏳ Image එක සකසමින් පවතී...');
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 240; 
+        const MAX_HEIGHT = 100;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Convert canvas output to JPEG Blob for uploading
+        canvas.toBlob(async (blob) => {
+          if (!blob) {
+            showToast('❌ Processing failed');
+            return;
+          }
+
+          try {
+            showToast('☁️ Logo එක Cloud එකට Upload කරමින්...');
+            const formData = new FormData();
+            formData.append('file', blob, 'logo.jpg');
+            
+            // Upload to Telegraph API (Free Anonymous Cloud Image Hosting)
+            const res = await fetch('https://telegra.ph/upload', {
+              method: 'POST',
+              body: formData,
+            });
+            
+            if (!res.ok) throw new Error('Cloud storage failed');
+            const data = await res.json();
+            
+            if (Array.isArray(data) && data[0]?.src) {
+              const cloudUrl = `https://telegra.ph${data[0].src}`;
+              setBizLogo(cloudUrl);
+              showToast('✅ Cloud Upload සාර්ථකයි! (WhatsApp preview සඳහා සූදානම්)');
+            } else {
+              throw new Error('Invalid format');
+            }
+          } catch (cloudErr) {
+            console.warn('Cloud upload failed, falling back to local Base64 string', cloudErr);
+            const compressedBase64 = canvas.toDataURL('image/jpeg', 0.75);
+            setBizLogo(compressedBase64);
+            showToast('⚠️ Cloud upload අසාර්ථකයි. Print කිරීම සඳහා පමණක් Base64 ලෙස සුරැකුණා.');
+          }
+        }, 'image/jpeg', 0.75);
+      };
+      img.onerror = () => {
+        showToast('❌ වලංගු Image එකක් තෝරන්න.');
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
   useEffect(()=>{
     if(!user?.uid||!invoice)return;let a=true;
     (async()=>{
@@ -600,7 +690,31 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
         const cid=invoice.customerId;let rc=null;
         if(cid&&cid!=='CASH_CUSTOMER'){try{const cs=await getDoc(doc(db,'customers',cid));if(cs.exists())rc={id:cs.id,...cs.data()};}catch{}}
         if(!a)return;
-        if(!ss.empty)setSettings(ss.docs[0].data());
+        
+        if(!ss.empty) {
+          const docSnap = ss.docs[0];
+          const data = docSnap.data();
+          setSettings(data);
+          setSettingsDocId(docSnap.id);
+          setBizLogo(data.logo || '');
+          setBizLogoWidth(data.logoWidth || 120);
+          setBizLogoAlign(data.logoAlign || 'center');
+          setBizLogoGrayscale(!!data.logoGrayscale);
+          setBizName(data.businessName || '');
+          setBizAddress(data.address || '');
+          setBizPhone(data.phone || '');
+          setBizFooter(data.footerMessage || '');
+        } else {
+          setBizLogo('');
+          setBizLogoWidth(120);
+          setBizLogoAlign('center');
+          setBizLogoGrayscale(false);
+          setBizName('');
+          setBizAddress('');
+          setBizPhone('');
+          setBizFooter('');
+        }
+        
         setCustomer(rc);
         if(ps.exists()){
           const saved=ps.data();
@@ -614,14 +728,59 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
 
   useEffect(()=>{const fn=(e)=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',fn);return()=>document.removeEventListener('keydown',fn);},[onClose]);
 
-  const receiptHTML=useMemo(()=>buildReceiptHTML(invoice,settings,currentVisibility,customer,currentLang),[invoice,settings,currentVisibility,customer,currentLang]);
-  const waMessage=useMemo(()=>buildWAMessage(invoice,customer,settings,getModeSettings('whatsapp').visibility,getModeSettings('whatsapp').lang),[invoice,customer,settings,getModeSettings]);
-  const smsMessage=useMemo(()=>buildSMSMessage(invoice,customer,settings,getModeSettings('sms').visibility,getModeSettings('sms').lang),[invoice,customer,settings,getModeSettings]);
-  const shareMessage=useMemo(()=>buildWAMessage(invoice,customer,settings,getModeSettings('share').visibility,getModeSettings('share').lang),[invoice,customer,settings,getModeSettings]);
+  /* Unified Real-Time Preview Settings Object (Combines saved settings with current UI state instantly) */
+  const activeSettings = useMemo(() => ({
+    ...settings,
+    logo: bizLogo,
+    logoWidth: Number(bizLogoWidth),
+    logoAlign: bizLogoAlign,
+    logoGrayscale: bizLogoGrayscale,
+    businessName: bizName,
+    address: bizAddress,
+    phone: bizPhone,
+    footerMessage: bizFooter
+  }), [settings, bizLogo, bizLogoWidth, bizLogoAlign, bizLogoGrayscale, bizName, bizAddress, bizPhone, bizFooter]);
+
+  const receiptHTML=useMemo(()=>buildReceiptHTML(invoice,activeSettings,currentVisibility,customer,currentLang),[invoice,activeSettings,currentVisibility,customer,currentLang]);
+  const waMessage=useMemo(()=>buildWAMessage(invoice,customer,activeSettings,getModeSettings('whatsapp').visibility,getModeSettings('whatsapp').lang),[invoice,customer,activeSettings,getModeSettings]);
+  const smsMessage=useMemo(()=>buildSMSMessage(invoice,customer,activeSettings,getModeSettings('sms').visibility,getModeSettings('sms').lang),[invoice,customer,activeSettings,getModeSettings]);
+  const shareMessage=useMemo(()=>buildWAMessage(invoice,customer,activeSettings,getModeSettings('share').visibility,getModeSettings('share').lang),[invoice,customer,activeSettings,getModeSettings]);
   const smsInfo=useMemo(()=>getSMSCount(smsMessage),[smsMessage]);
   const portalLink=useMemo(()=>getPortalLink(customer),[customer]);
 
   const saveAll=useCallback(async()=>{if(!user?.uid)return;try{await setDoc(doc(db,`users/${user.uid}/settings`,'invoiceOutputModes'),{...modeSettings,updatedAt:serverTimestamp()},{merge:true});showToast('✅ Saved!');}catch(e){showToast(`❌ ${e.message}`);}}, [user?.uid,modeSettings,showToast]);
+  
+  /* Save Business Settings specifically to Firestore */
+  const saveBusinessSettings = async () => {
+    if (!user?.uid) return;
+    try {
+      const data = {
+        uid: user.uid,
+        logo: bizLogo,
+        logoWidth: Number(bizLogoWidth),
+        logoAlign: bizLogoAlign,
+        logoGrayscale: bizLogoGrayscale,
+        businessName: bizName,
+        address: bizAddress,
+        phone: bizPhone,
+        footerMessage: bizFooter,
+        updatedAt: serverTimestamp()
+      };
+      
+      if (settingsDocId) {
+        await setDoc(doc(db, 'invoice_settings', settingsDocId), data, { merge: true });
+      } else {
+        const newDocRef = doc(collection(db, 'invoice_settings'));
+        await setDoc(newDocRef, data);
+        setSettingsDocId(newDocRef.id);
+      }
+      setSettings(data);
+      showToast('🏢 ව්‍යාපාර තොරතුරු සුරැකින ලදී!');
+    } catch (e) {
+      showToast(`❌ සුරැකීම අසාර්ථකයි: ${e.message}`);
+    }
+  };
+
   const setEditLang=useCallback((l)=>setModeSettings(p=>({...p,[settingsMode]:{...p[settingsMode],lang:l}})),[settingsMode]);
   const toggleField=useCallback((k)=>setModeSettings(p=>({...p,[settingsMode]:{...p[settingsMode],visibility:{...DEFAULT_VISIBILITY,...(p[settingsMode]?.visibility||{}),[k]:!(p[settingsMode]?.visibility?.[k]??DEFAULT_VISIBILITY[k])}}})),[settingsMode]);
   const applyPreset=useCallback((pk)=>{const p=PRESETS[pk];if(!p)return;setModeSettings(prev=>({...prev,[settingsMode]:{...prev[settingsMode],visibility:{...DEFAULT_VISIBILITY,...p.config}}}));showToast(`✅ "${p.name}"`);},[settingsMode,showToast]);
@@ -699,9 +858,9 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
 
     {/* Content */}
     <div style={{flex:1,overflow:'auto',padding:16}}>
-      {loading?(
+      {loading ? (
         <div style={{textAlign:'center',padding:60}}><div style={{fontSize:36}}>⏳</div></div>
-      ):activeTab==='preview'?(
+      ) : activeTab === 'preview' ? (
         <div>
           <div style={{textAlign:'center',marginBottom:10,fontSize:11,color:'#64748b'}}>
             🌐 {currentLang==='si'?'සිංහල':currentLang==='mixed'?'Mix':'EN'} · {MODES.find(m=>m.key===outputMode)?.icon} {MODES.find(m=>m.key===outputMode)?.label}
@@ -711,13 +870,223 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
           {outputMode==='sms'&&(<div style={{maxWidth:360,margin:'0 auto',background:'#f8fafc',borderRadius:12,padding:16,border:'1px solid #e2e8f0'}}><div style={{fontSize:12,color:'#64748b',marginBottom:8,textAlign:'center'}}>📱 SMS <span style={{padding:'2px 8px',borderRadius:8,fontSize:11,fontWeight:700,background:smsInfo.chars>smsInfo.perSMS?'#fef3c7':'#dcfce7',color:smsInfo.chars>smsInfo.perSMS?'#b45309':'#16a34a'}}>{smsInfo.chars}ch</span></div><div style={{background:'#fff',borderRadius:8,padding:12,fontSize:13,whiteSpace:'pre-wrap',lineHeight:1.6,border:'1px solid #e2e8f0',wordBreak:'break-word',fontFamily:'monospace'}}>{smsMessage}</div></div>)}
           {outputMode==='share'&&(<div style={{maxWidth:420,margin:'0 auto',background:isReturn?'#fef5f5':'#f5f3ff',borderRadius:12,padding:16,border:`1px solid ${isReturn?'#fecaca':'#e9e5ff'}`}}><div style={{background:'#fff',borderRadius:8,padding:12,fontSize:13,whiteSpace:'pre-wrap',lineHeight:1.6,border:'1px solid #e2e8f0',wordBreak:'break-word'}}>{shareMessage}</div></div>)}
         </div>
-      ):(
-        /* SETTINGS */
+      ) : (
         <div>
-          <div style={{background:'#f0f9ff',borderRadius:12,padding:12,marginBottom:16,border:'1px solid #bae6fd'}}>
-            <div style={{fontSize:13,fontWeight:800,color:'#0369a1',marginBottom:8}}>🎯 Mode</div>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-              {MODES.map((m)=>{const ia=settingsMode===m.key;return(<button key={m.key} onClick={()=>setSettingsMode(m.key)} style={{flex:1,minWidth:70,padding:'9px 4px',borderRadius:8,border:ia?`2px solid ${m.color}`:'1px solid #e2e8f0',background:ia?m.color:'#fff',color:ia?'#fff':'#64748b',fontWeight:800,fontSize:12,cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',gap:3}}><span>{m.icon} {m.label}</span>{!ia&&<LangBadge lang={getModeSettings(m.key).lang}/>}</button>);})}</div>
+          {/* Collapsible Business Profile Editor */}
+          <div style={{marginBottom:16, borderRadius:12, border:'2px solid #2563eb', overflow:'hidden', boxShadow:'0 2px 10px rgba(37,99,235,0.15)'}}>
+            <button
+              onClick={() => setEditBizExpanded(!editBizExpanded)}
+              style={{
+                width:'100%', padding:'12px 16px', border:'none',
+                background:'linear-gradient(135deg,#1e40af,#2563eb)', color:'#fff',
+                cursor:'pointer', display:'flex', justifyContent:'space-between',
+                alignItems:'center', fontWeight:800, fontSize:14
+              }}
+            >
+              <span>🏢 ව්‍යාපාර තොරතුරු සංස්කරණය (Edit Business Profile)</span>
+              <span style={{fontSize:12}}>{editBizExpanded ? '▲' : '▼'}</span>
+            </button>
+            {editBizExpanded && (
+              <div style={{padding:16, background:'#f8fafc', display:'flex', flexDirection:'column', gap:12, borderTop:'1px solid #cbd5e1'}}>
+                
+                {/* Logo Drag/Select Upload Panel */}
+                <div>
+                  <label style={{fontSize:12, fontWeight:800, color:'#475569', display:'block', marginBottom:4}}>Business Logo / ව්‍යාපාරයේ ලාංඡනය</label>
+                  <div style={{display:'flex', alignItems:'center', gap:12, background:'#fff', padding:10, borderRadius:8, border:'1px solid #cbd5e1'}}>
+                    {bizLogo ? (
+                      <div style={{position:'relative', display:'inline-block', flexShrink:0}}>
+                        <img src={bizLogo} alt="Logo Preview" style={{maxHeight:55, maxWidth:120, objectFit:'contain', borderRadius:4, border:'1px solid #e2e8f0'}} />
+                        <button
+                          type="button"
+                          onClick={() => setBizLogo('')}
+                          style={{
+                            position:'absolute', top:-6, right:-6, background:'#ef4444', color:'#fff',
+                            border:'none', borderRadius:'50%', width:18, height:18, display:'flex',
+                            alignItems:'center', justifyContent:'center', fontSize:10, cursor:'pointer',
+                            fontWeight:900, boxShadow:'0 1px 3px rgba(0,0,0,0.3)'
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{fontSize:11, color:'#94a3b8', fontStyle:'italic', width:60, height:55, display:'flex', alignItems:'center', justifyContent:'center', border:'1px dashed #cbd5e1', borderRadius:4}}>No Logo</div>
+                    )}
+                    <div style={{flex:1, display:'flex', flexDirection:'column', gap:4}}>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        id="logo-file-input"
+                        onChange={handleLogoUpload}
+                        style={{display:'none'}}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => document.getElementById('logo-file-input').click()}
+                        style={{
+                          padding:'8px 12px', background:'#f1f5f9', border:'1px solid #cbd5e1',
+                          borderRadius:6, cursor:'pointer', fontSize:12, fontWeight:800, color:'#1e293b',
+                          textAlign:'center'
+                        }}
+                      >
+                        📁 Logo එකක් තෝරන්න (Select Image)
+                      </button>
+                      <span style={{fontSize:10, color:'#94a3b8'}}> thermal printing සඳහා ස්වයංක්‍රීයව compress වේ.</span>
+                    </div>
+                  </div>
+
+                  {/* Logo Display Settings (Alignment, Width & Grayscale) */}
+                  <div style={{background:'#fff', padding:12, borderRadius:8, border:'1px solid #cbd5e1', marginTop:8, display:'flex', flexDirection:'column', gap:10}}>
+                    <div style={{fontSize:11, fontWeight:800, color:'#1e3a8a'}}>⚙️ Logo දර්ශනය වන ආකාරය (Display Settings)</div>
+                    
+                    {/* Logo Width */}
+                    <div>
+                      <div style={{display:'flex', justifyContent:'space-between', fontSize:11, fontWeight:700, color:'#475569', marginBottom:4}}>
+                        <span>ලාංඡනයේ විශාලත්වය (Width)</span>
+                        <span>{bizLogoWidth}px</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="50" 
+                        max="250" 
+                        value={bizLogoWidth} 
+                        onChange={(e) => setBizLogoWidth(Number(e.target.value))}
+                        style={{width:'100%', accentColor:'#2563eb', cursor:'pointer'}}
+                      />
+                    </div>
+
+                    {/* Logo Align */}
+                    <div style={{display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+                      <span style={{fontSize:11, fontWeight:700, color:'#475569'}}>ස්ථානගත කිරීම (Alignment)</span>
+                      <div style={{display:'flex', border:'1px solid #cbd5e1', borderRadius:6, overflow:'hidden'}}>
+                        {['left', 'center', 'right'].map((align) => (
+                          <button
+                            key={align}
+                            type="button"
+                            onClick={() => setBizLogoAlign(align)}
+                            style={{
+                              padding:'4px 10px', fontSize:10, border:'none', cursor:'pointer', fontWeight:800,
+                              background: bizLogoAlign === align ? '#2563eb' : '#fff',
+                              color: bizLogoAlign === align ? '#fff' : '#64748b'
+                            }}
+                          >
+                            {align === 'left' ? '⬅️ වමට' : align === 'center' ? '⏺️ මැදට' : '➡️ දකුණට'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Grayscale switch */}
+                    <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', borderTop:'1px dotted #e2e8f0', paddingTop:8}}>
+                      <div>
+                        <span style={{fontSize:11, fontWeight:700, color:'#475569', display:'block'}}>කළු-සුදු මුද්‍රණය (Grayscale Mode)</span>
+                        <span style={{fontSize:9, color:'#94a3b8'}}>Thermal Print වඩාත් පැහැදිලි කිරීමට උපකාරී වේ.</span>
+                      </div>
+                      <ToggleSwitch checked={bizLogoGrayscale} onChange={setBizLogoGrayscale} />
+                    </div>
+                  </div>
+
+                  <div style={{marginTop:8}}>
+                    <details style={{fontSize:11, color:'#64748b'}}>
+                      <summary style={{cursor:'pointer', fontWeight:700}}>ලාංඡන URL (Web Link) එකක් ඇතුළත් කිරීමට (WhatsApp preview සඳහා ✅)</summary>
+                      <input
+                        type="text"
+                        value={bizLogo}
+                        onChange={(e) => setBizLogo(e.target.value)}
+                        placeholder="https://example.com/logo.png"
+                        style={{width:'100%', padding:'8px', borderRadius:6, border:'1px solid #cbd5e1', fontSize:12, color:'#000', marginTop:4}}
+                      />
+                      <span style={{fontSize:9, color:'#94a3b8', display:'block', marginTop:4}}>💡 Logo එක WhatsApp හා Share මඟින් Preview කිරීමට නම් ලාංඡනය Web Link (URL) එකක් ලෙස මෙහි ඇතුළත් කරන්න.</span>
+                    </details>
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{fontSize:12, fontWeight:800, color:'#475569', display:'block', marginBottom:4}}>Business Name / ව්‍යාපාරයේ නම</label>
+                  <input
+                    type="text"
+                    value={bizName}
+                    onChange={(e) => setBizName(e.target.value)}
+                    placeholder="My Business"
+                    style={{width:'100%', padding:'10px', borderRadius:8, border:'1px solid #cbd5e1', fontSize:13, fontWeight:700, color:'#000'}}
+                  />
+                </div>
+                <div>
+                  <label style={{fontSize:12, fontWeight:800, color:'#475569', display:'block', marginBottom:4}}>Address / ලිපිනය</label>
+                  <textarea
+                    value={bizAddress}
+                    onChange={(e) => setBizAddress(e.target.value)}
+                    placeholder="No 123, Main Street, Colombo"
+                    rows={2}
+                    style={{width:'100%', padding:'10px', borderRadius:8, border:'1px solid #cbd5e1', fontSize:13, fontFamily:'inherit', color:'#000'}}
+                  />
+                </div>
+                <div>
+                  <label style={{fontSize:12, fontWeight:800, color:'#475569', display:'block', marginBottom:4}}>Phone / දුරකථන අංකය</label>
+                  <input
+                    type="text"
+                    value={bizPhone}
+                    onChange={(e) => setBizPhone(e.target.value)}
+                    placeholder="0771234567"
+                    style={{width:'100%', padding:'10px', borderRadius:8, border:'1px solid #cbd5e1', fontSize:13, color:'#000'}}
+                  />
+                </div>
+                <div>
+                  <label style={{fontSize:12, fontWeight:800, color:'#475569', display:'block', marginBottom:4}}>Footer Note / බිල්පත පහළ සටහන</label>
+                  <input
+                    type="text"
+                    value={bizFooter}
+                    onChange={(e) => setBizFooter(e.target.value)}
+                    placeholder="Thank You! Come Again!"
+                    style={{width:'100%', padding:'10px', borderRadius:8, border:'1px solid #cbd5e1', fontSize:13, color:'#000'}}
+                  />
+                </div>
+                <button
+                  onClick={saveBusinessSettings}
+                  style={{
+                    padding:'12px', background:'#2563eb', color:'#fff',
+                    border:'none', borderRadius:8, fontWeight:800, fontSize:14,
+                    cursor:'pointer', marginTop:4, display:'flex', alignItems:'center', justifyContent:'center', gap:8
+                  }}
+                >
+                  💾 ව්‍යාපාර තොරතුරු සුරකින්න (Save Profile)
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div style={{background:'#f0f9ff', borderRadius:12, padding:12, marginBottom:16, border:'1px solid #bae6fd'}}>
+            <div style={{fontSize:13, fontWeight:800, color:'#0369a1', marginBottom:8}}>🎯 Mode</div>
+            <div style={{display:'flex', gap:6, flexWrap:'wrap'}}>
+              {MODES.map((m) => {
+                const ia = settingsMode === m.key;
+                return (
+                  <button
+                    key={m.key}
+                    onClick={() => setSettingsMode(m.key)}
+                    style={{
+                      flex: 1,
+                      minWidth: 70,
+                      padding: '9px 4px',
+                      borderRadius: 8,
+                      border: ia ? `2px solid ${m.color}` : '1px solid #e2e8f0',
+                      background: ia ? m.color : '#fff',
+                      color: ia ? '#fff' : '#64748b',
+                      fontWeight: 800,
+                      fontSize: 12,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 3
+                    }}
+                  >
+                    <span>{m.icon} {m.label}</span>
+                    {!ia && <LangBadge lang={getModeSettings(m.key).lang}/>}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <LanguageSelector lang={editingLang} onChange={setEditLang} modeLabel={MODES.find(m=>m.key===settingsMode)?.label||''}/>
@@ -767,7 +1136,7 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
           })}
 
           <div style={{marginTop:20,textAlign:'center'}}>
-            <button onClick={saveAll} style={{padding:'14px 40px',background:'#16a34a',color:'#fff',border:'none',borderRadius:10,fontWeight:800,fontSize:15,cursor:'pointer'}}>💾 Save</button>
+            <button onClick={saveAll} style={{padding:'14px 40px',background:'#16a34a',color:'#fff',border:'none',borderRadius:10,fontWeight:800,fontSize:15,cursor:'pointer'}}>💾 Save Settings</button>
           </div>
         </div>
       )}
