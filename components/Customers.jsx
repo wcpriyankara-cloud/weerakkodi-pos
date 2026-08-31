@@ -1,23 +1,21 @@
 ﻿'use client';
 
-// components/Customers.jsx  ·  v3
+// components/Customers.jsx  ·  v4
 // ✅ Integrated with separate Customer Loan Management system
 // ✅ Real InvoiceOutputManager import
 // ✅ Fresh Firestore balance read
 // ✅ Portal payment support + Loan Quick Status Link
-// 🚀 FIXED v3: Payments & Credits now sync perfectly with Cash & Bank Register
-//    - Timestamp.now() added (client-side ms → instant filter match)
-//    - 24-hour time format (HH:mm) for reliable parsing
-//    - Extra compatibility fields (note, createdBy)
+// 🚀 FIXED: Profile picture upload with automatic compression & Telegraph cloud upload
+// 🚀 FIXED: Mobile contacts integration (Contact Picker API) to select directly from Phone contacts
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { db } from '@/firebaseConfig';
 import { useUserAuth } from '@/context/UserContext';
 import {
   collection, query, where,
   addDoc, updateDoc, doc, getDocs, getDoc,
   serverTimestamp, increment, onSnapshot,
-  Timestamp,               // ★★★ NEW: required for client-side timestamp
+  Timestamp,
 } from 'firebase/firestore';
 
 // ✅ REAL InvoiceOutputManager
@@ -39,13 +37,13 @@ const fmt = (v) =>
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
-// ★★★ NEW: 24-hour format (HH:mm) — CashManagement parses this reliably
+// ★★★ 24-hour format (HH:mm)
 const nowHHMM24 = () => {
   const d = new Date();
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
 
-// ★★★ NEW: Local date string (YYYY-MM-DD) — avoids UTC offset bugs
+// ★★★ Local date string (YYYY-MM-DD)
 const localDateStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -111,6 +109,9 @@ const T = {
     paymentInfoMsg: 'Cash & Bank Register හි "ලැබීම (IN)" ලෙස ස්වයංක්‍රීයව සටහන් වේ.',
     fetchingBalance: 'Balance ලබාගනිමින්...',
     activeLoan: '💰 සක්‍රීය ණයක් ඇත',
+    importContact: '📱 Contacts වලින් ගන්න',
+    contactPickerError: '❌ Contacts ලබාගැනීමට නොහැකි විය.',
+    contactPickerNotSupported: '⚠️ ඔබගේ දුරකථනය මෙම පහසුකම සපයන්නේ නැත.',
   },
   en: {
     title: 'Customers', addNew: 'New Customer', refresh: '🔄 Refresh',
@@ -137,11 +138,14 @@ const T = {
     paymentInfoMsg: 'Automatically recorded as "Cash In" in Cash & Bank Register.',
     fetchingBalance: 'Fetching balance...',
     activeLoan: '💰 Active Loan Exist',
+    importContact: '📱 From Phone Contacts',
+    contactPickerError: '❌ Could not retrieve contacts.',
+    contactPickerNotSupported: '⚠️ Contact picker is not supported on this device.',
   },
 };
 
 /* ════════════════════════════════════════
-   PAYMENT MODAL  ★★★ FIXED CASH SYNC ★★★
+   PAYMENT MODAL
 ════════════════════════════════════════ */
 function PaymentModal({ customer, onClose, onSuccess, t, user }) {
   const [amount,      setAmount     ] = useState('');
@@ -191,9 +195,9 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
     setSaving(true);
     try {
       const refNo    = `PAY${Date.now().toString(36).toUpperCase().slice(-8)}`;
-      const dateStr  = localDateStr();          // ★ Local date (no UTC shift)
-      const timeStr  = nowHHMM24();             // ★ 24-hour format "14:35"
-      const nowTs    = Timestamp.now();         // ★★★ CRITICAL: client-side ms
+      const dateStr  = localDateStr();
+      const timeStr  = nowHHMM24();
+      const nowTs    = Timestamp.now();
       const now      = new Date();
 
       /* ── 1. Customer transaction record ── */
@@ -221,14 +225,14 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
         updatedAt: serverTimestamp(),
       });
 
-      /* ── 3. ★★★ CRITICAL SYNC → Cash & Bank Register (type: 'in') ★★★ ── */
+      /* ── 3. Cash & Bank Register Sync ── */
       await addDoc(collection(db, `users/${user.uid}/cashTransactions`), {
         type: 'in',
         source: 'invoicePayment',
         category: 'invoicePayment',
         description: `💵 පාරිභෝගික ගෙවීම් ලැබීම [${customer.name || 'Customer'}]${note ? ' | ' + note : ''}`,
         amount: payAmt,
-        paymentMethod: method,               // cash | bank | card | cheque
+        paymentMethod: method,
         customerId: customer.id,
         customerName: customer.name || '',
         customerPhone: customer.phone || '',
@@ -240,14 +244,14 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
         newOutstanding: newBal,
         date: dateStr,
         time: timeStr,
-        timestamp: nowTs,                    // ★★★ THE FIX ★★★
+        timestamp: nowTs,
         createdAt: serverTimestamp(),
         createdBy: user?.email || '',
         uid: user.uid,
         isAutomatic: true,
       });
 
-      /* ── 4. If bank payment → also record in bankTransactions (optional) ── */
+      /* ── 4. Bank Sync (optional) ── */
       if (method === 'bank' && customer.defaultBankAccountId) {
         try {
           await addDoc(collection(db, `users/${user.uid}/bankTransactions`), {
@@ -270,10 +274,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
           console.warn('Bank sync skipped:', bankErr.message);
         }
       }
-
-      console.log('[Customers] ✅ Payment synced to cashTransactions:', {
-        amount: payAmt, date: dateStr, time: timeStr, source: 'invoicePayment',
-      });
 
       const methodMap = { cash: 'cash', bank: 'etransfer', card: 'card', cheque: 'cheque', online: 'etransfer' };
 
@@ -428,7 +428,7 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
 }
 
 /* ════════════════════════════════════════
-   CREDIT MODAL  ★★★ FIXED CASH SYNC ★★★
+   CREDIT MODAL
 ════════════════════════════════════════ */
 function CreditModal({ customer, onClose, onSuccess, t, user }) {
   const [amount,      setAmount     ] = useState('');
@@ -470,7 +470,7 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
       const refNo   = `CRD${Date.now().toString(36).toUpperCase().slice(-8)}`;
       const dateStr = localDateStr();
       const timeStr = nowHHMM24();
-      const nowTs   = Timestamp.now();        // ★★★ CRITICAL
+      const nowTs   = Timestamp.now();
       const now     = new Date();
 
       /* ── 1. Customer transaction record ── */
@@ -498,7 +498,7 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
         updatedAt: serverTimestamp(),
       });
 
-      /* ── 3. ★★★ Cash Register sync (type: 'out') ★★★ ── */
+      /* ── 3. Cash Register sync (type: 'out') ── */
       await addDoc(collection(db, `users/${user.uid}/cashTransactions`), {
         type: 'out',
         source: 'customerCredit',
@@ -517,15 +517,11 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
         newOutstanding: newBal,
         date: dateStr,
         time: timeStr,
-        timestamp: nowTs,                     // ★★★ THE FIX ★★★
+        timestamp: nowTs,
         createdAt: serverTimestamp(),
         createdBy: user?.email || '',
         uid: user.uid,
         isAutomatic: true,
-      });
-
-      console.log('[Customers] ✅ Credit synced to cashTransactions:', {
-        amount: creditAmt, date: dateStr, time: timeStr, source: 'customerCredit',
       });
 
       const synthetic = {
@@ -646,6 +642,74 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
   );
 }
 
+// ★ Smart Image Compressor & Telegraph Cloud Upload helper specifically for Customers Page
+const handleAddLogoUpload = (e, setNewCust, showToast) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  if (file.size > 5 * 1024 * 1024) {
+    showToast('❌ Image එක විශාල වැඩියි. (Max: 5MB)');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = (event) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const MAX_WIDTH = 150; 
+      const MAX_HEIGHT = 150;
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > MAX_WIDTH) {
+          height *= MAX_WIDTH / width;
+          width = MAX_WIDTH;
+        }
+      } else {
+        if (height > MAX_HEIGHT) {
+          width *= MAX_HEIGHT / height;
+          height = MAX_HEIGHT;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+
+      canvas.toBlob(async (blob) => {
+        if (!blob) return;
+        try {
+          const formData = new FormData();
+          formData.append('file', blob, 'customer_avatar.jpg');
+          
+          const res = await fetch('https://telegra.ph/upload', {
+            method: 'POST',
+            body: formData,
+          });
+          
+          if (!res.ok) throw new Error('Cloud storage failed');
+          const data = await res.json();
+          
+          if (Array.isArray(data) && data[0]?.src) {
+            const cloudUrl = `https://telegra.ph${data[0].src}`;
+            setNewCust(prev => ({ ...prev, profilePicture: cloudUrl }));
+            showToast('✅ Profile Photo එක සාර්ථකව සකසා ගත්තා!');
+          }
+        } catch {
+          const compressedBase64 = canvas.toDataURL('image/jpeg', 0.8);
+          setNewCust(prev => ({ ...prev, profilePicture: compressedBase64 }));
+          showToast('⚠️ Cloud upload අසාර්ථකයි. Base64 ලෙස එක් විය.');
+        }
+      }, 'image/jpeg', 0.8);
+    };
+    img.src = event.target.result;
+  };
+  reader.readAsDataURL(file);
+};
+
 /* ════════════════════════════════════════
    MAIN COMPONENT
 ════════════════════════════════════════ */
@@ -674,6 +738,9 @@ export default function Customers({ lang = 'si' }) {
   const [creditCust,    setCreditCust   ] = useState(null);
 
   const [outputInvoice, setOutputInvoice] = useState(null);
+  const [toastMsg,      setToastMsg     ] = useState('');
+
+  const showToast = useCallback((m)=>{setToastMsg(m);setTimeout(()=>setToastMsg(''),3000);},[]);
 
   /* ── Fetch customers ── */
   const fetchCustomers = useCallback(async (force = false) => {
@@ -730,7 +797,7 @@ export default function Customers({ lang = 'si' }) {
 
   /* ── Add customer ── */
   const handleAdd = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
     if (!newCust.name || !phoneSuffix) return alert('Name + Phone required');
     if (!user) return alert(t.loginRequired);
     setIsSaving(true);
@@ -744,7 +811,7 @@ export default function Customers({ lang = 'si' }) {
         portalAccessKey: makePortalKey(newCust.name),
         createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       });
-      alert(t.success);
+      showToast(t.success);
       setShowAddModal(false);
       setNewCust({ name: '', phone: '', address: '', email: '', nic: '', notes: '', profilePicture: '' });
       setPhoneSuffix('');
@@ -752,6 +819,44 @@ export default function Customers({ lang = 'si' }) {
       fetchCustomers(true);
     } catch (err) { alert('Error: ' + err.message); }
     finally { setIsSaving(false); }
+  };
+
+  /* ── Contact Picker Integration ── */
+  const handleImportContact = async () => {
+    const isSupported = ('contacts' in navigator && 'ContactsManager' in window);
+    if (!isSupported) {
+      showToast(t.contactPickerNotSupported);
+      return;
+    }
+
+    try {
+      const props = ['name', 'tel'];
+      const opts = { multiple: false };
+      const contacts = await navigator.contacts.select(props, opts);
+      
+      if (contacts && contacts.length > 0) {
+        const contact = contacts[0];
+        const rawName = contact.name?.[0] || '';
+        const rawTel = contact.tel?.[0] || '';
+
+        // Extract 9-digit suffix from raw phone number
+        let cleanTel = rawTel.replace(/\D/g, ''); // Keep only digits
+        if (cleanTel.startsWith('94') && cleanTel.length === 11) {
+          cleanTel = cleanTel.substring(2);
+        } else if (cleanTel.startsWith('0') && cleanTel.length === 10) {
+          cleanTel = cleanTel.substring(1);
+        } else if (cleanTel.length > 9) {
+          cleanTel = cleanTel.slice(-9);
+        }
+
+        setNewCust(prev => ({ ...prev, name: rawName }));
+        setPhoneSuffix(cleanTel);
+        showToast('✅ Contact එක සාර්ථකව ඇතුළත් කළා!');
+      }
+    } catch (err) {
+      console.error(err);
+      showToast(t.contactPickerError);
+    }
   };
 
   /* ── Active Loan finder ── */
@@ -809,6 +914,9 @@ export default function Customers({ lang = 'si' }) {
 
   return (
     <div style={S.container}>
+      {toastMsg && (
+        <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)', background:'#1e293b', color:'#fff', padding:'10px 20px', borderRadius:10, zIndex:10002, fontWeight:700, fontSize:14, boxShadow:'0 4px 20px rgba(0,0,0,0.4)', whiteSpace:'nowrap' }}>{toastMsg}</div>
+      )}
 
       {/* Invoice Receipt Output */}
       {outputInvoice && (
@@ -1091,7 +1199,52 @@ export default function Customers({ lang = 'si' }) {
               <h3 style={{ margin: 0, fontSize: 18 }}>👤 {t.addNew}</h3>
               <button onClick={() => setShowAddModal(false)} style={S.closeBtn}>✕</button>
             </div>
+            
+            {/* profilePicture drag/select upload field inside Add Customer modal */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+              <div style={{ position: 'relative', width: 85, height: 85 }}>
+                {newCust.profilePicture ? (
+                  <img src={newCust.profilePicture} style={{ width: 85, height: 85, borderRadius: '50%', objectFit: 'cover', border: '3px solid #3b82f6' }} alt="" />
+                ) : (
+                  <div style={{ width: 85, height: 85, borderRadius: '50%', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, color: '#94a3b8', border: '1px solid #cbd5e1' }}>👤</div>
+                )}
+                {newCust.profilePicture && (
+                  <button 
+                    type="button" 
+                    onClick={() => setNewCust(p => ({ ...p, profilePicture: '' }))} 
+                    style={{ position: 'absolute', top: 0, right: 0, background: '#ef4444', color: 'white', border: 'none', borderRadius: '50%', width: 22, height: 22, cursor: 'pointer', fontSize: 11, fontWeight: 'bold' }}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <input 
+                type="file" 
+                accept="image/*" 
+                id="add-profile-pic-input" 
+                style={{ display: 'none' }} 
+                onChange={(e) => handleAddLogoUpload(e, setNewCust, showToast)} 
+              />
+              <button 
+                type="button" 
+                onClick={() => document.getElementById('add-profile-pic-input').click()} 
+                style={{ padding: '6px 12px', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer', color: '#475569' }}
+              >
+                📷 Photo එකක් තෝරන්න (Select Image)
+              </button>
+            </div>
+
             <form onSubmit={handleAdd} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              
+              {/* Import Contacts from Phonebook Button */}
+              <button 
+                type="button" 
+                onClick={handleImportContact} 
+                style={{ width: '100%', padding: '12px', borderRadius: 10, background: '#f0f9ff', border: '2px solid #bfdbfe', color: '#0369a1', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+              >
+                {t.importContact}
+              </button>
+
               <div>
                 <label style={S.label}>{t.name} *</label>
                 <input style={S.input} value={newCust.name}
