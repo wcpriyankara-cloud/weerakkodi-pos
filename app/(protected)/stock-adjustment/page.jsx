@@ -6,15 +6,18 @@
 // ✅ Buying Price (Cost) Adjustment field
 // ✅ Robust error fallback & History Syncing
 // ✅ Adjust and Edit Old/Past/Active Batches directly with Auto-recalculated Item Stock
-// ✅ Reactive Live Sync for Edit Form Stock Fields
+// ✅ Reactive Live Sync for Edit Form Stock Fields with Dirty State Guard
 // ✅ Fixed Negative Stock Mismatch Bug on setting Batch Qty to 0
+// ✅ Full Real-time Sync for Stock Adjustments History
+// ✅ Expanded Batch Editor to Edit Retail, Wholesale & Loose Prices and Discounts directly!
+// ✅ FIXED: Virtual Deficit Batch injection to view and adjust POS Negative Stock directly!
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { db } from '@/lib/firebase';
 import {
   collection, query, where, onSnapshot,
   addDoc, doc, updateDoc, getDoc, serverTimestamp,
-  getDocs, writeBatch, increment
+  writeBatch
 } from 'firebase/firestore';
 import { useUserAuth } from '@/context/UserContext';
 import { useLang } from '@/hooks/useLang';
@@ -73,7 +76,6 @@ const TEXT = {
     confirmTitle:     '⚠️ තහවුරු කරන්න',
     confirmYes:       'ඔව්, ඉදිරියට යන්න',
     confirmNo:        'අවලංගු',
-    // Batches
     batchesTitle:     '📦 මිලදී ගත් තොග විස්තර (All Purchased Batches)',
     noBatches:        'මෙම භාණ්ඩය සඳහා මිලදී ගැනීමේ තොග සටහන් කිසිවක් හමු නොවීය.',
     supplier:         'සැපයුම්කරු',
@@ -82,7 +84,7 @@ const TEXT = {
     pricing:          'මිල ගණන්',
     remaining:        'ඉතිරි',
     adjustBatchBtn:   '✏️ Adjust Batch',
-    batchAdjustSuccess: 'තොගය සහ භාණ්ඩයේ මුළු ප්‍රමාණය සාර්ථකව යාවත්කාලීන කරන ලදී!',
+    batchAdjustSuccess: 'තොග විස්තර, මිල ගණන් සහ භාණ්ඩයේ මුළු ප්‍රමාණය සාර්ථකව යාවත්කාලීන කරන ලදී!',
     cancelBtn:        'අවලංගු',
     saveBtn:          'සුරකින්න',
   },
@@ -136,7 +138,6 @@ const TEXT = {
     confirmTitle:     '⚠️ Confirm',
     confirmYes:       'Yes, Continue',
     confirmNo:        'Cancel',
-    // Batches
     batchesTitle:     '📦 Purchased Batches (All Purchased Batches)',
     noBatches:        'No purchase or stock-in batches found for this item.',
     supplier:         'Supplier',
@@ -145,14 +146,14 @@ const TEXT = {
     pricing:          'Pricing',
     remaining:        'Remaining',
     adjustBatchBtn:   '✏️ Adjust Batch',
-    batchAdjustSuccess: 'Batch quantity and total item stock updated successfully!',
+    batchAdjustSuccess: 'Batch quantities, pricing and total item stock updated successfully!',
     cancelBtn:        'Cancel',
     saveBtn:          'Save',
   },
 };
 
 /* ═══════════════════════════════════════
-   TOAST
+   TOAST COMPONENT
 ═══════════════════════════════════════ */
 function Toast({ message, type, onClose }) {
   useEffect(() => {
@@ -184,7 +185,7 @@ function Toast({ message, type, onClose }) {
 }
 
 /* ═══════════════════════════════════════
-   CONFIRM MODAL
+   CONFIRM MODAL COMPONENT
 ═══════════════════════════════════════ */
 function ConfirmModal({ message, onConfirm, onCancel, t }) {
   return (
@@ -263,13 +264,23 @@ export default function StockAdjustmentPage() {
 
   const [editData,      setEditData]      = useState(null);
   const [originalData,  setOriginalData]  = useState(null);
+  const [isStockDirty,  setIsStockDirty]  = useState(false);
   const [hasLoosePrice, setHasLoosePrice] = useState(false);
   const [isSaving,      setIsSaving]      = useState(false);
   const [isSyncing,     setIsSyncing]     = useState(false);
 
-  // Batch edit local state
+  // Batch edit expanded local state
   const [editingBatchId, setEditingBatchId] = useState(null);
-  const [batchEditData, setBatchEditData] = useState({ remainingQty: '', buyingNetPrice: '' });
+  const [batchEditData, setBatchEditData] = useState({
+    remainingQty: '',
+    buyingNetPrice: '',
+    retailPrice: '',
+    retailDiscount: '',
+    wholesalePrice: '',
+    wholesaleDiscount: '',
+    loosePrice: '',
+    looseDiscount: ''
+  });
   const [isSavingBatch, setIsSavingBatch] = useState(false);
 
   const [toast,   setToast]   = useState(null);
@@ -286,33 +297,33 @@ export default function StockAdjustmentPage() {
   []);
 
   /* ── Math / Decimal Rounder & Date/Qty Formatters ── */
-  const R2 = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : Math.round(n * 100) / 100; };
-  const fmt = (v) => R2(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const R2 = useCallback((v) => { const n = parseFloat(v); return isNaN(n) ? 0 : Math.round(n * 100) / 100; }, []);
+  const fmt = useCallback((v) => R2(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), [R2]);
   
-  const fmtQ = (v) => {
+  const fmtQ = useCallback((v) => {
     const n = parseFloat(v);
     return isNaN(n) ? '0' : Number.isInteger(n) ? n.toString() : n.toFixed(2);
-  };
+  }, []);
 
-  const fmtDate = (d) => {
+  const fmtDate = useCallback((d) => {
     if (!d) return 'N/A';
     const dateObj = d.toDate ? d.toDate() : new Date(d);
     return isNaN(dateObj.getTime()) ? 'N/A' : dateObj.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-  };
+  }, []);
 
   /* ── Helpers ── */
-  const sortByDate = (data) =>
-    data.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+  const sortByDate = useCallback((data) =>
+    data.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)), []);
 
-  const calcYourPrice = (price, discount) => {
+  const calcYourPrice = useCallback((price, discount) => {
     const p = parseFloat(price)    || 0;
     const d = parseFloat(discount) || 0;
     if (p <= 0) return '';
     return (p - (p * d / 100)).toFixed(2);
-  };
+  }, []);
 
-  // ✅ Modified to guarantee stock calculation never falls below zero
-  const getActualStock = (item) => {
+  // ✅ Modified to cleanly support and retain raw negative stock values
+  const getActualStock = useCallback((item) => {
     if (!item) return 0;
     const s  = parseFloat(item.stock)        || 0;
     const cs = parseFloat(item.currentStock) || 0;
@@ -322,39 +333,39 @@ export default function StockAdjustmentPage() {
         (sum, v) => sum + (parseFloat(v) || 0), 0
       );
     }
-    return Math.max(0, s, ms, cs);
-  };
+    const vals = [s, cs];
+    if (item.stocks) vals.push(ms);
+    return Math.min(...vals) < 0 ? Math.min(...vals) : Math.max(...vals);
+  }, []);
 
   /* ── Find Live Selected Item ── */
   const liveSelectedItem = useMemo(() => {
     return items.find(i => i.id === selectedItem) || null;
   }, [items, selectedItem]);
 
-  /* ── Reactively Sync stock when database updates ── */
+  /* ── Reactively Sync stock when database updates (Guarded by Dirty State) ── */
   useEffect(() => {
-    if (!liveSelectedItem || !editData || !originalData) return;
+    if (!liveSelectedItem || !editData || isStockDirty) return;
     const liveStock = getActualStock(liveSelectedItem);
 
-    // If the user hasn't edited the quantity field manually, keep it synced with DB
-    if (parseFloat(editData.stock) === originalData._stock) {
+    if (editData.stock !== liveStock) {
       setEditData(prev => ({ ...prev, stock: liveStock }));
       setOriginalData(prev => ({ ...prev, stock: liveStock, _stock: liveStock }));
-    } else {
-      setOriginalData(prev => ({ ...prev, _stock: liveStock }));
     }
-  }, [liveSelectedItem]);
+  }, [liveSelectedItem, isStockDirty, editData, getActualStock]);
 
-  /* ── Batch Helpers (synced with POSInvoice) ── */
-  const getBatchRemainingInfo = (bi) => {
+  /* ── Batch Helpers (allowing negative remaining quantities for sync) ── */
+  const getBatchRemainingInfo = useCallback((bi) => {
     if (!bi) return { remaining: 0, isTracked: false };
     const p = R2(bi.qty || bi.quantity || 0);
     if (bi.remainingQty !== undefined && bi.remainingQty !== null && bi.remainingQty !== '') {
-      return { remaining: Math.max(0, R2(bi.remainingQty)), isTracked: true };
+      // ✅ Removed Math.max(0, ...) so negative stock balances from POS show correctly
+      return { remaining: R2(bi.remainingQty), isTracked: true };
     }
     return { remaining: p, isTracked: false };
-  };
+  }, [R2]);
 
-  const getBatchTime = (b) => b?.createdAt?.toDate?.()?.getTime?.() || new Date(b?.date || 0).getTime() || 0;
+  const getBatchTime = useCallback((b) => b?.createdAt?.toDate?.()?.getTime?.() || new Date(b?.date || 0).getTime() || 0, []);
 
   const extractBatches = useCallback((itemId) => {
     if (!itemId || !purchaseSources) return [];
@@ -394,38 +405,66 @@ export default function StockAdjustmentPage() {
     // Sort Newest first
     batches.sort((a, b) => getBatchTime(b) - getBatchTime(a));
     return batches;
-  }, [purchaseSources]);
+  }, [purchaseSources, getBatchRemainingInfo, getBatchTime, R2]);
 
-  // List of active batches for the selected item (Guarded against non-array values)
+  // List of active batches + Virtual deficit batch injector
   const selectedItemBatches = useMemo(() => {
     if (!selectedItem) return [];
     const res = extractBatches(selectedItem);
-    return Array.isArray(res) ? res : [];
-  }, [selectedItem, extractBatches]);
+    const parentItem = items.find(i => i.id === selectedItem);
+    
+    if (parentItem) {
+      const parentStock = getActualStock(parentItem);
+      const totalBatchStock = res.reduce((sum, b) => sum + parseFloat(b.remainingQty || 0), 0);
 
-  const populateEditData = (item) => {
+      // ✅ POS එකෙන් 0 ට වඩා අඩුවෙන් විකුණා ඇති විට, එම සෘණ තොගය (Virtual Deficit Batch) එකක් ලෙස ඉහලින්ම එක් කරයි.
+      if (parentStock < totalBatchStock) {
+        const deficit = R2(parentStock - totalBatchStock);
+        res.unshift({
+          batchId: 'virtual_deficit_batch',
+          isVirtualDeficit: true,
+          invoiceId: 'VIRTUAL',
+          invoiceCollection: 'items',
+          itemIndex: -1,
+          supplierName: '⚠️ Overdrawn / Negative Stock (අතථ්‍ය සෘණ තොගය)',
+          date: null,
+          createdAt: null,
+          qty: 0,
+          remainingQty: deficit,
+          isTracked: true,
+          buyingNetPrice: parentItem.buyingPrice || parentItem.costPrice || 0,
+          retailPrice: parentItem.sellingPriceRetail || 0,
+          retailDiscount: parentItem.retailDiscount || 0,
+          wholesalePrice: parentItem.sellingPriceWholesale || 0,
+          wholesaleDiscount: parentItem.wholesaleDiscount || 0,
+          loosePrice: parentItem.sellingPriceLoose || 0,
+          looseDiscount: parentItem.looseDiscount || 0,
+        });
+      }
+    }
+    
+    return Array.isArray(res) ? res : [];
+  }, [selectedItem, extractBatches, items, getActualStock, R2]);
+
+  const populateEditData = useCallback((item) => {
     const actualStock = getActualStock(item);
     const data = {
-      // General
       discountReceived:          item.discountReceived          ?? '',
       buyingPrice:               item.buyingPrice ?? item.costPrice ?? '',
       expiryDate:                item.expiryDate                ?? '',
       racks:                     item.racks ?? item.rackName    ?? '',
       stock:                     actualStock,
 
-      // Retail pricing
       sellingPriceRetail:        item.sellingPriceRetail ?? item.retailSellingPrice ?? item.sellingPrice ?? item.price ?? '',
       retailDiscount:            item.retailDiscount ?? item.retailSellingDiscount ?? '',
       retailYourPrice:           item.retailYourPrice
         ?? calcYourPrice(item.sellingPriceRetail ?? item.retailSellingPrice, item.retailDiscount ?? item.retailSellingDiscount),
 
-      // Wholesale pricing
       sellingPriceWholesale:     item.sellingPriceWholesale ?? item.wholesaleSellingPrice ?? item.wholesalePrice ?? '',
       wholesaleDiscount:         item.wholesaleDiscount ?? item.wholesaleSellingDiscount ?? '',
       wholesaleYourPrice:        item.wholesaleYourPrice
         ?? calcYourPrice(item.sellingPriceWholesale ?? item.wholesaleSellingPrice, item.wholesaleDiscount ?? item.wholesaleSellingDiscount),
 
-      // Loose pricing
       sellingPriceLoose:         item.sellingPriceLoose ?? item.retailSellingPriceLoose ?? item.loosePrice ?? '',
       looseDiscount:             item.looseDiscount ?? item.retailSellingLooseDiscount ?? '',
       looseYourPrice:            item.looseYourPrice
@@ -433,10 +472,11 @@ export default function StockAdjustmentPage() {
     };
     setEditData(data);
     setOriginalData({ ...data, _stock: actualStock });
+    setIsStockDirty(false);
     setHasLoosePrice(
       !!(item.sellingPriceLoose || item.retailSellingPriceLoose || item.priceLoose || item.loosePrice || item.isLoose)
     );
-  };
+  }, [getActualStock, calcYourPrice]);
 
   /* ── Click outside ── */
   useEffect(() => {
@@ -449,27 +489,27 @@ export default function StockAdjustmentPage() {
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
-  /* ── Load history ── */
-  const loadHistory = useCallback(async () => {
-    if (!user) return;
-    try {
-      const snap = await getDocs(
-        query(collection(db, 'stockAdjustments'), where('uid', '==', user.uid))
-      );
-      const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      sortByDate(data);
-      setAdjustments(data);
-    } catch (err) {
-      console.error('Error loading history:', err);
-    }
-  }, [user]);
-
-  /* ── Load items & Purchase streams real-time ── */
+  /* ── Load items, History, & Purchase streams real-time ── */
   useEffect(() => {
     if (!user) return;
-    const unsub = onSnapshot(
+
+    const unsubItems = onSnapshot(
       query(collection(db, 'items'), where('uid', '==', user.uid)),
       (snap) => setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+    );
+
+    const unsubHistory = onSnapshot(
+      query(collection(db, 'stockAdjustments'), where('uid', '==', user.uid)),
+      (snap) => {
+        const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        sortByDate(data);
+        setAdjustments(data);
+        setLoading(false);
+      },
+      (err) => {
+        console.error('History load error:', err);
+        setLoading(false);
+      }
     );
 
     // Stream Batch Sources (Purchases / Stock In)
@@ -485,13 +525,12 @@ export default function StockAdjustmentPage() {
       );
     });
 
-    loadHistory().finally(() => setLoading(false));
-
     return () => {
-      unsub();
+      unsubItems();
+      unsubHistory();
       unsubsBatches.forEach(unsubFn => unsubFn());
     };
-  }, [user, loadHistory]);
+  }, [user, sortByDate]);
 
   /* ── Filtered items ── */
   const filteredItems = useMemo(() =>
@@ -516,6 +555,7 @@ export default function StockAdjustmentPage() {
     setIsDropdownOpen(false);
     setEditData(null);
     setOriginalData(null);
+    setIsStockDirty(false);
     setHasLoosePrice(false);
     setEditingBatchId(null);
   };
@@ -526,6 +566,10 @@ export default function StockAdjustmentPage() {
   };
 
   const handleEditChange = (field, value) => {
+    if (field === 'stock') {
+      setIsStockDirty(true);
+    }
+
     setEditData((prev) => {
       const updated = { ...prev, [field]: value };
 
@@ -569,50 +613,43 @@ export default function StockAdjustmentPage() {
       const toNum = (val) =>
         val !== '' && val !== undefined && val !== null ? parseFloat(val) : '';
 
-      const newStock = Math.max(0, parseFloat(editData.stock) || 0);
+      const newStock = parseFloat(editData.stock) || 0; // Negative raw allowed
 
-      // Updates canonical and synced legacy fields across all database schemas
       const updateData = {
         discountReceived:         toNum(editData.discountReceived),
         buyingPrice:              toNum(editData.buyingPrice),
-        costPrice:                toNum(editData.buyingPrice), // legacy support
+        costPrice:                toNum(editData.buyingPrice), 
         expiryDate:               editData.expiryDate || '',
         racks:                    editData.racks      || '',
-        rackName:                 editData.racks      || '', // sync to POS schema
+        rackName:                 editData.racks      || '', 
         stock:                    newStock,
         currentStock:             newStock,
         'stocks.Main_Store':      newStock,
 
-        // Retail canonized
         sellingPriceRetail:       toNum(editData.sellingPriceRetail),
         retailDiscount:           toNum(editData.retailDiscount),
         retailYourPrice:          toNum(editData.retailYourPrice),
-        sellingPrice:             toNum(editData.sellingPriceRetail), // legacy support
-        price:                    toNum(editData.sellingPriceRetail), // legacy catalog support
+        sellingPrice:             toNum(editData.sellingPriceRetail), 
+        price:                    toNum(editData.sellingPriceRetail), 
 
-        // Retail legacy support
         retailSellingPrice:       toNum(editData.sellingPriceRetail),
         retailSellingDiscount:    toNum(editData.retailDiscount),
 
-        // Wholesale canonized
         sellingPriceWholesale:    toNum(editData.sellingPriceWholesale),
         wholesaleDiscount:        toNum(editData.wholesaleDiscount),
         wholesaleYourPrice:       toNum(editData.wholesaleYourPrice),
-        wholesalePrice:           toNum(editData.sellingPriceWholesale), // legacy support
+        wholesalePrice:           toNum(editData.sellingPriceWholesale), 
 
-        // Wholesale legacy support
         wholesaleSellingPrice:    toNum(editData.sellingPriceWholesale),
         wholesaleSellingDiscount: toNum(editData.wholesaleDiscount),
       };
 
       if (hasLoosePrice) {
-        // Loose canonized
         updateData.sellingPriceLoose         = toNum(editData.sellingPriceLoose);
         updateData.looseDiscount             = toNum(editData.looseDiscount);
         updateData.looseYourPrice            = toNum(editData.looseYourPrice);
-        updateData.loosePrice                = toNum(editData.sellingPriceLoose); // legacy support
+        updateData.loosePrice                = toNum(editData.sellingPriceLoose); 
 
-        // Loose legacy support
         updateData.retailSellingPriceLoose    = toNum(editData.sellingPriceLoose);
         updateData.retailSellingLooseDiscount = toNum(editData.looseDiscount);
         updateData.retailYourLoosePrice       = toNum(editData.looseYourPrice);
@@ -634,9 +671,9 @@ export default function StockAdjustmentPage() {
           date:      new Date().toISOString().split('T')[0],
           createdAt: serverTimestamp(),
         });
-        setTimeout(() => loadHistory(), 500);
       }
 
+      setIsStockDirty(false);
       showToast(t.saveSuccess);
     } catch (e) {
       console.error(e);
@@ -646,10 +683,53 @@ export default function StockAdjustmentPage() {
     }
   };
 
-  /* ── Batch Qty & Price Editor Save Handler & Item Stock Recalculator ── */
+  /* ── Batch Qty & Price Editor Save Handler with Deficit Fix ── */
   const handleSaveBatchEdit = async (b) => {
     setIsSavingBatch(true);
     try {
+      const parentItem = items.find(i => i.id === selectedItem);
+      
+      // ✅ අතථ්‍ය සෘණ තොගය (Virtual Deficit) වෙනස් කළ විට සෘජුවම Parent Item එක යාවත්කාලීන කරයි
+      if (b.isVirtualDeficit) {
+        const nextRemaining = parseFloat(batchEditData.remainingQty) || 0; // user සෘණ තොගය 0 කළ විට
+
+        const otherBatchesSum = selectedItemBatches
+          .filter(x => x.batchId !== b.batchId)
+          .reduce((sum, x) => sum + parseFloat(x.remainingQty || 0), 0);
+        
+        const newTotalStock = otherBatchesSum + nextRemaining;
+
+        const itemRef = doc(db, 'items', selectedItem);
+        const writeBt = writeBatch(db);
+        
+        writeBt.update(itemRef, {
+          stock: newTotalStock,
+          currentStock: newTotalStock,
+          'stocks.Main_Store': newTotalStock
+        });
+
+        const diff = nextRemaining - b.remainingQty;
+        if (diff !== 0) {
+          const adjRef = doc(collection(db, 'stockAdjustments'));
+          writeBt.set(adjRef, {
+            uid:       user.uid,
+            itemId:    selectedItem,
+            itemName:  parentItem?.name || 'Unknown',
+            type:      diff > 0 ? 'add' : 'reduce',
+            qty:       Math.abs(diff),
+            reason:    `Adjusted POS Overdrawn Deficit Stock`,
+            date:      new Date().toISOString().split('T')[0],
+            createdAt: serverTimestamp(),
+          });
+        }
+
+        await writeBt.commit();
+        showToast(t.batchAdjustSuccess);
+        setEditingBatchId(null);
+        return;
+      }
+
+      // සාමාන්‍ය Batch වෙනස් කිරීමේ පියවර
       const docRef = doc(db, b.invoiceCollection, b.invoiceId);
       const docSnap = await getDoc(docRef);
 
@@ -663,39 +743,52 @@ export default function StockAdjustmentPage() {
       if (b.itemIndex >= 0 && b.itemIndex < itemsArray.length) {
         const targetItem = { ...itemsArray[b.itemIndex] };
         
-        // Find existing quantities and values
         const currentRemaining = targetItem.remainingQty !== undefined ? parseFloat(targetItem.remainingQty) : parseFloat(targetItem.qty || targetItem.quantity || 0);
-        const nextRemaining = Math.max(0, parseFloat(batchEditData.remainingQty) || 0);
+        const nextRemaining = parseFloat(batchEditData.remainingQty) || 0;
         const nextNetPrice = parseFloat(batchEditData.buyingNetPrice) || 0;
+        
+        const nextRetailPrice = parseFloat(batchEditData.retailPrice) || 0;
+        const nextRetailDiscount = parseFloat(batchEditData.retailDiscount) || 0;
+        const nextWholesalePrice = parseFloat(batchEditData.wholesalePrice) || 0;
+        const nextWholesaleDiscount = parseFloat(batchEditData.wholesaleDiscount) || 0;
+        const nextLoosePrice = parseFloat(batchEditData.loosePrice) || 0;
+        const nextLooseDiscount = parseFloat(batchEditData.looseDiscount) || 0;
 
-        // Apply changes
+        // Apply Qty & Cost changes
         targetItem.remainingQty = nextRemaining;
         targetItem.buyingNetPrice = nextNetPrice;
-        
-        // Synced legacy batch properties
         if (targetItem.netPrice !== undefined) targetItem.netPrice = nextNetPrice;
         if (targetItem.unitPrice !== undefined) targetItem.unitPrice = nextNetPrice;
         if (targetItem.qty !== undefined && targetItem.remainingQty === undefined) targetItem.qty = nextRemaining;
 
+        // Apply Pricing Changes to Batch
+        targetItem.retailPrice = nextRetailPrice;
+        targetItem.sellingPriceRetail = nextRetailPrice;
+        targetItem.retailDiscount = nextRetailDiscount;
+
+        targetItem.wholesalePrice = nextWholesalePrice;
+        targetItem.sellingPriceWholesale = nextWholesalePrice;
+        targetItem.wholesaleDiscount = nextWholesaleDiscount;
+
+        targetItem.loosePrice = nextLoosePrice;
+        targetItem.sellingPriceLoose = nextLoosePrice;
+        targetItem.looseDiscount = nextLooseDiscount;
+
         itemsArray[b.itemIndex] = targetItem;
 
-        // Perform write batch to ensure transactional consistency
         const writeBt = writeBatch(db);
         
-        // 1. Update the purchase/invoice document
         writeBt.update(docRef, {
           items: itemsArray,
           updatedAt: serverTimestamp()
         });
 
-        // ✅ Calculate the absolute sum of all remaining batches to prevent mismatch and negative stock bugs
         const otherBatchesSum = selectedItemBatches
           .filter(x => x.batchId !== b.batchId)
           .reduce((sum, x) => sum + parseFloat(x.remainingQty || 0), 0);
         
-        const newTotalStock = Math.max(0, otherBatchesSum + nextRemaining);
+        const newTotalStock = otherBatchesSum + nextRemaining;
 
-        // 2. Set absolute parent item's stocks directly
         const itemRef = doc(db, 'items', selectedItem);
         writeBt.update(itemRef, {
           stock: newTotalStock,
@@ -703,7 +796,6 @@ export default function StockAdjustmentPage() {
           'stocks.Main_Store': newTotalStock
         });
 
-        // 3. Log stock adjustment history
         const diff = nextRemaining - currentRemaining;
         if (diff !== 0) {
           const adjRef = doc(collection(db, 'stockAdjustments'));
@@ -722,7 +814,6 @@ export default function StockAdjustmentPage() {
         await writeBt.commit();
         showToast(t.batchAdjustSuccess);
         setEditingBatchId(null);
-        setTimeout(() => loadHistory(), 500);
       }
     } catch (err) {
       console.error(err);
@@ -736,7 +827,13 @@ export default function StockAdjustmentPage() {
     setEditingBatchId(b.batchId);
     setBatchEditData({
       remainingQty: b.remainingQty.toString(),
-      buyingNetPrice: b.buyingNetPrice.toString()
+      buyingNetPrice: b.buyingNetPrice.toString(),
+      retailPrice: b.retailPrice.toString(),
+      retailDiscount: b.retailDiscount.toString(),
+      wholesalePrice: b.wholesalePrice.toString(),
+      wholesaleDiscount: b.wholesaleDiscount.toString(),
+      loosePrice: b.loosePrice.toString(),
+      looseDiscount: b.looseDiscount.toString()
     });
   };
 
@@ -772,7 +869,6 @@ export default function StockAdjustmentPage() {
       if (count > 0) {
         await batch.commit();
         showToast(`${count} ${t.syncDone}`);
-        loadHistory();
       } else {
         showToast(t.syncNone, 'error');
       }
@@ -839,7 +935,7 @@ export default function StockAdjustmentPage() {
     };
   };
 
-  /* ── Loading ── */
+  /* ── Loading State ── */
   if (loading) {
     return (
       <div style={{ textAlign: 'center', padding: 50 }}>
@@ -893,7 +989,7 @@ export default function StockAdjustmentPage() {
         </button>
       </div>
 
-      {/* Search */}
+      {/* Search Bar */}
       <div style={cardStyle}>
         <div style={{ position: 'relative' }} ref={dropdownRef}>
           <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 5, fontSize: 15 }}>
@@ -913,6 +1009,7 @@ export default function StockAdjustmentPage() {
                     setSelectedItem('');
                     setEditData(null);
                     setOriginalData(null);
+                    setIsStockDirty(false);
                   }
                 }
               }}
@@ -943,16 +1040,18 @@ export default function StockAdjustmentPage() {
 
           {selectedItem && (() => {
             const si = items.find((i) => i.id === selectedItem);
+            const rawStock = getActualStock(si);
             return (
               <div style={{
                 marginTop: 8, padding: '8px 14px',
-                background: '#dcfce7', borderRadius: 8,
-                fontSize: 13, color: '#166534',
+                background: rawStock >= 0 ? '#dcfce7' : '#fee2e2', 
+                borderRadius: 8, fontSize: 13, 
+                color: rawStock >= 0 ? '#166534' : '#991b1b',
                 display: 'inline-flex', alignItems: 'center', gap: 8,
               }}>
                 <strong>{si?.name}</strong>
                 {si?.code && <span style={{ color: '#64748b' }}>| {t.code}: {si.code}</span>}
-                <span>| {t.stock}: <strong>{getActualStock(si)}</strong></span>
+                <span>| {t.stock}: <strong style={{ textDecoration: rawStock < 0 ? 'underline' : 'none' }}>{rawStock}</strong></span>
               </div>
             );
           })()}
@@ -992,8 +1091,8 @@ export default function StockAdjustmentPage() {
                     <span style={{
                       padding: '3px 10px', borderRadius: 12,
                       fontSize: 12, fontWeight: 'bold',
-                      background: stk > 0 ? '#dcfce7' : '#fee2e2',
-                      color:      stk > 0 ? '#166534' : '#991b1b',
+                      background: stk >= 0 ? '#dcfce7' : '#fee2e2',
+                      color:      stk >= 0 ? '#166534' : '#991b1b',
                     }}>
                       {t.stock}: {stk}
                     </span>
@@ -1014,20 +1113,21 @@ export default function StockAdjustmentPage() {
         </div>
       </div>
 
-      {/* ★★★ REAL-TIME PURCHASED BATCHES (තොග විස්තර) ★ Adjustments & Auto-Sync enabled ★★★ */}
+      {/* Real-time Purchased Batches Panel */}
       {selectedItem && (
         <div style={{ ...cardStyle, borderLeft: '5px solid #2563eb' }}>
           <div style={{ ...sectionTitleStyle, fontSize: 16, color: '#1e3a8a', marginBottom: 14 }}>
             {t.batchesTitle}
           </div>
-          {(Array.isArray(selectedItemBatches) ? selectedItemBatches : []).length === 0 ? (
+          {selectedItemBatches.length === 0 ? (
             <div style={{ padding: '24px 12px', textAlign: 'center', color: '#94a3b8', fontSize: 13, background: '#f8fafc', borderRadius: 10, border: '1px dashed #cbd5e1' }}>
               📭 {t.noBatches}
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
-              {(Array.isArray(selectedItemBatches) ? selectedItemBatches : []).map((b) => {
-                const isZero = b.remainingQty <= 0;
+              {selectedItemBatches.map((b) => {
+                const isZero = b.remainingQty === 0;
+                const isNegative = b.remainingQty < 0 || b.isVirtualDeficit;
                 const isEditing = b.batchId === editingBatchId;
 
                 return (
@@ -1035,20 +1135,19 @@ export default function StockAdjustmentPage() {
                     key={b.batchId} 
                     style={{ 
                       padding: '14px 16px', borderRadius: 12, 
-                      background: isEditing ? '#fffbeb' : isZero ? '#fafafa' : '#f0f9ff', 
-                      border: isEditing ? '2px solid #fbbf24' : isZero ? '1px solid #cbd5e1' : '1px solid #93c5fd',
+                      background: isEditing ? '#fffbeb' : isNegative ? '#fff5f5' : isZero ? '#fafafa' : '#f0f9ff', 
+                      border: isEditing ? '2px solid #fbbf24' : isNegative ? '2.5px dashed #f87171' : isZero ? '1px solid #cbd5e1' : '1px solid #93c5fd',
                       display: 'flex', flexDirection: 'column', gap: 10,
                       opacity: isZero && !isEditing ? 0.6 : 1
                     }}
                   >
-                    {/* Header Row */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
                       <div>
-                        <div style={{ fontWeight: 800, fontSize: 14, color: '#1e3a8a' }}>
-                          👤 {b.supplierName}
+                        <div style={{ fontWeight: 800, fontSize: 14, color: isNegative ? '#991b1b' : '#1e3a8a' }}>
+                          {b.supplierName}
                         </div>
                         <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>
-                          📅 {fmtDate(b.date)} | Invoice: <strong style={{ color: '#475569' }}>#{b.invoiceId.slice(-6).toUpperCase()}</strong>
+                          {b.date ? `📅 ${fmtDate(b.date)} | ` : ''}Invoice: <strong style={{ color: '#475569' }}>{b.invoiceId === 'VIRTUAL' ? 'POS NEGATIVE' : `#${b.invoiceId.slice(-6).toUpperCase()}`}</strong>
                         </div>
                       </div>
                       
@@ -1056,7 +1155,7 @@ export default function StockAdjustmentPage() {
                         <button
                           onClick={() => startEditingBatch(b)}
                           style={{
-                            padding: '4px 10px', background: '#3b82f6', color: 'white',
+                            padding: '4px 10px', background: isNegative ? '#ef4444' : '#3b82f6', color: 'white',
                             border: 'none', borderRadius: 6, fontSize: 11, fontWeight: 'bold',
                             cursor: 'pointer'
                           }}
@@ -1066,11 +1165,12 @@ export default function StockAdjustmentPage() {
                       )}
                     </div>
 
-                    {/* Editor Form / Viewer Grid */}
                     {isEditing ? (
-                      <div style={{ background: '#fff', padding: 12, borderRadius: 8, border: '1px solid #fde68a' }}>
-                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                          <div style={{ flex: 1, minWidth: 120 }}>
+                      <div style={{ background: '#fff', padding: 14, borderRadius: 8, border: '1px solid #fde68a' }}>
+                        
+                        {/* Row 1: Stock Remaining & Buying Price */}
+                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+                          <div style={{ flex: '1 1 120px' }}>
                             <label style={{ fontSize: 11, fontWeight: 'bold', color: '#64748b', display: 'block', marginBottom: 4 }}>
                               {t.remaining} {t.qtyLabel}
                             </label>
@@ -1082,19 +1182,113 @@ export default function StockAdjustmentPage() {
                               style={inputStyle}
                             />
                           </div>
-                          <div style={{ flex: 1, minWidth: 120 }}>
+                          <div style={{ flex: '1 1 120px' }}>
                             <label style={{ fontSize: 11, fontWeight: 'bold', color: '#64748b', display: 'block', marginBottom: 4 }}>
                               {t.buyingCost} (Rs.)
                             </label>
                             <input 
                               type="number" 
                               step="0.01"
+                              disabled={b.isVirtualDeficit}
                               value={batchEditData.buyingNetPrice}
                               onChange={(e) => setBatchEditData(prev => ({ ...prev, buyingNetPrice: e.target.value }))}
                               style={inputStyle}
                             />
                           </div>
                         </div>
+
+                        {/* pricing rows disabled if virtual deficit */}
+                        {!b.isVirtualDeficit && (
+                          <>
+                            {/* Row 2: Retail Pricing in Batch */}
+                            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12, borderTop: '1px dashed #e2e8f0', paddingTop: 10 }}>
+                              <div style={{ flex: '1 1 120px' }}>
+                                <label style={{ fontSize: 11, fontWeight: 'bold', color: '#1e3a8a', display: 'block', marginBottom: 4 }}>
+                                  🏪 සිල්ලර මිල (Retail Price)
+                                </label>
+                                <input 
+                                  type="number" 
+                                  step="0.01"
+                                  value={batchEditData.retailPrice}
+                                  onChange={(e) => setBatchEditData(prev => ({ ...prev, retailPrice: e.target.value }))}
+                                  style={inputStyle}
+                                />
+                              </div>
+                              <div style={{ flex: '1 1 120px' }}>
+                                <label style={{ fontSize: 11, fontWeight: 'bold', color: '#1e3a8a', display: 'block', marginBottom: 4 }}>
+                                  සිල්ලර වට්ටම % (Retail Disc.)
+                                </label>
+                                <input 
+                                  type="number" 
+                                  step="0.1"
+                                  value={batchEditData.retailDiscount}
+                                  onChange={(e) => setBatchEditData(prev => ({ ...prev, retailDiscount: e.target.value }))}
+                                  style={inputStyle}
+                                />
+                              </div>
+                            </div>
+
+                            {/* Row 3: Wholesale Pricing in Batch */}
+                            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+                              <div style={{ flex: '1 1 120px' }}>
+                                <label style={{ fontSize: 11, fontWeight: 'bold', color: '#6d28d9', display: 'block', marginBottom: 4 }}>
+                                  🏭 තොග මිල (Wholesale Price)
+                                </label>
+                                <input 
+                                  type="number" 
+                                  step="0.01"
+                                  value={batchEditData.wholesalePrice}
+                                  onChange={(e) => setBatchEditData(prev => ({ ...prev, wholesalePrice: e.target.value }))}
+                                  style={inputStyle}
+                                />
+                              </div>
+                              <div style={{ flex: '1 1 120px' }}>
+                                <label style={{ fontSize: 11, fontWeight: 'bold', color: '#6d28d9', display: 'block', marginBottom: 4 }}>
+                                  තොග වට්ටම % (Wholesale Disc.)
+                                </label>
+                                <input 
+                                  type="number" 
+                                  step="0.1"
+                                  value={batchEditData.wholesaleDiscount}
+                                  onChange={(e) => setBatchEditData(prev => ({ ...prev, wholesaleDiscount: e.target.value }))}
+                                  style={inputStyle}
+                                />
+                              </div>
+                            </div>
+
+                            {/* Row 4: Loose Pricing in Batch */}
+                            {hasLoosePrice && (
+                              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+                                <div style={{ flex: '1 1 120px' }}>
+                                  <label style={{ fontSize: 11, fontWeight: 'bold', color: '#b45309', display: 'block', marginBottom: 4 }}>
+                                    📦 ලූස් මිල (Loose Price)
+                                  </label>
+                                  <input 
+                                    type="number" 
+                                    step="0.01"
+                                    value={batchEditData.loosePrice}
+                                    onChange={(e) => setBatchEditData(prev => ({ ...prev, loosePrice: e.target.value }))}
+                                    style={inputStyle}
+                                  />
+                                </div>
+                                <div style={{ flex: '1 1 120px' }}>
+                                  <label style={{ fontSize: 11, fontWeight: 'bold', color: '#b45309', display: 'block', marginBottom: 4 }}>
+                                    ලූස් වට්ටම % (Loose Disc.)
+                                  </label>
+                                  <input 
+                                    type="number" 
+                                    step="0.1"
+                                    value={batchEditData.looseDiscount}
+                                    onChange={(e) => setBatchEditData(prev => ({ ...prev, looseDiscount: e.target.value }))}
+                                    style={inputStyle}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {/* Action Buttons */}
                         <div style={{ display: 'flex', gap: 8, marginTop: 10, justifyContent: 'flex-end' }}>
                           <button
                             disabled={isSavingBatch}
@@ -1113,27 +1307,47 @@ export default function StockAdjustmentPage() {
                         </div>
                       </div>
                     ) : (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 10, background: '#fff', border: '1px solid #cbd5e1', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
-                            Cost: Rs.{fmt(b.buyingNetPrice)}
-                          </span>
-                          {b.retailPrice > 0 && (
-                            <span style={{ fontSize: 10, background: '#e0f2fe', color: '#0369a1', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
-                              Retail: Rs.{fmt(b.retailPrice - (b.retailPrice * b.retailDiscount / 100))}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {/* Passive viewer pricing labels */}
+                        {!b.isVirtualDeficit && (
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: 10, background: '#fff', border: '1px solid #cbd5e1', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
+                              Cost: Rs.{fmt(b.buyingNetPrice)}
                             </span>
-                          )}
-                        </div>
-
-                        <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontSize: 15, fontWeight: 900, color: isZero ? '#64748b' : '#16a34a' }}>
-                            {fmtQ(b.remainingQty)} <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8' }}>/ {fmtQ(b.qty)}</span>
+                            {b.retailPrice > 0 && (
+                              <span style={{ fontSize: 10, background: '#e0f2fe', color: '#0369a1', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
+                                Retail: Rs.{fmt(b.retailPrice)} {b.retailDiscount > 0 ? `(-${b.retailDiscount}%) = Rs.${fmt(b.retailPrice - (b.retailPrice * b.retailDiscount / 100))}` : ''}
+                              </span>
+                            )}
+                            {b.wholesalePrice > 0 && (
+                              <span style={{ fontSize: 10, background: '#f5f3ff', color: '#6d28d9', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
+                                Wholesale: Rs.{fmt(b.wholesalePrice)} {b.wholesaleDiscount > 0 ? `(-${b.wholesaleDiscount}%) = Rs.${fmt(b.wholesalePrice - (b.wholesalePrice * b.wholesaleDiscount / 100))}` : ''}
+                              </span>
+                            )}
+                            {hasLoosePrice && b.loosePrice > 0 && (
+                              <span style={{ fontSize: 10, background: '#fffbeb', color: '#b45309', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>
+                                Loose: Rs.{fmt(b.loosePrice)} {b.looseDiscount > 0 ? `(-${b.looseDiscount}%) = Rs.${fmt(b.loosePrice - (b.loosePrice * b.looseDiscount / 100))}` : ''}
+                              </span>
+                            )}
                           </div>
-                          {isZero ? (
-                            <span style={{ fontSize: 9, background: '#f1f5f9', color: '#64748b', padding: '1px 6px', borderRadius: 4, fontWeight: 700, display: 'inline-block', marginTop: 4 }}>EMPTY</span>
-                          ) : (
-                            <span style={{ fontSize: 9, background: '#dcfce7', color: '#16a34a', padding: '1px 6px', borderRadius: 4, fontWeight: 700, display: 'inline-block', marginTop: 4 }}>ACTIVE</span>
-                          )}
+                        )}
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+                          <span style={{ fontSize: 11, color: isNegative ? '#b91c1c' : '#64748b', fontWeight: isNegative ? 700 : 500 }}>
+                            {b.isVirtualDeficit ? '⚠️ POS සෘණ විකුණුම් නිසා තොගයේ ඇතිවූ අඩුව පියවීමට මෙය 0 කරන්න' : 'Batch Pricing Details Synced'}
+                          </span>
+                          <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontSize: 15, fontWeight: 900, color: isNegative ? '#dc2626' : isZero ? '#64748b' : '#16a34a' }}>
+                              {fmtQ(b.remainingQty)} <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8' }}>{b.isVirtualDeficit ? '' : `/ ${fmtQ(b.qty)}`}</span>
+                            </div>
+                            {isNegative ? (
+                              <span style={{ fontSize: 9, background: '#fee2e2', color: '#b91c1c', padding: '1px 6px', borderRadius: 4, fontWeight: 700, display: 'inline-block', marginTop: 2 }}>POS OVERDRAWN</span>
+                            ) : isZero ? (
+                              <span style={{ fontSize: 9, background: '#f1f5f9', color: '#64748b', padding: '1px 6px', borderRadius: 4, fontWeight: 700, display: 'inline-block', marginTop: 2 }}>EMPTY</span>
+                            ) : (
+                              <span style={{ fontSize: 9, background: '#dcfce7', color: '#16a34a', padding: '1px 6px', borderRadius: 4, fontWeight: 700, display: 'inline-block', marginTop: 2 }}>ACTIVE</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )}
@@ -1145,7 +1359,7 @@ export default function StockAdjustmentPage() {
         </div>
       )}
 
-      {/* Edit Form */}
+      {/* Main Edit Form */}
       {editData && (
         <div style={cardStyle}>
           <div style={{
@@ -1166,7 +1380,7 @@ export default function StockAdjustmentPage() {
             )}
           </div>
 
-          {/* General Info */}
+          {/* General Information Section */}
           <div style={sectionStyle}>
             <div style={sectionTitleStyle}>{t.generalInfo}</div>
             <div style={fieldRowStyle}>
@@ -1189,7 +1403,7 @@ export default function StockAdjustmentPage() {
               <div style={fieldStyle}>
                 <label style={labelStyle}>{t.quantity}</label>
                 <input
-                  type="number" min="0" step="1"
+                  type="number" step="1"
                   value={editData.stock}
                   onChange={(e) => handleEditChange('stock', e.target.value)}
                   style={{
@@ -1277,7 +1491,7 @@ export default function StockAdjustmentPage() {
             </div>
           )}
 
-          {/* Buttons */}
+          {/* Bottom Action Buttons */}
           <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
             <button
               onClick={handleSaveEdit}
@@ -1314,14 +1528,14 @@ export default function StockAdjustmentPage() {
         </div>
       )}
 
-      {/* Prompt */}
+      {/* Select Prompt */}
       {!editData && !selectedItem && (
         <div style={{ ...cardStyle, textAlign: 'center', padding: 40, color: '#94a3b8', fontSize: 15 }}>
           ☝️ {t.selectPrompt}
         </div>
       )}
 
-      {/* History */}
+      {/* Real-time Adjustment History Table */}
       <h3 style={{ color: '#64748b', marginTop: 30 }}>{t.historyTitle}</h3>
       <div style={{
         background: 'white', borderRadius: 12,
