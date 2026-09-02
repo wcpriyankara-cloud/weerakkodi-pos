@@ -6,12 +6,13 @@
 // ✅ Real-time Firestore sync with index-free safety
 // 🚀 FIXED: Profile Picture upload and update support added during Customer Edit modal
 // 🚀 FIXED: Cash & Bank Register (Cash sync) integration matching Customers.jsx
+// 🚀 FIXED: Customer List Cache Invalidation on edit/update to guarantee instant sync on Customers list page
 
 import React, {
   useState, useEffect, useRef, useCallback, useMemo, memo
 } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { db } from '@/firebaseConfig';
+import { db } from '@/shared/firebase-config';
 import { useUserAuth } from '@/context/UserContext';
 import InvoiceOutputManager from '@/components/InvoiceOutputManager';
 import {
@@ -37,7 +38,6 @@ const PAYMENT_METHODS = [
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
-// ★ Local Date & Time generators to sync with Customers.jsx
 const nowHHMM24 = () => {
   const d = new Date();
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
@@ -51,7 +51,7 @@ const localDateStr = () => {
 const validateAmount = v => {
   const n = parseFloat(v);
   if (isNaN(n) || n <= 0) return 'වලංගු මුදලක් ඇතුළු කරන්න';
-  if (n > 10_000_000) return 'ඉතා විශාල මුදලකි';
+  if (n > 10000000) return 'ඉතා විශාල මුදලකි';
   return null;
 };
 
@@ -106,7 +106,7 @@ function removeDuplicatePayments(txns) {
   const filtered = manual.filter(mp => {
     const idx = src.findIndex((sp, i) => {
       if (used.has(i)) return false;
-      return Math.abs(sp.amount - mp.amount) < 0.01 && Math.abs(sp.timestamp - mp.timestamp) < 120_000;
+      return Math.abs(sp.amount - mp.amount) < 0.01 && Math.abs(sp.timestamp - mp.timestamp) < 120000;
     });
     if (idx >= 0) { used.add(idx); return false; }
     return true;
@@ -114,7 +114,7 @@ function removeDuplicatePayments(txns) {
   return [...other, ...src, ...filtered];
 }
 
-// ─── Translations ─────────────────────────────────────────
+// ─── TRANSLATIONS ─────────────────────────────────────────
 const translations = {
   si: {
     title: 'පාරිභෝගික විස්තර', balance: 'වත්මන් ශේෂය', addCredit: 'ණය එකතු කරන්න',
@@ -146,8 +146,8 @@ const translations = {
     balanceDue: 'ගෙවිය යුතු', grandTotal: 'එකතුව', discount: 'වට්ටම්',
     servicePayment: 'සේවා ගෙවීම', fullPaid: 'සම්පූර්ණ', partialPaid: 'අර්ධ',
     unpaid: 'නොගෙවූ', warranty: 'වගකීම', days: 'දින', viewBill: 'බිල්පත',
-    invoicePayment: 'Invoice ගෙවීම', adjustment: 'ශේෂ සැකසුම',
-    totalCredits: 'මුළු ණය', totalPayments: 'මුළු ගෙවීම්',
+    invoicePayment: 'Invoice ගෙවීම', adjustment: 'adjustment',
+    totalCredits: 'מוළු ණය', totalPayments: 'මුළු ගෙවීම්',
     paymentMethod: 'ගෙවීම් ක්‍රමය', bankAccount: 'බැංකු ගිණුම',
     selectBankAccount: 'බැංකු ගිණුම තෝරන්න *', noBankAccounts: 'බැංකු ගිණුම් නොමැත.',
     bankBalanceBefore: 'වත්මන් බැංකු ශේෂය', bankBalanceAfter: 'ගනුදෙනුවෙන් පසු ශේෂය',
@@ -206,7 +206,7 @@ const translations = {
   }
 };
 
-// ─── Hooks ────────────────────────────────────────────────
+// ─── HOOKS ────────────────────────────────────────────────
 function useToast() {
   const [toast, setToast] = useState(null);
   const timerRef = useRef(null);
@@ -242,7 +242,7 @@ function useBankAccounts(uid) {
   return { bankAccounts, bankLoading };
 }
 
-// ─── Toast ────────────────────────────────────────────────
+// ─── TOAST COMPONENT ──────────────────────────────────────
 const Toast = memo(function Toast({ toast }) {
   if (!toast) return null;
   return (
@@ -261,7 +261,7 @@ const Toast = memo(function Toast({ toast }) {
   );
 });
 
-// ─── Transaction Modal ────────────────────────────────────
+// ─── TRANSACTION MODAL ────────────────────────────────────
 const TransactionModal = memo(function TransactionModal({
   show, type, customer, onClose, onConfirm,
   isProcessing, bankAccounts, bankLoading, t, lang
@@ -298,13 +298,17 @@ const TransactionModal = memo(function TransactionModal({
 
   const selectedBank = isBank ? bankAccounts.find(a => a.id === bankId) : null;
   const amt = nn(amount);
-  const bankBalAfter = useMemo(() => selectedBank && amt ? selectedBank.currentBalance + amt : null, [selectedBank, amt]);
+  const bankBalAfter = useMemo(() => {
+    if (!selectedBank || !amt) return null;
+    return isCredit ? selectedBank.currentBalance - amt : selectedBank.currentBalance + amt;
+  }, [selectedBank, amt, isCredit]);
+
   const custBalAfter = useMemo(() => { if (!customer || !amt) return null; const cur = nn(customer.currentBalance); return isCredit ? cur + amt : cur - amt; }, [customer, amt, isCredit]);
 
   const handleImageSelect = e => {
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onloadend = () => setReceiptImage(reader.result);
+    reader.onloadend = () => setReceiptImage(reader.endResult || reader.result);
     reader.readAsDataURL(file);
     if (fileRef.current) fileRef.current.value = '';
   };
@@ -377,7 +381,7 @@ const TransactionModal = memo(function TransactionModal({
                 const c = pm.value === 'cash' ? '#16a34a' : pm.value === 'bank' ? '#3b82f6' : '#f59e0b';
                 return (
                   <button key={pm.value} onClick={() => { setMethod(pm.value); setBankErr(''); }} disabled={isProcessing}
-                    style={{ padding: '10px 6px', borderRadius: 10, border: sel ? `2px solid ${c}` : '2px solid #e2e8f0', background: sel ? `${c}12` : 'white', cursor: 'pointer', fontWeight: sel ? 700 : 500, fontSize: 13, color: sel ? c : '#64748b', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                    style={{ padding: '10px 6px', borderRadius: 10, border: sel ? `2px solid ${c}` : '2px solid #e2e8f0', background: sel ? `${c}12` : 'white', cursor: 'pointer', fontWeight: sel ? 700 : 500, fontSize: 13, color: sel ? c : '#64748b', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
                     <span style={{ fontSize: 20 }}>{pm.icon}</span>
                     <span>{lang === 'si' ? pm.si : pm.en}</span>
                   </button>
@@ -459,7 +463,7 @@ const TransactionModal = memo(function TransactionModal({
   );
 });
 
-// ─── Other Modals ─────────────────────────────────────────
+// ─── REMINDER MODAL ───────────────────────────────────────
 const ReminderModal = memo(function ReminderModal({ isOpen, onClose, customer, lang, onUpdateCustomer }) {
   const t = translations[lang];
   const [loading, setLoading] = useState(false);
@@ -470,7 +474,7 @@ const ReminderModal = memo(function ReminderModal({ isOpen, onClose, customer, l
     setLoading(true);
     const k = Math.random().toString(36).substring(2, 10) + Date.now().toString(36).substring(4, 8);
     updateDoc(doc(db, 'customers', customer.id), { portalAccessKey: k }).then(() => { setLink(`${window.location.origin}/portal/${k}`); onUpdateCustomer({ ...customer, portalAccessKey: k }); setLoading(false); });
-  }, [isOpen, customer]);
+  }, [isOpen, customer, onUpdateCustomer]);
   if (!isOpen || !customer) return null;
   const msg = t.reminderMsg.replace('{amount}', customer.currentBalance?.toLocaleString() || '0').replace('{link}', link);
   const phone = customer.phone?.replace(/[^0-9]/g, '');
@@ -485,6 +489,7 @@ const ReminderModal = memo(function ReminderModal({ isOpen, onClose, customer, l
   );
 });
 
+// ─── EDIT TRANSACTION MODAL ───────────────────────────────
 const EditTransactionModal = memo(function EditTransactionModal({ isOpen, onClose, txn, onSave, lang }) {
   const t = translations[lang];
   const [amount, setAmount] = useState(''); const [note, setNote] = useState(''); const [date, setDate] = useState('');
@@ -504,6 +509,7 @@ const EditTransactionModal = memo(function EditTransactionModal({ isOpen, onClos
   );
 });
 
+// ─── SEND LINK MODAL ──────────────────────────────────────
 const SendLinkModal = memo(function SendLinkModal({ isOpen, onClose, customer, onUpdateCustomer, lang }) {
   const [copied, setCopied] = useState(false);
   const [loadingKey, setLoadingKey] = useState(false);
@@ -515,7 +521,7 @@ const SendLinkModal = memo(function SendLinkModal({ isOpen, onClose, customer, o
     setLoadingKey(true);
     const k = Math.random().toString(36).substring(2, 10) + Date.now().toString(36).substring(4, 8);
     updateDoc(doc(db, 'customers', customer.id), { portalAccessKey: k }).then(() => { setPortalKey(k); onUpdateCustomer({ ...customer, portalAccessKey: k }); setLoadingKey(false); });
-  }, [isOpen, customer]);
+  }, [isOpen, customer, onUpdateCustomer]);
   if (!isOpen || !customer) return null;
   const link = portalKey ? `${window.location.origin}/portal/${portalKey}` : '';
   return (
@@ -531,7 +537,7 @@ const SendLinkModal = memo(function SendLinkModal({ isOpen, onClose, customer, o
   );
 });
 
-// ★ Smart Image Compressor & Automatic Cloud Upload Engine for Avatar Uploads
+// ─── SMART AVATAR COMPRESSOR & UPLOAD ENGINE ──────────────
 const handleAvatarUpload = (e, setForm, showToast) => {
   const file = e.target.files?.[0];
   if (!file) return;
@@ -612,6 +618,7 @@ const handleAvatarUpload = (e, setForm, showToast) => {
   reader.readAsDataURL(file);
 };
 
+// ─── EDIT CUSTOMER MODAL ──────────────────────────────────
 const EditCustomerModal = memo(function EditCustomerModal({ isOpen, onClose, customer, onSave, lang, showToast }) {
   const t = translations[lang];
   const [form, setForm] = useState({ name: '', phone: '', address: '', profilePicture: '' });
@@ -633,7 +640,7 @@ const EditCustomerModal = memo(function EditCustomerModal({ isOpen, onClose, cus
     <div style={styles.modalOverlay}><div style={styles.modal}>
       <h3>✏️ {t.editTitle}</h3>
       
-      {/* profilePicture drag/select upload field */}
+      {/* profilePicture drag/select field */}
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, marginBottom: 16 }}>
         <div style={{ position: 'relative', width: 90, height: 90 }}>
           {form.profilePicture ? (
@@ -678,6 +685,7 @@ const EditCustomerModal = memo(function EditCustomerModal({ isOpen, onClose, cus
   );
 });
 
+// ─── DELETE CUSTOMER MODAL ────────────────────────────────
 const DeleteCustomerModal = memo(function DeleteCustomerModal({ isOpen, onClose, customer, onDelete, lang }) {
   const t = translations[lang]; const [confirm, setConfirm] = useState('');
   if (!isOpen) return null;
@@ -694,6 +702,7 @@ const DeleteCustomerModal = memo(function DeleteCustomerModal({ isOpen, onClose,
   );
 });
 
+// ─── SERVICE BILL MODAL ───────────────────────────────────
 const ServiceBillModal = memo(function ServiceBillModal({ isOpen, onClose, productionData, lang }) {
   const t = translations[lang]; if (!isOpen || !productionData) return null;
   const pe = productionData; const grand = nn(pe.grandTotal || pe.totalIncome); const paid = nn(pe.totalPaid); const bal = nn(pe.balanceDue || Math.max(0, grand - paid));
@@ -743,7 +752,7 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
   const [invoiceSettings, setInvoiceSettings] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // ★ Receipt share states
+  // Receipt share states
   const [receiptInvoice, setReceiptInvoice] = useState(null);
 
   const [modals, setModals] = useState({
@@ -757,6 +766,17 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
 
   const { bankAccounts, bankLoading } = useBankAccounts(user?.uid);
 
+  // ✅ Invalidate/Clear the customer list cache inside SessionStorage automatically
+  const invalidateListCache = useCallback(() => {
+    if (user?.uid) {
+      try {
+        sessionStorage.removeItem(`customers_${user.uid}`);
+      } catch (e) {
+        console.warn('Failed to clear customers cache:', e);
+      }
+    }
+  }, [user?.uid]);
+
   useEffect(() => {
     if (!user) return; let c = false;
     getDocs(query(collection(db, 'invoice_settings'), where('uid', '==', user.uid)))
@@ -767,62 +787,209 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
   const langRef = useRef(lang);
   useEffect(() => { langRef.current = lang; }, [lang]);
 
-  // ── fetchData ──────────────────────────────────────────
-  const fetchData = useCallback(async () => {
+  // ── Real-time streams and index-free list reconstruction ──────────────────
+  useEffect(() => {
     if (!id || !user) return;
-    let cancelled = false;
-    try {
-      const snap = await getDoc(doc(db, 'customers', id));
-      if (!snap.exists()) { setLoading(false); return; }
-      const data = snap.data();
-      if (data.uid && data.uid !== user.uid) { router.push('/customers'); return; }
-      if (!cancelled && mountedRef.current) { setCustomer({ id: snap.id, ...data }); if (data.dueDate) setDueDate(data.dueDate); if (data.dueTime) setDueTime(data.dueTime); }
+    setLoading(true);
 
+    const unsubCustomer = onSnapshot(doc(db, 'customers', id), (docSnap) => {
+      if (!docSnap.exists()) {
+        setLoading(false);
+        return;
+      }
+      const data = docSnap.data();
+      if (data.uid && data.uid !== user.uid) {
+        router.push('/customers');
+        return;
+      }
+      setCustomer({ id: docSnap.id, ...data });
+      if (data.dueDate) setDueDate(data.dueDate);
+      if (data.dueTime) setDueTime(data.dueTime);
+    });
+
+    let rawCustTxns = [];
+    let rawInvoices = [];
+    let rawVehicleTrips = [];
+    let rawProduction = [];
+
+    const rebuildTransactionsList = () => {
       const L = translations[langRef.current] || translations.en;
       const allTxns = [];
 
-      const snapTxn = await getDocs(query(collection(db, 'customerTransactions'), where('customerId', '==', id), where('uid', '==', user.uid)));
-      if (cancelled) return;
-      snapTxn.docs.forEach(d => { const dt = d.data(); const ts = extractValidTimestamp(dt, dt.date); allTxns.push({ id: d.id, type: dt.type, amount: nn(dt.amount), date: dt.date, time: getAccurateTime(dt.time, ts), note: dt.note, source: dt.source || 'manual', receiptImage: dt.receiptImage, timestamp: ts, bankAccountName: dt.bankAccountName || null, bankAccountId: dt.bankAccountId || null }); });
+      // 1. Process customerTransactions
+      rawCustTxns.forEach(dt => {
+        const ts = extractValidTimestamp(dt, dt.date);
+        allTxns.push({
+          id: dt.id, type: dt.type, amount: nn(dt.amount), date: dt.date,
+          time: getAccurateTime(dt.time, ts), note: dt.note, source: dt.source || 'manual',
+          receiptImage: dt.receiptImage, timestamp: ts, bankAccountName: dt.bankAccountName || null,
+          bankAccountId: dt.bankAccountId || null
+        });
+      });
 
-      const snapInv = await getDocs(query(collection(db, 'salesInvoices'), where('customerId', '==', id), where('uid', '==', user.uid)));
-      if (cancelled) return;
-      snapInv.docs.forEach(d => { const di = d.data(); const ts = extractValidTimestamp(di, di.date); const gt = nn(di.grandTotal); const pa = nn(di.paidAmount); allTxns.push({ id: d.id, type: 'credit', amount: gt, date: di.date, time: getAccurateTime(di.time, ts), note: `🧾 Invoice #${di.invoiceNo || ''}`, source: 'invoice', timestamp: ts }); if (pa > 0) allTxns.push({ id: d.id + '_ip', type: 'payment', amount: pa, date: di.date, time: getAccurateTime(di.time, ts), note: `💵 ${L.invoicePayment} #${di.invoiceNo || ''}`, source: 'invoicePayment', timestamp: ts + 100 }); });
+      // 2. Process salesInvoices
+      rawInvoices.forEach(di => {
+        const ts = extractValidTimestamp(di, di.date);
+        const gt = nn(di.grandTotal);
+        const pa = nn(di.paidAmount);
+        allTxns.push({
+          id: di.id, type: 'credit', amount: gt, date: di.date,
+          time: getAccurateTime(di.time, ts), note: `🧾 Invoice #${di.invoiceNo || ''}`,
+          source: 'invoice', timestamp: ts
+        });
+        if (pa > 0) {
+          allTxns.push({
+            id: di.id + '_ip', type: 'payment', amount: pa, date: di.date,
+            time: getAccurateTime(di.time, ts), note: `💵 ${L.invoicePayment} #${di.invoiceNo || ''}`,
+            source: 'invoicePayment', timestamp: ts + 100
+          });
+        }
+      });
 
-      try {
-        const vtSnap = await getDocs(query(collection(db, `users/${user.uid}/vehicleTrips`), where('customerId', '==', id)));
-        if (cancelled) return;
-        vtSnap.docs.forEach(d => { const dt = d.data(); const ts = dt.createdAt?.toDate ? dt.createdAt.toDate().getTime() : Date.now(); const fare = nn(dt.fare); const paid = nn(dt.paidAmount); const tripDate = dt.tripDate?.toDate ? dt.tripDate.toDate().toISOString().split('T')[0] : new Date(ts).toISOString().split('T')[0]; const tm = new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }); if (fare > 0) allTxns.push({ id: d.id + '_f', type: 'credit', amount: fare, date: tripDate, time: tm, note: `🚛 ${L.transportFare} (${dt.vehicleNo || ''})`, source: 'vehicleTrip', timestamp: ts, tripData: { ...dt, fare, paidAmount: paid } }); if (paid > 0) allTxns.push({ id: d.id + '_p', type: 'payment', amount: paid, date: tripDate, time: new Date(ts + 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }), note: `🚛 ${L.transportPayment} (${dt.vehicleNo || ''})`, source: 'vehicleTrip', timestamp: ts + 1000 }); });
-      } catch { }
+      // 3. Process vehicleTrips
+      rawVehicleTrips.forEach(dt => {
+        const ts = dt.createdAt?.toDate ? dt.createdAt.toDate().getTime() : Date.now();
+        const fare = nn(dt.fare);
+        const paid = nn(dt.paidAmount);
+        const tripDate = dt.tripDate?.toDate ? dt.tripDate.toDate().toISOString().split('T')[0] : new Date(ts).toISOString().split('T')[0];
+        const tm = new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+        if (fare > 0) {
+          allTxns.push({
+            id: dt.id + '_f', type: 'credit', amount: fare, date: tripDate, time: tm,
+            note: `🚛 ${L.transportFare} (${dt.vehicleNo || ''})`, source: 'vehicleTrip',
+            timestamp: ts, tripData: { ...dt, fare, paidAmount: paid }
+          });
+        }
+        if (paid > 0) {
+          allTxns.push({
+            id: dt.id + '_p', type: 'payment', amount: paid, date: tripDate,
+            time: new Date(ts + 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+            note: `🚛 ${L.transportPayment} (${dt.vehicleNo || ''})`, source: 'vehicleTrip',
+            timestamp: ts + 1000
+          });
+        }
+      });
 
-      if (!cancelled && data.name) {
-        try {
-          const seen = new Set(); const peList = [];
-          try { const s1 = await getDocs(query(collection(db, 'productionEntries'), where('customerId', '==', id), where('uid', '==', user.uid))); s1.docs.forEach(d => { if (!seen.has(d.id)) { seen.add(d.id); peList.push({ docId: d.id, ...d.data() }); } }); } catch { }
-          if (!peList.length) { try { const s2 = await getDocs(query(collection(db, 'productionEntries'), where('customerName', '==', data.name), where('uid', '==', user.uid))); s2.docs.forEach(d => { if (!seen.has(d.id)) { seen.add(d.id); peList.push({ docId: d.id, ...d.data() }); } }); } catch { } }
-          if (!cancelled) {
-            peList.forEach(pe => { if (pe.isStandaloneExpense) return; const ts = pe.createdAt?.toDate ? pe.createdAt.toDate().getTime() : Date.now(); const peDate = pe.date || new Date(ts).toISOString().split('T')[0]; const gt = nn(pe.grandTotal || pe.totalIncome); const tp = nn(pe.totalPaid); if (gt > 0) allTxns.push({ id: pe.docId + '_s', type: 'credit', amount: gt, date: peDate, time: new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }), note: `🔧 ${pe.invoiceNumber || L.serviceEntry}`, source: 'production', timestamp: ts, productionData: pe }); if (tp > 0) allTxns.push({ id: pe.docId + '_p', type: 'payment', amount: tp, date: peDate, time: new Date(ts + 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }), note: `💳 ${L.servicePayment} ${pe.invoiceNumber || ''}`.trim(), source: 'production', timestamp: ts + 1000, productionData: pe }); });
-          }
-        } catch { }
-      }
-
-      const aSnap = await getDocs(query(collection(db, 'transactionApprovals'), where('customerId', '==', id), where('status', '==', 'pending')));
-      if (cancelled) return;
-      if (mountedRef.current) setPendingApprovals(aSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      // 4. Process productionEntries
+      rawProduction.forEach(pe => {
+        if (pe.isStandaloneExpense) return;
+        const ts = pe.createdAt?.toDate ? pe.createdAt.toDate().getTime() : Date.now();
+        const peDate = pe.date || new Date(ts).toISOString().split('T')[0];
+        const gt = nn(pe.grandTotal || pe.totalIncome);
+        const tp = nn(pe.totalPaid);
+        if (gt > 0) {
+          allTxns.push({
+            id: pe.docId + '_s', type: 'credit', amount: gt, date: peDate,
+            time: new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+            note: `🔧 ${pe.invoiceNumber || L.serviceEntry}`, source: 'production',
+            timestamp: ts, productionData: pe
+          });
+        }
+        if (tp > 0) {
+          allTxns.push({
+            id: pe.docId + '_p', type: 'payment', amount: tp, date: peDate,
+            time: new Date(ts + 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+            note: `💳 ${L.servicePayment} ${pe.invoiceNumber || ''}`.trim(), source: 'production',
+            timestamp: ts + 1000, productionData: pe
+          });
+        }
+      });
 
       const deduped = removeDuplicatePayments(allTxns);
       deduped.sort((a, b) => a.timestamp - b.timestamp);
-      let runBal = nn(data.initialBalance || 0);
-      deduped.forEach(txn => { if (txn.type === 'credit') runBal += txn.amount; else if (txn.type === 'payment') runBal -= txn.amount; txn.runningBalance = runBal; });
-      const actualBal = nn(data.currentBalance); const diff = actualBal - runBal;
-      if (Math.abs(diff) > 0.5) deduped.push({ id: '_adj', type: diff > 0 ? 'credit' : 'payment', amount: Math.abs(diff), date: new Date().toISOString().split('T')[0], time: '', timestamp: Date.now(), note: `⚙️ ${L.adjustment}`, source: 'adjustment', runningBalance: actualBal, isAdjustment: true });
-      if (!cancelled && mountedRef.current) { setTransactions(deduped.reverse()); setLoading(false); }
-    } catch (err) { console.error(err); if (mountedRef.current) setLoading(false); }
+
+      let runBal = 0;
+      setCustomer((currentCust) => {
+        if (currentCust) {
+          runBal = nn(currentCust.initialBalance || 0);
+        }
+        return currentCust;
+      });
+
+      deduped.forEach(txn => {
+        if (txn.type === 'credit') runBal += txn.amount;
+        else if (txn.type === 'payment') runBal -= txn.amount;
+        txn.runningBalance = runBal;
+      });
+
+      setCustomer((currentCust) => {
+        if (currentCust) {
+          const actualBal = nn(currentCust.currentBalance);
+          const diff = actualBal - runBal;
+          if (Math.abs(diff) > 0.5) {
+            deduped.push({
+              id: '_adj', type: diff > 0 ? 'credit' : 'payment', amount: Math.abs(diff),
+              date: new Date().toISOString().split('T')[0], time: '', timestamp: Date.now(),
+              note: `⚙️ ${L.adjustment}`, source: 'adjustment', runningBalance: actualBal,
+              isAdjustment: true
+            });
+          }
+        }
+        return currentCust;
+      });
+
+      deduped.sort((a, b) => b.timestamp - a.timestamp); 
+      setTransactions(deduped);
+      setLoading(false);
+    };
+
+    // 1. Listen to customerTransactions
+    const unsubCustTxns = onSnapshot(
+      query(collection(db, 'customerTransactions'), where('customerId', '==', id), where('uid', '==', user.uid)),
+      (snap) => {
+        rawCustTxns = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        rebuildTransactionsList();
+      }
+    );
+
+    // 2. Listen to salesInvoices
+    const unsubInvoices = onSnapshot(
+      query(collection(db, 'salesInvoices'), where('customerId', '==', id), where('uid', '==', user.uid)),
+      (snap) => {
+        rawInvoices = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        rebuildTransactionsList();
+      }
+    );
+
+    // 3. Listen to vehicleTrips 
+    const unsubVehicleTrips = onSnapshot(
+      query(collection(db, `users/${user.uid}/vehicleTrips`), where('customerId', '==', id)),
+      (snap) => {
+        rawVehicleTrips = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        rebuildTransactionsList();
+      },
+      () => {} 
+    );
+
+    // 4. Listen to productionEntries 
+    const unsubProduction = onSnapshot(
+      query(collection(db, 'productionEntries'), where('customerId', '==', id), where('uid', '==', user.uid)),
+      (snap) => {
+        rawProduction = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        rebuildTransactionsList();
+      },
+      () => {} 
+    );
+
+    // 5. Listen to transactionApprovals
+    const unsubApprovals = onSnapshot(
+      query(collection(db, 'transactionApprovals'), where('customerId', '==', id), where('status', '==', 'pending')),
+      (snap) => {
+        setPendingApprovals(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      }
+    );
+
+    return () => {
+      unsubCustomer();
+      unsubCustTxns();
+      unsubInvoices();
+      unsubVehicleTrips();
+      unsubProduction();
+      unsubApprovals();
+    };
   }, [id, user, router]);
 
-  useEffect(() => { if (user && id) fetchData(); }, [id, user, fetchData]);
-
-  // ─── handleTransactionConfirm ──────────────────────────
+  // ─── handleTransactionConfirm (Bank Register atomically integrated) ────────
   const handleTransactionConfirm = useCallback(async ({
     type, amount, note, date, method,
     receiptImage, bankAccountId, bankAccountName
@@ -834,7 +1001,6 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
     const isBank = method === 'bank' && !!bankAccountId;
     const now = new Date();
     const timeStr = nowHHMM24();
-    const dateStr = localDateStr();
     const nowTs = Timestamp.now();
     const refNo = `${isCredit ? 'CRD' : 'PAY'}${now.getTime().toString(36).toUpperCase().slice(-8)}`;
 
@@ -842,13 +1008,24 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
       const customerRef = doc(db, 'customers', id);
       let newBalance = 0;
 
-      // ① Atomic customer balance update
-      await runTransaction(db, async tx => {
-        const custSnap = await tx.get(customerRef);
+      // ① Atomic customer & bank balance updates via Transactions
+      await runTransaction(db, async transaction => {
+        const custSnap = await transaction.get(customerRef);
         if (!custSnap.exists()) throw new Error('Customer not found');
         const curBal = nn(custSnap.data().currentBalance);
         newBalance = isCredit ? curBal + amount : curBal - amount;
-        tx.update(customerRef, { currentBalance: newBalance, updatedAt: serverTimestamp() });
+
+        let bankRef = null;
+        if (isBank) {
+          bankRef = doc(db, `users/${user.uid}/bankAccounts`, bankAccountId);
+          const bankSnap = await transaction.get(bankRef);
+          if (!bankSnap.exists()) throw new Error('Bank account not found');
+          const curBankBal = nn(bankSnap.data().currentBalance);
+          const newBankBal = isCredit ? curBankBal - amount : curBankBal + amount;
+          transaction.update(bankRef, { currentBalance: newBankBal, updatedAt: serverTimestamp() });
+        }
+
+        transaction.update(customerRef, { currentBalance: newBalance, updatedAt: serverTimestamp() });
       });
 
       // ② customerTransactions record
@@ -861,7 +1038,10 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
         createdBy: user.email || 'Unknown',
       };
       if (isBank) { txnData.bankAccountId = bankAccountId; txnData.bankAccountName = bankAccountName; }
-      const txnRef = await addDoc(collection(db, 'customerTransactions'), txnData);
+      const txnRef = await addDoc(collection(db, 'customerTransactions'), {
+        ...txnData,
+        newCustomerBalance: newBalance,
+      });
 
       // ③ cashTransactions record
       const cashData = {
@@ -883,13 +1063,31 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
       if (isBank) { cashData.bankAccountId = bankAccountId; cashData.bankAccountName = bankAccountName; }
       await addDoc(collection(db, `users/${user.uid}/cashTransactions`), cashData);
 
+      // ④ bankTransactions logger if bankTransfer
+      if (isBank) {
+        await addDoc(collection(db, `users/${user.uid}/bankTransactions`), {
+          type: isCredit ? 'withdrawal' : 'deposit',
+          accountId: bankAccountId,
+          amount,
+          date: serverTimestamp(),
+          description: isCredit ? `Credit to ${customer.name}` : `Payment from ${customer.name}`,
+          createdAt: serverTimestamp(),
+          source: 'customer-payment',
+          customerId: id,
+          customerTxnId: txnRef.id,
+        });
+      }
+
+      // ✅ Invalidate customer list cache immediately
+      invalidateListCache();
+
       showToast(isCredit ? t.creditAdded : t.paymentReceived);
       closeModal('txn');
 
-      // ★ Construct synthetic invoice payload for InvoiceOutputManager
+      // Construct synthetic receipt payload for InvoiceOutputManager
       const methodMap = { cash: 'cash', bank: 'etransfer', card: 'card', cheque: 'cheque' };
       const synthetic = {
-        _isReceipt: true,
+        _isReceipt:   true,
         _receiptType: isCredit ? 'credit' : 'payment',
         id: txnRef.id,
         invoiceNo: refNo,
@@ -919,7 +1117,6 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
 
       setReceiptInvoice(synthetic);
       setCustomer(prev => prev ? { ...prev, currentBalance: newBalance } : prev);
-      fetchData();
 
     } catch (err) {
       console.error(err);
@@ -927,7 +1124,7 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
     } finally {
       if (mountedRef.current) setIsProcessing(false);
     }
-  }, [customer, isProcessing, id, user, t, showToast, closeModal, fetchData]);
+  }, [customer, isProcessing, id, user, t, showToast, closeModal, invalidateListCache]);
 
   // ── Other handlers ─────────────────────────────────────
   const handleEditTxn = useCallback(async updated => {
@@ -936,9 +1133,13 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
       const balChange = updated.type === 'credit' ? diff : -diff;
       await updateDoc(doc(db, 'customerTransactions', updated.id), { amount: updated.amount, note: updated.note, date: updated.date });
       await updateDoc(doc(db, 'customers', id), { currentBalance: increment(balChange) });
-      showToast('✅ Updated!'); closeModal('editTxn'); fetchData();
+      
+      // ✅ Invalidate customer list cache immediately
+      invalidateListCache();
+
+      showToast('✅ Updated!'); closeModal('editTxn');
     } catch (e) { showToast('❌ ' + e.message, 'error'); }
-  }, [selectedTxn, id, showToast, closeModal, fetchData]);
+  }, [selectedTxn, id, showToast, closeModal, invalidateListCache]);
 
   const handleDeleteTxn = useCallback(async txn => {
     if (!window.confirm(t.confirmDeleteTxn)) return;
@@ -947,9 +1148,13 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
       await updateDoc(doc(db, 'customers', id), { currentBalance: increment(txn.type === 'credit' ? -txn.amount : txn.amount) });
       const cs = await getDocs(query(collection(db, `users/${user.uid}/cashTransactions`), where('customerTxnId', '==', txn.id)));
       await Promise.all(cs.docs.map(d => deleteDoc(doc(db, `users/${user.uid}/cashTransactions`, d.id))));
-      showToast('🗑️ Deleted!'); fetchData();
+      
+      // ✅ Invalidate customer list cache immediately
+      invalidateListCache();
+
+      showToast('🗑️ Deleted!');
     } catch (e) { showToast('❌ ' + e.message, 'error'); }
-  }, [id, user, t, showToast, fetchData]);
+  }, [id, user, t, showToast, invalidateListCache]);
 
   const handleApprove = useCallback(async txn => {
     if (!window.confirm('Approve?')) return;
@@ -960,14 +1165,26 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
       batch.set(newRef, { customerId: id, uid: user.uid, type: 'payment', amount: nn(txn.amount), date: txn.date, note: txn.note, receiptImage: txn.receiptImage, createdAt: serverTimestamp(), source: 'manual', timestamp: Date.now() });
       batch.update(doc(db, 'transactionApprovals', txn.id), { status: 'approved', approvedAt: serverTimestamp() });
       await batch.commit();
-      showToast('✅ Approved!'); fetchData();
+
+      // ✅ Invalidate customer list cache immediately
+      invalidateListCache();
+
+      showToast('✅ Approved!');
     } catch (e) { showToast('❌ ' + e.message, 'error'); }
-  }, [id, user, showToast, fetchData]);
+  }, [id, user, showToast, invalidateListCache]);
 
   const handleSetDueDate = useCallback(async () => {
-    try { await updateDoc(doc(db, 'customers', id), { dueDate, dueTime }); showToast(t.dueDateSet); closeModal('date'); }
+    try { 
+      await updateDoc(doc(db, 'customers', id), { dueDate, dueTime }); 
+      
+      // ✅ Invalidate customer list cache immediately
+      invalidateListCache();
+
+      showToast(t.dueDateSet); 
+      closeModal('date'); 
+    }
     catch (e) { showToast('❌ ' + e.message, 'error'); }
-  }, [dueDate, dueTime, id, t, showToast, closeModal]);
+  }, [dueDate, dueTime, id, t, showToast, closeModal, invalidateListCache]);
 
   // ── Derived ────────────────────────────────────────────
   const hasVehicle = useMemo(() => transactions.some(x => x.source === 'vehicleTrip'), [transactions]);
@@ -1016,10 +1233,55 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
       {/* Modals */}
       <TransactionModal show={modals.txn} type={modals.txnType} customer={customer} onClose={() => closeModal('txn')} onConfirm={handleTransactionConfirm} isProcessing={isProcessing} bankAccounts={bankAccounts} bankLoading={bankLoading} t={t} lang={lang} />
       <EditTransactionModal isOpen={modals.editTxn} onClose={() => closeModal('editTxn')} txn={selectedTxn} onSave={handleEditTxn} lang={lang} />
-      <SendLinkModal isOpen={modals.sendLink} onClose={() => closeModal('sendLink')} customer={customer} onUpdateCustomer={setCustomer} lang={lang} />
-      <EditCustomerModal isOpen={modals.edit} onClose={() => closeModal('edit')} customer={customer} onSave={setCustomer} lang={lang} showToast={showToast} />
-      <DeleteCustomerModal isOpen={modals.delete} onClose={() => closeModal('delete')} customer={customer} onDelete={() => router.push('/customers')} lang={lang} />
-      <ReminderModal isOpen={modals.reminder} onClose={() => closeModal('reminder')} customer={customer} lang={lang} onUpdateCustomer={setCustomer} />
+      
+      <SendLinkModal 
+        isOpen={modals.sendLink} 
+        onClose={() => closeModal('sendLink')} 
+        customer={customer} 
+        onUpdateCustomer={(updated) => {
+          // ✅ Clear cache on portal link creation
+          invalidateListCache();
+          setCustomer(updated);
+        }} 
+        lang={lang} 
+      />
+      
+      <EditCustomerModal 
+        isOpen={modals.edit} 
+        onClose={() => closeModal('edit')} 
+        customer={customer} 
+        onSave={(updated) => {
+          // ✅ Clear cache on name/phone/profilePicture edits
+          invalidateListCache();
+          setCustomer(updated);
+          showToast(t.updateSuccess);
+        }} 
+        lang={lang} 
+        showToast={showToast} 
+      />
+      
+      <DeleteCustomerModal 
+        isOpen={modals.delete} 
+        onClose={() => closeModal('delete')} 
+        customer={customer} 
+        onDelete={() => {
+          // ✅ Clear cache on deletion
+          invalidateListCache();
+          router.push('/customers');
+        }} 
+        lang={lang} 
+      />
+      
+      <ReminderModal 
+        isOpen={modals.reminder} 
+        onClose={() => closeModal('reminder')} 
+        customer={customer} 
+        lang={lang} 
+        onUpdateCustomer={(updated) => {
+          invalidateListCache();
+          setCustomer(updated);
+        }} 
+      />
       <ServiceBillModal isOpen={modals.serviceBill} onClose={() => closeModal('serviceBill')} productionData={selectedProductionData} lang={lang} />
 
       {modals.date && (
@@ -1190,7 +1452,7 @@ export default function CustomerDetail({ lang: propLang = 'si' }) {
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────
+// ─── STYLES ───────────────────────────────────────────────
 const styles = {
   container: { padding: 20, maxWidth: 800, margin: '0 auto', fontFamily: 'sans-serif', paddingBottom: 50 },
   headerCard: { textAlign: 'center', padding: 30, background: 'linear-gradient(135deg,#f8fafc,#f1f5f9)', borderRadius: 16, marginBottom: 20, border: '2px solid #e2e8f0', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' },
