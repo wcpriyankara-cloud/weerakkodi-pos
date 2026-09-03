@@ -51,7 +51,7 @@ const hasStoredBalanceSnapshot = (invoice) => {
 };
 
 /* ══════════════════════════════════════════
-   ★★★ OUTSTANDING INFO — FIXED
+   OUTSTANDING INFO HELPER
 ══════════════════════════════════════════ */
 const getOutstandingInfo = (invoice, customer) => {
   const dbBal = R2(customer?.currentBalance ?? 0);
@@ -142,11 +142,11 @@ const LANG = {
     no:'No:', returnNo:'Return No:', originalInvoice:'Original Invoice:', date:'Date:',
     customer:'Customer:', phone:'Phone:', address:'Addr:',
     items:'ITEMS', returnedItems:'RETURNED ITEMS',
-    gross:'Gross:', discount:'Discount:', billDisc:'Bill Disc:',
-    exchange:'Exchange:', netTotal:'NET TOTAL', refundTotal:'REFUND TOTAL',
-    pay:'Pay:', refundVia:'Refund Via:', paid:'Paid:',
+    gross:'Gross Total:', discount:'Discount:', billDisc:'Bill Disc:',
+    exchange:'Exchange:', netTotal:'NET TOTAL:', refundTotal:'REFUND TOTAL:',
+    pay:'Pay Method:', refundVia:'Refund Via:', paid:'Paid Amount:',
     refundAmt:'Cash Refund:', creditAdjusted:'Credit Adjusted:', exchangeValue:'Exchange Value:',
-    change:'CHANGE', creditDue:'CREDIT DUE',
+    change:'Change / Balance:', creditDue:'Credit Due:',
     prevBalance:'Prev Balance:', newBalanceLabel:'New Balance:',
     totalDue:'TOTAL DUE', returnCreditAdj:'Credit Reduced:',
     balanceReduced:'Balance Adjusted by Return',
@@ -154,7 +154,7 @@ const LANG = {
     customerDeposit:'Customer Deposit',
     portalTitle:'View Your Account',
     portalTitleReturn:'View Account / Track Return',
-    note:'NOTE:', warranty:'WTY:', computerGenerated:'Computer Generated',
+    note:'NOTE:', warranty:'WTY:', computerGenerated:'Computer Generated Receipt',
     cash:'CASH', card:'CARD', etransfer:'E-TRANSFER', cheque:'CHEQUE', credit:'CREDIT',
     cashRefund:'CASH REFUND', creditAdjustment:'CREDIT ADJUSTMENT', exchangeRefund:'EXCHANGE',
     waCash:'💵 Cash', waCard:'💳 Card', waEtransfer:'📲 E-Transfer', waCheque:'🧾 Cheque', waCredit:'📝 Credit',
@@ -167,9 +167,9 @@ const LANG = {
     waCustomerDeposit:'📊 *Customer Deposit:*',
     smsItems:'ITEMS', smsReturnedItems:'RETURNED', smsCust:'Cust', smsDate:'Date',
     smsNo:'No', smsRet:'Ret', smsOrig:'Orig', smsGross:'Gross', smsDisc:'Disc',
-    smsBillDisc:'BillDisc', smsExchange:'Exchange', smsTotal:'Total', smsRefund:'Refund',
+    smsBillDisc:'BillDisc', smsExchange:'Exchange', smsTotal:'Net Total', smsRefund:'Refund',
     smsPay:'Pay', smsPaid:'Paid', smsRefunded:'CashRefunded', smsCreditAdj:'CreditAdj',
-    smsExchangeVal:'ExchangeVal', smsChange:'Change', smsDue:'Due',
+    smsExchangeVal:'ExchangeVal', smsChange:'Balance', smsDue:'Credit Due',
     smsPrevBal:'PrevBal', smsNewBal:'NewBal', smsCreditReduced:'CreditReduced',
     smsOutstanding:'Outstanding', smsAccount:'Account', smsNote:'Note', smsWarranty:'WTY', smsReturn:'RETURN',
   },
@@ -180,10 +180,10 @@ const LANG = {
     customer:'පාරිභෝගිකයා:', phone:'දුරකථනය:', address:'ලිපිනය:',
     items:'භාණ්ඩ', returnedItems:'ආපසු භාණ්ඩ',
     gross:'මුළු එකතුව:', discount:'වට්ටම:', billDisc:'බිල්පත් වට්ටම:',
-    exchange:'හුවමාරුව:', netTotal:'ශුද්ධ එකතුව', refundTotal:'ආපසු මුදල',
-    pay:'ගෙවීම:', refundVia:'ආපසු ගෙවීම:', paid:'ගෙවූ මුදල:',
+    exchange:'හුවමාරුව:', netTotal:'ශුද්ධ එකතුව:', refundTotal:'ආපසු මුදල:',
+    pay:'ගෙවීම් ක්‍රමය:', refundVia:'ආපසු ගෙවීම:', paid:'ගෙවූ මුදල:',
     refundAmt:'මුදල් ආපසු:', creditAdjusted:'ණය ගිණුමෙන් අඩු:', exchangeValue:'හුවමාරු වටිනාකම:',
-    change:'ශේෂය', creditDue:'ණය මුදල',
+    change:'ශේෂය / ඉතිරි:', creditDue:'ණය මුදල:',
     prevBalance:'පෙර ණය ශේෂය:', newBalanceLabel:'නව ණය ශේෂය:',
     totalDue:'මුළු ණය ශේෂය', returnCreditAdj:'ණය ශේෂයෙන් අඩු:',
     balanceReduced:'ආපසු භාරයෙන් ණය ශේෂය සකසන ලදී',
@@ -191,7 +191,7 @@ const LANG = {
     customerDeposit:'පාරිභෝගික අතිරේක ගෙවීම',
     portalTitle:'ඔබේ ගිණුම බලන්න',
     portalTitleReturn:'ඔබේ ගිණුම / return තත්ත්වය බලන්න',
-    note:'සටහන:', warranty:'වගකීම:', computerGenerated:'පරිගණක ජනිත',
+    note:'සටහන:', warranty:'වගකීම:', computerGenerated:'පරිගණක ජනිත රිසිට්පතකි',
     cash:'මුදල්', card:'කාඩ්', etransfer:'ඊ-හුවමාරු', cheque:'චෙක්පත', credit:'ණය',
     cashRefund:'මුදල් ආපසු', creditAdjustment:'ණය ගිණුමෙන් අඩු', exchangeRefund:'හුවමාරුව',
     waCash:'💵 මුදල්', waCard:'💳 කාඩ්', waEtransfer:'📲 ඊ-හුවමාරු', waCheque:'🧾 චෙක්පත', waCredit:'📝 ණය',
@@ -203,10 +203,10 @@ const LANG = {
     waCustomerOutstanding:'📊 *පාරිභෝගික ණය ශේෂය:*',
     waCustomerDeposit:'📊 *අතිරේක ගෙවීම:*',
     smsItems:'භාණ්ඩ', smsReturnedItems:'ආපසු', smsCust:'ගනුදෙනුකරු', smsDate:'දිනය',
-    smsNo:'අංකය', smsRet:'ආපසු', smsOrig:'මුල්', smsGross:'මුළු', smsDisc:'වට්ටම',
-    smsBillDisc:'බිල් වට්ටම', smsExchange:'හුවමාරුව', smsTotal:'එකතුව', smsRefund:'ආපසු',
-    smsPay:'ගෙවීම', smsPaid:'ගෙවූ', smsRefunded:'මුදල් ආපසු', smsCreditAdj:'ණය අඩු',
-    smsExchangeVal:'හුවමාරු', smsChange:'ශේෂය', smsDue:'ණය',
+    smsNo:'අංකය', smsRet:'ආපසු', smsOrig:'මුල්', smsGross:'මුළු එකතුව', smsDisc:'වට්ටම',
+    smsBillDisc:'බිල් වට්ටම', smsExchange:'හුවමාරුව', smsTotal:'ශුද්ධ එකතුව', smsRefund:'ආපසු',
+    smsPay:'ගෙවීම් ක්‍රමය', smsPaid:'ගෙවූ මුදල', smsRefunded:'මුදල් ආපසු', smsCreditAdj:'ණය අඩු',
+    smsExchangeVal:'හුවමාරු', smsChange:'ශේෂය', smsDue:'ණය මුදල',
     smsPrevBal:'පෙර ණය', smsNewBal:'නව ණය', smsCreditReduced:'ණය අඩු කළ',
     smsOutstanding:'මුළු ණය', smsAccount:'ගිණුම', smsNote:'සටහන', smsWarranty:'වගකීම', smsReturn:'ආපසු භාරය',
   },
@@ -232,14 +232,14 @@ const DEFAULT_VISIBILITY = {
 const buildDefaultModeSettings = () => ({
   print:   {lang:'en',visibility:{...DEFAULT_VISIBILITY,showPortalLink:false}},
   whatsapp:{lang:'en',visibility:{...DEFAULT_VISIBILITY,showPortalLink:true}},
-  sms:     {lang:'en',visibility:{...DEFAULT_VISIBILITY,showCustomerAddress:false,showItemSinhala:false,showWarranty:false,showBillDiscount:false,showExchangeAmount:false,showPreviousBalance:false,showPortalLink:false,showBusinessLogo:false,showBusinessAddress:false,showBusinessPhone:false,showDiscountPercent:false,showUOM:false,showRemarks:false,showGrossTotal:false,showTotalDiscount:false}},
+  sms:     {lang:'en',visibility:{...DEFAULT_VISIBILITY,showCustomerAddress:false,showItemSinhala:false,showWarranty:false,showBillDiscount:false,showExchangeAmount:false,showPreviousBalance:false,showPortalLink:false,showBusinessLogo:false,showBusinessAddress:false,showBusinessPhone:false,showDiscountPercent:false,showUOM:false,showRemarks:false,showGrossTotal:true,showTotalDiscount:true,showPaidAmount:true,showBalance:true}},
   share:   {lang:'en',visibility:{...DEFAULT_VISIBILITY,showPortalLink:true}},
 });
 
 const VISIBILITY_SECTIONS = [
   {title:'👤 පාරිභෝගික',icon:'👤',fields:[{key:'showCustomerName',label:'නම',labelEn:'Customer Name'},{key:'showCustomerPhone',label:'දුරකථන',labelEn:'Phone'},{key:'showCustomerAddress',label:'ලිපිනය',labelEn:'Address'}]},
-  {title:'💰 මුදල්',icon:'💰',fields:[{key:'showItemPrices',label:'මිල',labelEn:'Prices'},{key:'showItemDiscount',label:'වට්ටම',labelEn:'Discount'},{key:'showDiscountPercent',label:'වට්ටම %',labelEn:'Disc %'},{key:'showGrossTotal',label:'මුළු',labelEn:'Gross'},{key:'showTotalDiscount',label:'මුළු වට්ටම',labelEn:'Total Disc'},{key:'showBillDiscount',label:'බිල් වට්ටම',labelEn:'Bill Disc'},{key:'showExchangeAmount',label:'හුවමාරු',labelEn:'Exchange'},{key:'showNetAmount',label:'ශුද්ධ',labelEn:'Net'},{key:'showPaymentMethod',label:'ගෙවීම් ක්‍රමය',labelEn:'Pay Method'},{key:'showPaidAmount',label:'ගෙවූ',labelEn:'Paid'},{key:'showBalance',label:'ශේෂය',labelEn:'Balance'}]},
-  {title:'📊 ණය ශේෂය',icon:'📊',fields:[{key:'showPreviousBalance',label:'පෙර ණය',labelEn:'Previous Balance'},{key:'showNewBalance',label:'නව ණය / ශේෂය',labelEn:'New Balance / Outstanding'},{key:'showCreditDue',label:'ණය මුදල',labelEn:'Credit Due'}]},
+  {title:'💰 මුදල් (Gross, Net, Paid & Balance)',icon:'💰',fields:[{key:'showItemPrices',label:'මිල',labelEn:'Prices'},{key:'showItemDiscount',label:'වට්ටම',labelEn:'Discount'},{key:'showDiscountPercent',label:'වට්ටම %',labelEn:'Disc %'},{key:'showGrossTotal',label:'මුළු එකතුව (Gross Total)',labelEn:'Gross Total'},{key:'showTotalDiscount',label:'මුළු වට්ටම',labelEn:'Total Disc'},{key:'showBillDiscount',label:'බිල් වට්ටම',labelEn:'Bill Disc'},{key:'showExchangeAmount',label:'හුවමාරු',labelEn:'Exchange'},{key:'showNetAmount',label:'ශුද්ධ එකතුව (Net Total)',labelEn:'Net Total'},{key:'showPaymentMethod',label:'ගෙවීම් ක්‍රමය',labelEn:'Pay Method'},{key:'showPaidAmount',label:'ගෙවූ මුදල (Paid Amount)',labelEn:'Paid Amount'},{key:'showBalance',label:'ශේෂය / ඉතිරි මුදල (Balance/Change)',labelEn:'Balance / Change'}]},
+  {title:'📊 පාරිභෝගික ණය ගිණුම',icon:'📊',fields:[{key:'showPreviousBalance',label:'පෙර ණය',labelEn:'Previous Balance'},{key:'showNewBalance',label:'නව ණය / ශේෂය',labelEn:'New Balance / Outstanding'},{key:'showCreditDue',label:'ණය මුදල',labelEn:'Credit Due'}]},
   {title:'📝 අමතර',icon:'📝',fields:[{key:'showRemarks',label:'සටහන්',labelEn:'Remarks'},{key:'showWarranty',label:'වගකීම',labelEn:'Warranty'},{key:'showUOM',label:'ඒකක',labelEn:'UOM'},{key:'showItemSinhala',label:'සිංහල',labelEn:'Sinhala'},{key:'showInvoiceNo',label:'අංකය',labelEn:'No'},{key:'showDate',label:'දිනය',labelEn:'Date'}]},
   {title:'🔗 Portal',icon:'🔗',fields:[{key:'showPortalLink',label:'Portal Link (Return bill වලටත් ✅)',labelEn:'Portal Link (works for returns too ✅)'}]},
   {title:'🏢 ව්‍යාපාර',icon:'🏢',fields:[{key:'showBusinessLogo',label:'Logo',labelEn:'Logo'},{key:'showBusinessName',label:'නම',labelEn:'Name'},{key:'showBusinessAddress',label:'ලිපිනය',labelEn:'Address'},{key:'showBusinessPhone',label:'දුරකථන',labelEn:'Phone'},{key:'showFooterMessage',label:'Footer',labelEn:'Footer'}]},
@@ -247,7 +247,7 @@ const VISIBILITY_SECTIONS = [
 
 const PRESETS = {
   full:    {name:'📋 සම්පූර්ණ',config:Object.fromEntries(Object.keys(DEFAULT_VISIBILITY).map(k=>[k,true]))},
-  minimal: {name:'📄 සරල',config:{...Object.fromEntries(Object.keys(DEFAULT_VISIBILITY).map(k=>[k,false])),showCustomerName:true,showItemPrices:true,showNetAmount:true,showInvoiceNo:true,showDate:true,showBusinessName:true}},
+  minimal: {name:'📄 සරල',config:{...Object.fromEntries(Object.keys(DEFAULT_VISIBILITY).map(k=>[k,false])),showCustomerName:true,showItemPrices:true,showGrossTotal:true,showNetAmount:true,showPaidAmount:true,showBalance:true,showInvoiceNo:true,showDate:true,showBusinessName:true}},
   standard:{name:'📊 සම්මත',config:{...DEFAULT_VISIBILITY}},
   privacy: {name:'🔒 පෞද්ගලිකත්වය',config:{...DEFAULT_VISIBILITY,showCustomerPhone:false,showCustomerAddress:false,showPreviousBalance:false,showNewBalance:false,showPortalLink:false,showRemarks:false}},
 };
@@ -265,21 +265,29 @@ function LangBadge({lang}){const b=LANG_BADGE[lang]||{color:'#64748b',label:lang
 const MODES=[{key:'print',icon:'🖨️',label:'Print',color:'#2563eb'},{key:'whatsapp',icon:'📲',label:'WhatsApp',color:'#25D366'},{key:'sms',icon:'📱',label:'SMS',color:'#f59e0b'},{key:'share',icon:'🔗',label:'Share',color:'#7c3aed'}];
 
 /* ══════════════════════════════════════════
-   BUILD RECEIPT HTML
+   BUILD RECEIPT HTML (PRINT)
 ══════════════════════════════════════════ */
 function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en') {
   const v=visibility||DEFAULT_VISIBILITY, biz=settings||{}, items=invoice?.items||[];
   const isRet=isReturnDoc(invoice), L=getLang(langKey);
   const isPortalPay=isPortalInvoicePayment(invoice);
-  const grossTotal=R2(invoice?.grossTotal), billDiscount=R2(invoice?.billDiscount), totalDiscount=R2(invoice?.totalDiscount);
-  const exchangeAmt=R2(invoice?.exchangeAmount), netAmount=R2(invoice?.netAmount), payAmount=R2(invoice?.payAmount);
-  const balance=R2(invoice?.balance), remarks=invoice?.remarks||invoice?.invoiceRemark||invoice?.note||'';
-  const payMethod=isRet?(invoice?.refundMethod||'cash'):(invoice?.paymentMethod||invoice?.method||'cash');
-  const invoiceNo=invoice?.invoiceNo||invoice?.invoiceCode||invoice?.id?.slice(0,8)?.toUpperCase()||'';
-  const originalInvNo=invoice?.originalInvoiceNo||'', invDate=fmtDate(invoice?.createdAt);
-  const portalLink=getPortalLink(customer);
-  const oi=getOutstandingInfo(invoice,customer);
-  const returnSettle=isRet?getReturnSettlementInfo(invoice):null;
+  
+  // Mathematical extraction with fallback
+  const itemsSum = R2(items.reduce((sum, item) => sum + R2(item.lineTotal ?? (R2(item.sellingPrice) * R2(item.qty))), 0));
+  const grossTotal = invoice?.grossTotal != null ? R2(invoice.grossTotal) : (itemsSum > 0 ? itemsSum : R2(invoice?.netAmount));
+  const billDiscount = R2(invoice?.billDiscount);
+  const totalDiscount = R2(invoice?.totalDiscount);
+  const exchangeAmt = R2(invoice?.exchangeAmount);
+  const netAmount = R2(invoice?.netAmount);
+  const payAmount = R2(invoice?.payAmount);
+  const balance = R2(invoice?.balance ?? (payAmount - netAmount));
+  const remarks = invoice?.remarks||invoice?.invoiceRemark||invoice?.note||'';
+  const payMethod = isRet?(invoice?.refundMethod||'cash'):(invoice?.paymentMethod||invoice?.method||'cash');
+  const invoiceNo = invoice?.invoiceNo||invoice?.invoiceCode||invoice?.id?.slice(0,8)?.toUpperCase()||'';
+  const originalInvNo = invoice?.originalInvoiceNo||'', invDate=fmtDate(invoice?.createdAt);
+  const portalLink = getPortalLink(customer);
+  const oi = getOutstandingInfo(invoice,customer);
+  const returnSettle = isRet?getReturnSettlementInfo(invoice):null;
 
   const {
     creditDue, isCreditSale, previousBalance, newBalance,
@@ -291,7 +299,6 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en')
 
   const isReceiptType = isReceipt || isInvoiceSettlement || isPortalPay;
   const showCustomerOutstandingSection = !isRet && (isCreditSale || hasCustomerBalance);
-
   const bizAlign = biz.logoAlign || 'center';
 
   const row=(l,r,fs=14)=>`<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:${fs}px;font-weight:900;color:#000;line-height:1.3"><span>${esc(l)}</span><span style="text-align:right;max-width:58%;word-break:break-word;margin-left:4px">${esc(r)}</span></div>`;
@@ -359,29 +366,46 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en')
   }
 
   html+=div1;
+  
+  /* ── 1. GROSS TOTAL & DISCOUNTS ── */
   if(!isRet&&!isReceiptType){
-    if(v.showGrossTotal) html+=row(L.gross,`Rs.${fmt(grossTotal)}`);
-    if(v.showTotalDiscount&&totalDiscount>0) html+=row(L.discount,`-Rs.${fmt(totalDiscount)}`);
-    if(v.showBillDiscount&&billDiscount>0) html+=row(L.billDisc,`-Rs.${fmt(billDiscount)}`);
-    if(v.showExchangeAmount&&exchangeAmt>0) html+=row(L.exchange,`-Rs.${fmt(exchangeAmt)}`);
+    if(v.showGrossTotal) html+=row(L.gross,`Rs.${fmt(grossTotal)}`, 14);
+    if(v.showTotalDiscount&&totalDiscount>0) html+=row(L.discount,`-Rs.${fmt(totalDiscount)}`, 13);
+    if(v.showBillDiscount&&billDiscount>0) html+=row(L.billDisc,`-Rs.${fmt(billDiscount)}`, 13);
+    if(v.showExchangeAmount&&exchangeAmt>0) html+=row(L.exchange,`-Rs.${fmt(exchangeAmt)}`, 13);
   }
 
+  /* ── 2. NET TOTAL ── */
   if(v.showNetAmount){
     html+=div3;
     html+=`<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:20px;font-weight:900;color:#000"><span>${esc(isRet?L.refundTotal:isPortalPay?'PAID:':L.netTotal)}</span><span>Rs.${fmt(isPortalPay?settledAmount:netAmount)}</span></div>`;
     html+=div3;
   }
 
-  if(v.showPaymentMethod&&!isPortalPay) html+=row(isRet?L.refundVia:L.pay,isRet?getRefundLabel(payMethod,L):getPaymentLabel(payMethod,L),15);
+  /* ── 3. PAYMENT METHOD & PAID AMOUNT ── */
+  if(v.showPaymentMethod&&!isPortalPay) html+=row(isRet?L.refundVia:L.pay,isRet?getRefundLabel(payMethod,L):getPaymentLabel(payMethod,L),14);
 
   if(v.showPaidAmount){
     if(isRet&&returnSettle){
       if(returnSettle.method==='cash') html+=row(L.refundAmt,`Rs.${fmt(returnSettle.cashAmt)}`,15);
       else if(returnSettle.method==='credit') html+=div2+`<div style="background:#eff6ff;border-radius:6px;padding:6px 8px;margin:2px 0"><div style="display:flex;justify-content:space-between;font-size:15px;font-weight:900;color:#1d4ed8"><span>${esc(L.creditAdjusted)}</span><span>Rs.${fmt(returnSettle.creditAmt)}</span></div></div>`;
       else html+=row(L.exchangeValue,`Rs.${fmt(returnSettle.exchangeAmt)}`,15);
-    } else if(!isRet&&!isPortalPay) html+=row(L.paid,`Rs.${fmt(payAmount)}`,15);
+    } else if(!isRet&&!isPortalPay) {
+      html+=row(L.paid,`Rs.${fmt(payAmount)}`,16);
+    }
   }
 
+  /* ── 4. BALANCE / CHANGE / DUE ── */
+  if(!isRet && !isReceiptType && v.showBalance){
+    html+=div2;
+    if(balance >= 0) {
+      html+=row(L.change, `Rs.${fmt(balance)}`, 16);
+    } else {
+      html+=`<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:16px;font-weight:900;color:#dc2626"><span>${esc(L.creditDue)}</span><span>Rs.${fmt(Math.abs(balance))}</span></div>`;
+    }
+  }
+
+  /* ── 5. OPTIONAL CUSTOMER LEDGER BALANCE (OUTSTANDING) ── */
   if(!isRet){
     if(isReceiptType){
       if(v.showPreviousBalance||v.showNewBalance){
@@ -396,7 +420,7 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en')
         if(v.showNewBalance){const nb=newBalance,nbc=nb>0.01?'#dc2626':nb<-0.01?'#2563eb':'#16a34a';html+=`<div style="border-top:2px solid #0369a1;margin:4px 0"></div><div style="display:flex;justify-content:space-between;font-size:16px;font-weight:900;padding:3px 0;color:${nbc}"><span>${esc(L.newBalanceLabel)}</span><span>Rs.${fmt(nb)}</span></div>`;}
         html+=`</div>`;
       }
-    } else if(showCustomerOutstandingSection){
+    } else if(showCustomerOutstandingSection && (v.showPreviousBalance || v.showNewBalance)){
       html+=div1;
       html+=`<div style="background:${newBalance>0.01?'#fef2f2':newBalance<-0.01?'#eff6ff':'#f0fdf4'};border-radius:8px;padding:8px 10px;margin:4px 0;border:1px solid ${newBalance>0.01?'#fecaca':newBalance<-0.01?'#bfdbfe':'#bbf7d0'}">`;
       html+=`<div style="font-size:12px;font-weight:900;color:${newBalance>0.01?'#dc2626':newBalance<-0.01?'#1d4ed8':'#16a34a'};text-align:center;margin-bottom:6px">📊 ${esc(newBalance<-0.01?(L.customerDeposit||L.customerOutstanding):L.customerOutstanding)}</div>`;
@@ -404,8 +428,6 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en')
       if(v.showCreditDue&&creditDue>0) html+=`<div style="display:flex;justify-content:space-between;font-size:14px;font-weight:900;color:#dc2626;padding:3px 0"><span>${esc(L.creditDue)}</span><span>Rs.${fmt(creditDue)}</span></div>`;
       if(v.showNewBalance){const nb=newBalance,nbc=nb>0.01?'#dc2626':nb<-0.01?'#2563eb':'#16a34a';html+=`<div style="border-top:2px solid #e2e8f0;margin:4px 0"></div><div style="display:flex;justify-content:space-between;font-size:16px;font-weight:900;padding:3px 0;color:${nbc}"><span>${esc(L.newBalanceLabel)}</span><span>Rs.${fmt(nb)}</span></div>`;}
       html+=`</div>`;
-    } else {
-      if(v.showBalance&&balance>=0.01) html+=div2+`<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:17px;font-weight:900;color:#000"><span>${esc(L.change)}</span><span>Rs.${fmt(balance)}</span></div>`;
     }
   } else {
     if(isReturnCreditAdj&&(v.showPreviousBalance||v.showNewBalance)){
@@ -433,11 +455,18 @@ function buildReceiptHTML(invoice, settings, visibility, customer, langKey='en')
 
 function printViaIframe(rHTML){const f=`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Receipt</title><style>*{margin:0;padding:0;box-sizing:border-box}html,body{width:80mm;max-width:80mm;font-family:'Courier New',monospace;font-size:14px;font-weight:900;color:#000;background:#fff;line-height:1.4}body{padding:2mm 3mm}div,span,p{color:#000!important;font-weight:900!important}img{max-width:80%!important}@page{size:80mm auto;margin:0}</style></head><body>${rHTML}</body></html>`;return new Promise(res=>{const iframe=document.createElement('iframe');iframe.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;';document.body.appendChild(iframe);const d=iframe.contentDocument||iframe.contentWindow?.document;if(!d){document.body.removeChild(iframe);res();return;}d.open();d.write(f);d.close();let done=false;const cl=()=>{if(done)return;done=true;setTimeout(()=>{if(document.body.contains(iframe))document.body.removeChild(iframe);res();},300);};let pr=false;const dp=async()=>{if(pr)return;pr=true;try{const imgs=Array.from(d.images||[]);await Promise.all(imgs.map(i=>i.complete?Promise.resolve():new Promise(r=>{i.onload=r;i.onerror=r;})));iframe.contentWindow?.addEventListener('afterprint',cl);iframe.contentWindow?.focus();iframe.contentWindow?.print();}catch(e){console.warn(e);cl();}setTimeout(cl,30000);};iframe.onload=()=>setTimeout(dp,300);setTimeout(dp,1500);});}
 
+/* ══════════════════════════════════════════
+   BUILD WHATSAPP / SHARE MESSAGE
+══════════════════════════════════════════ */
 function buildWAMessage(invoice,customer,settings,visibility,langKey='en'){
   const v=visibility||DEFAULT_VISIBILITY,biz=settings||{},items=invoice?.items||[];
   const isRet=isReturnDoc(invoice),isPortalPay=isPortalInvoicePayment(invoice),L=getLang(langKey);
   const invoiceNo=invoice?.invoiceNo||invoice?.invoiceCode||invoice?.id?.slice(0,8)?.toUpperCase()||'';
-  const netAmount=R2(invoice?.netAmount),payAmount=R2(invoice?.payAmount),balance=R2(invoice?.balance);
+  
+  const itemsSum = R2(items.reduce((sum, item) => sum + R2(item.lineTotal ?? (R2(item.sellingPrice) * R2(item.qty))), 0));
+  const grossTotal = invoice?.grossTotal != null ? R2(invoice.grossTotal) : (itemsSum > 0 ? itemsSum : R2(invoice?.netAmount));
+  const netAmount=R2(invoice?.netAmount),payAmount=R2(invoice?.payAmount);
+  const balance=R2(invoice?.balance ?? (payAmount - netAmount));
   const remarks=invoice?.remarks||invoice?.invoiceRemark||invoice?.note||'';
   const payMethod=isRet?(invoice?.refundMethod||'cash'):(invoice?.paymentMethod||invoice?.method||'cash');
   const portalLink=getPortalLink(customer);
@@ -449,12 +478,10 @@ function buildWAMessage(invoice,customer,settings,visibility,langKey='en'){
 
   let msg='';
   
-  /* WhatsApp/Share Image preview dynamically embedded (Only HTTP public URL can trigger thumbnail preview) */
   if (v.showBusinessLogo && biz.logo && biz.logo.startsWith('http')) {
     msg += `${biz.logo}\n\n`;
   }
   
-  /* Business Info Block with proper markdown formatting */
   if(v.showBusinessName) msg+=`${isRet?'↩️':isPortalPay?'💰':'🧾'} *${biz.businessName||(isRet?L.returnTitle:isPortalPay?'Payment Receipt':L.invoiceTitle)}*\n`;
   if(v.showBusinessAddress && biz.address) msg+=`📍 _${biz.address.replace(/\n/g, ', ')}_\n`;
   if(v.showBusinessPhone && biz.phone) msg+=`📞 Tel: ${biz.phone}\n`;
@@ -467,20 +494,79 @@ function buildWAMessage(invoice,customer,settings,visibility,langKey='en'){
   if(v.showCustomerPhone&&invoice?.customerPhone) msg+=`📞 ${invoice.customerPhone}\n`;
   msg+=`━━━━━━━━━━━━━━\n\n`;
 
-  if(isPortalPay&&!isRet){msg+=`💵 *Paid:* Rs.${fmt(settledAmount)}\n🏦 *Method:* ${(invoice?.method||invoice?.paymentMethod||'').replace('_',' ')||'Cash'}\n`;if(remarks)msg+=`📝 ${remarks}\n`;}
-  else {
-    items.forEach((it,i)=>{const sp=R2(it.sellingPrice),yp=R2(it.yourPrice),qty=R2(it.qty),lt=R2(it.lineTotal??yp*qty),hd=sp>yp&&sp>0;const uom=v.showUOM&&it.uom&&it.uom!=='unit'?` ${it.uom}`:'';let name=it.name||'',si='';if(langKey==='si'&&it.nameSi){name=it.nameSi;si=it.name?` (${it.name})`:''}else if(it.nameSi&&v.showItemSinhala)si=` (${it.nameSi})`;msg+=`${i+1}. *${name}*${si}\n`;if(v.showItemPrices){if(hd&&v.showItemDiscount){msg+=`   ~Rs.${fmt(sp)}~`;if(v.showDiscountPercent&&sp>0)msg+=` (-${R2(((sp-yp)/sp)*100)}%)`;msg+=`\n   *Rs.${fmt(yp)}* × ${qty}${uom} = *Rs.${fmt(lt)}*\n`;}else msg+=`   Rs.${fmt(sp)} × ${qty}${uom} = *Rs.${fmt(lt)}*\n`;}if(v.showWarranty&&it.warrantyCode)msg+=`   🛡️ ${it.warrantyCode}${it.warrantyPeriod?` · ${it.warrantyPeriod}`:''}\n`;});
+  if(isPortalPay&&!isRet){
+    msg+=`💵 *Paid:* Rs.${fmt(settledAmount)}\n🏦 *Method:* ${(invoice?.method||invoice?.paymentMethod||'').replace('_',' ')||'Cash'}\n`;
+    if(remarks) msg+=`📝 ${remarks}\n`;
+  } else {
+    items.forEach((it,i)=>{
+      const sp=R2(it.sellingPrice),yp=R2(it.yourPrice),qty=R2(it.qty),lt=R2(it.lineTotal??yp*qty),hd=sp>yp&&sp>0;
+      const uom=v.showUOM&&it.uom&&it.uom!=='unit'?` ${it.uom}`:'';
+      let name=it.name||'',si='';
+      if(langKey==='si'&&it.nameSi){name=it.nameSi;si=it.name?` (${it.name})`:''}
+      else if(it.nameSi&&v.showItemSinhala) si=` (${it.nameSi})`;
+      msg+=`${i+1}. *${name}*${si}\n`;
+      if(v.showItemPrices){
+        if(hd&&v.showItemDiscount){
+          msg+=`   ~Rs.${fmt(sp)}~`;
+          if(v.showDiscountPercent&&sp>0) msg+=` (-${R2(((sp-yp)/sp)*100)}%)`;
+          msg+=`\n   *Rs.${fmt(yp)}* × ${qty}${uom} = *Rs.${fmt(lt)}*\n`;
+        } else {
+          msg+=`   Rs.${fmt(sp)} × ${qty}${uom} = *Rs.${fmt(lt)}*\n`;
+        }
+      }
+      if(v.showWarranty&&it.warrantyCode) msg+=`   🛡️ ${it.warrantyCode}${it.warrantyPeriod?` · ${it.warrantyPeriod}`:''}\n`;
+    });
   }
 
   msg+=`\n━━━━━━━━━━━━━━\n`;
-  if(!isRet&&!isReceiptType){if(v.showGrossTotal&&R2(invoice?.grossTotal)>0)msg+=`💰 *${L.gross}* Rs.${fmt(R2(invoice.grossTotal))}\n`;if(v.showTotalDiscount&&R2(invoice?.totalDiscount)>0)msg+=`🏷️ *${L.discount}* -Rs.${fmt(R2(invoice.totalDiscount))}\n`;}
-  if(v.showNetAmount) msg+=`\n💰 *${isRet?L.refundTotal:isPortalPay?'Total Paid:':L.netTotal}:* Rs.${fmt(isPortalPay?settledAmount:netAmount)}\n`;
+  
+  /* ── 1. GROSS TOTAL & DISCOUNTS ── */
+  if(!isRet&&!isReceiptType){
+    if(v.showGrossTotal) msg+=`💰 *${L.gross}* Rs.${fmt(grossTotal)}\n`;
+    if(v.showTotalDiscount&&R2(invoice?.totalDiscount)>0) msg+=`🏷️ *${L.discount}* -Rs.${fmt(R2(invoice.totalDiscount))}\n`;
+    if(v.showBillDiscount&&R2(invoice?.billDiscount)>0) msg+=`🏷️ *${L.billDisc}* -Rs.${fmt(R2(invoice.billDiscount))}\n`;
+    if(v.showExchangeAmount&&R2(invoice?.exchangeAmount)>0) msg+=`🔄 *${L.exchange}* -Rs.${fmt(R2(invoice.exchangeAmount))}\n`;
+  }
+  
+  /* ── 2. NET TOTAL ── */
+  if(v.showNetAmount) msg+=`\n💰 *${isRet?L.refundTotal:isPortalPay?'Total Paid:':L.netTotal}* *Rs.${fmt(isPortalPay?settledAmount:netAmount)}*\n`;
+  
+  /* ── 3. PAYMENT METHOD & PAID AMOUNT ── */
   if(v.showPaymentMethod&&!isPortalPay) msg+=isRet?`${getRefundLabel(payMethod,L,true)}\n`:`${getPaymentLabel(payMethod,L,true)}\n`;
-  if(v.showPaidAmount){if(isRet&&returnSettle){if(returnSettle.method==='cash')msg+=`${L.waRefundAmt} Rs.${fmt(returnSettle.cashAmt)}\n`;else if(returnSettle.method==='credit')msg+=`${L.waCreditAdjAmt} Rs.${fmt(returnSettle.creditAmt)}\n`;else msg+=`${L.waExchangeAmt} Rs.${fmt(returnSettle.exchangeAmt)}\n`;}else if(!isRet&&!isPortalPay) msg+=`💵 *${L.paid}* Rs.${fmt(payAmount)}\n`;}
+  
+  if(v.showPaidAmount){
+    if(isRet&&returnSettle){
+      if(returnSettle.method==='cash') msg+=`${L.waRefundAmt} Rs.${fmt(returnSettle.cashAmt)}\n`;
+      else if(returnSettle.method==='credit') msg+=`${L.waCreditAdjAmt} Rs.${fmt(returnSettle.creditAmt)}\n`;
+      else msg+=`${L.waExchangeAmt} Rs.${fmt(returnSettle.exchangeAmt)}\n`;
+    } else if(!isRet&&!isPortalPay) {
+      msg+=`💵 *${L.paid}* Rs.${fmt(payAmount)}\n`;
+    }
+  }
 
+  /* ── 4. BALANCE / CHANGE / DUE ── */
+  if(!isRet && !isReceiptType && v.showBalance){
+    if(balance >= 0) {
+      msg+=`⚖️ *${L.change}* Rs.${fmt(balance)}\n`;
+    } else {
+      msg+=`🔴 *${L.creditDue}* *Rs.${fmt(Math.abs(balance))}*\n`;
+    }
+  }
+
+  /* ── 5. CUSTOMER OUTSTANDING LEDGER ── */
   if(!isRet){
-    if(isReceiptType){if(v.showPreviousBalance||v.showNewBalance){msg+=`\n━━━━━━━━━━━━━━\n`;const title=isInvoiceSettlement||isPortalPay?'Invoice Settlement':(isPayment?'Payment Balance':'Credit Balance');msg+=`📊 *${title}*\n`;if(v.showPreviousBalance)msg+=`${L.waPrevBalance} Rs.${fmt(previousBalance)}\n`;if(isInvoiceSettlement||isPortalPay)msg+=`✅ Applied: -Rs.${fmt(settledAmount)}\n`;else if(isPayment)msg+=`✅ ${L.paid} -Rs.${fmt(netAmount)}\n`;else if(isCredit)msg+=`🔴 Credit: +Rs.${fmt(netAmount)}\n`;if(v.showNewBalance)msg+=`${L.waNewBalance} Rs.${fmt(newBalance)}${newBalance<=0.01?' ✅':' ⚠️'}\n`;}}
-    else if(showCustomerOutstandingSection){
+    if(isReceiptType){
+      if(v.showPreviousBalance||v.showNewBalance){
+        msg+=`\n━━━━━━━━━━━━━━\n`;
+        const title=isInvoiceSettlement||isPortalPay?'Invoice Settlement':(isPayment?'Payment Balance':'Credit Balance');
+        msg+=`📊 *${title}*\n`;
+        if(v.showPreviousBalance) msg+=`${L.waPrevBalance} Rs.${fmt(previousBalance)}\n`;
+        if(isInvoiceSettlement||isPortalPay) msg+=`✅ Applied: -Rs.${fmt(settledAmount)}\n`;
+        else if(isPayment) msg+=`✅ ${L.paid} -Rs.${fmt(netAmount)}\n`;
+        else if(isCredit)  msg+=`🔴 Credit: +Rs.${fmt(netAmount)}\n`;
+        if(v.showNewBalance) msg+=`${L.waNewBalance} Rs.${fmt(newBalance)}${newBalance<=0.01?' ✅':' ⚠️'}\n`;
+      }
+    } else if(showCustomerOutstandingSection && (v.showPreviousBalance || v.showNewBalance)){
       msg+=`\n━━━━━━━━━━━━━━\n`;
       msg+=`${newBalance<-0.01?(L.waCustomerDeposit||L.waCustomerOutstanding):(L.waCustomerOutstanding||'📊 *Customer Outstanding:*')}\n`;
       if(v.showPreviousBalance) msg+=`${L.waPrevBalance} Rs.${fmt(previousBalance)}\n`;
@@ -488,7 +574,13 @@ function buildWAMessage(invoice,customer,settings,visibility,langKey='en'){
       if(v.showNewBalance) msg+=`${L.waNewBalance} Rs.${fmt(newBalance)}\n`;
     }
   } else {
-    if(isReturnCreditAdj&&(v.showPreviousBalance||v.showNewBalance)){msg+=`\n━━━━━━━━━━━━━━\n`;msg+=`📊 *${L.balanceReduced}*\n`;if(v.showPreviousBalance)msg+=`${L.waPrevBalance} Rs.${fmt(previousBalance)}\n`;msg+=`${L.waReturnCreditAdj} -Rs.${fmt(returnCreditAmount)}\n`;if(v.showNewBalance)msg+=`${L.waNewBalance} Rs.${fmt(newBalance)}\n`;}
+    if(isReturnCreditAdj&&(v.showPreviousBalance||v.showNewBalance)){
+      msg+=`\n━━━━━━━━━━━━━━\n`;
+      msg+=`📊 *${L.balanceReduced}*\n`;
+      if(v.showPreviousBalance) msg+=`${L.waPrevBalance} Rs.${fmt(previousBalance)}\n`;
+      msg+=`${L.waReturnCreditAdj} -Rs.${fmt(returnCreditAmount)}\n`;
+      if(v.showNewBalance) msg+=`${L.waNewBalance} Rs.${fmt(newBalance)}\n`;
+    }
   }
 
   if(v.showRemarks&&remarks) msg+=`\n📝 ${remarks}\n`;
@@ -503,10 +595,16 @@ function buildWAMessage(invoice,customer,settings,visibility,langKey='en'){
   return msg;
 }
 
+/* ══════════════════════════════════════════
+   BUILD SMS MESSAGE
+══════════════════════════════════════════ */
 function buildSMSMessage(invoice,customer,settings,visibility,langKey='en'){
   const v=visibility||DEFAULT_VISIBILITY,biz=settings||{};
   const isRet=isReturnDoc(invoice),isPortalPay=isPortalInvoicePayment(invoice),L=getLang(langKey);
-  const items=invoice?.items||[],net=R2(invoice?.netAmount),paid=R2(invoice?.payAmount),bal=R2(invoice?.balance);
+  const items=invoice?.items||[];
+  const itemsSum = R2(items.reduce((sum, item) => sum + R2(item.lineTotal ?? (R2(item.sellingPrice) * R2(item.qty))), 0));
+  const grossTotal = invoice?.grossTotal != null ? R2(invoice.grossTotal) : (itemsSum > 0 ? itemsSum : R2(invoice?.netAmount));
+  const net=R2(invoice?.netAmount),paid=R2(invoice?.payAmount),bal=R2(invoice?.balance ?? (paid - net));
   const pm=isRet?(invoice?.refundMethod||'cash'):(invoice?.paymentMethod||invoice?.method||'cash');
   const portalLink=getPortalLink(customer);
   const oi=getOutstandingInfo(invoice,customer);
@@ -520,27 +618,57 @@ function buildSMSMessage(invoice,customer,settings,visibility,langKey='en'){
   if(v.showInvoiceNo) msg+=`${isRet?L.smsRet:L.smsNo}:${invoice?.invoiceNo||''}\n`;
   if(v.showDate) msg+=`${L.smsDate}:${fmtDate(invoice?.createdAt)}\n`;
   if(v.showCustomerName) msg+=`${L.smsCust}:${invoice?.customerName||'Cash'}\n`;
-  if(isPortalPay&&!isRet) msg+=`Paid:Rs.${fmt(settledAmount)}\n`;
-  else if(v.showItemPrices&&items.length>0){msg+=`---\n${isRet?L.smsReturnedItems:L.smsItems}(${items.length})\n`;items.forEach((item,i)=>{const sp=R2(item.sellingPrice),qty=R2(item.qty),lt=R2(item.lineTotal??sp*qty);msg+=`${i+1}.${item.name||''}\n  ${fmt(sp)}x${qty}=Rs.${fmt(lt)}\n`;});msg+=`---\n`;}
-  if(!isRet&&!isReceiptType&&v.showGrossTotal&&R2(invoice?.grossTotal)>0) msg+=`${L.smsGross}:Rs.${fmt(R2(invoice.grossTotal))}\n`;
+  
+  if(isPortalPay&&!isRet) {
+    msg+=`Paid:Rs.${fmt(settledAmount)}\n`;
+  } else if(v.showItemPrices&&items.length>0){
+    msg+=`---\n${isRet?L.smsReturnedItems:L.smsItems}(${items.length})\n`;
+    items.forEach((item,i)=>{
+      const sp=R2(item.sellingPrice),qty=R2(item.qty),lt=R2(item.lineTotal??sp*qty);
+      msg+=`${i+1}.${item.name||''}\n  ${fmt(sp)}x${qty}=Rs.${fmt(lt)}\n`;
+    });
+    msg+=`---\n`;
+  }
+
+  if(!isRet&&!isReceiptType&&v.showGrossTotal) msg+=`${L.smsGross}:Rs.${fmt(grossTotal)}\n`;
+  if(!isRet&&!isReceiptType&&v.showTotalDiscount&&R2(invoice?.totalDiscount)>0) msg+=`${L.smsDisc}:-Rs.${fmt(R2(invoice.totalDiscount))}\n`;
   if(v.showNetAmount) msg+=`${isRet?L.smsRefund:L.smsTotal}:Rs.${fmt(isPortalPay?settledAmount:net)}\n`;
   if(v.showPaymentMethod&&!isPortalPay) msg+=`${L.smsPay}:${isRet?getRefundLabel(pm,L):getPaymentLabel(pm,L)}\n`;
-  if(v.showPaidAmount){if(isRet&&returnSettle){if(returnSettle.method==='cash')msg+=`${L.smsRefunded}:Rs.${fmt(returnSettle.cashAmt)}\n`;else if(returnSettle.method==='credit')msg+=`${L.smsCreditAdj}:Rs.${fmt(returnSettle.creditAmt)}\n`;}else if(!isRet&&!isPortalPay) msg+=`${L.smsPaid}:Rs.${fmt(paid)}\n`;}
+  if(v.showPaidAmount){
+    if(isRet&&returnSettle){
+      if(returnSettle.method==='cash') msg+=`${L.smsRefunded}:Rs.${fmt(returnSettle.cashAmt)}\n`;
+      else if(returnSettle.method==='credit') msg+=`${L.smsCreditAdj}:Rs.${fmt(returnSettle.creditAmt)}\n`;
+    } else if(!isRet&&!isPortalPay) {
+      msg+=`${L.smsPaid}:Rs.${fmt(paid)}\n`;
+    }
+  }
+
+  if(!isRet && !isReceiptType && v.showBalance){
+    if(bal >= 0) {
+      msg+=`${L.smsChange}:Rs.${fmt(bal)}\n`;
+    } else {
+      msg+=`${L.smsDue}:Rs.${fmt(Math.abs(bal))}\n`;
+    }
+  }
 
   if(!isRet){
     if(isReceiptType){
       if(v.showPreviousBalance) msg+=`${L.smsPrevBal}:Rs.${fmt(previousBalance)}\n`;
       if(isInvoiceSettlement||isPortalPay) msg+=`Applied:-Rs.${fmt(settledAmount)}\n`;
       else if(isPayment) msg+=`Paid:-Rs.${fmt(net)}\n`;
-      else if(isCredit) msg+=`Credit:+Rs.${fmt(net)}\n`;
+      else if(isCredit)  msg+=`Credit:+Rs.${fmt(net)}\n`;
       if(v.showNewBalance) msg+=`${L.smsNewBal}:Rs.${fmt(newBalance)}\n`;
-    } else if(showCustomerOutstandingSection){
+    } else if(showCustomerOutstandingSection && (v.showPreviousBalance || v.showNewBalance)){
       if(v.showPreviousBalance) msg+=`${L.smsPrevBal}:Rs.${fmt(previousBalance)}\n`;
       if(v.showCreditDue&&creditDue>0) msg+=`${L.smsDue}:Rs.${fmt(creditDue)}\n`;
       if(v.showNewBalance) msg+=`${L.smsNewBal}:Rs.${fmt(newBalance)}\n`;
     }
   } else {
-    if(isReturnCreditAdj){if(v.showPreviousBalance)msg+=`${L.smsPrevBal}:Rs.${fmt(previousBalance)}\n`;msg+=`${L.smsCreditReduced}:-Rs.${fmt(returnCreditAmount)}\n`;if(v.showNewBalance)msg+=`${L.smsNewBal}:Rs.${fmt(newBalance)}\n`;}
+    if(isReturnCreditAdj){
+      if(v.showPreviousBalance) msg+=`${L.smsPrevBal}:Rs.${fmt(previousBalance)}\n`;
+      msg+=`${L.smsCreditReduced}:-Rs.${fmt(returnCreditAmount)}\n`;
+      if(v.showNewBalance) msg+=`${L.smsNewBal}:Rs.${fmt(newBalance)}\n`;
+    }
   }
 
   if(v.showPortalLink&&portalLink) msg+=`${L.smsAccount}:${portalLink}\n`;
@@ -552,7 +680,7 @@ function buildSMSMessage(invoice,customer,settings,visibility,langKey='en'){
 }
 
 /* ══════════════════════════════════════════
-   MAIN COMPONENT
+   MAIN EXPORT COMPONENT
 ══════════════════════════════════════════ */
 export default function InvoiceOutputManager({invoice,onClose,initialMode='print',forceVisibility=null}){
   const {user}=useUserAuth();
@@ -568,7 +696,6 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
   const [modeSettings,setModeSettings]=useState(buildDefaultModeSettings);
   const [settingsMode,setSettingsMode]=useState('print');
   
-  /* Editable business profile state variables */
   const [bizLogo, setBizLogo] = useState('');
   const [bizLogoWidth, setBizLogoWidth] = useState(120);
   const [bizLogoAlign, setBizLogoAlign] = useState('center');
@@ -595,7 +722,6 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
   const editingLang=getModeSettings(settingsMode).lang;
   const editingVisibility=getModeSettings(settingsMode).visibility;
 
-  /* Smart Image Compressor & Automatic Cloud Upload Engine */
   const handleLogoUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -634,7 +760,6 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
 
-        // Convert canvas output to JPEG Blob for uploading
         canvas.toBlob(async (blob) => {
           if (!blob) {
             showToast('❌ Processing failed');
@@ -646,7 +771,6 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
             const formData = new FormData();
             formData.append('file', blob, 'logo.jpg');
             
-            // Upload to Telegraph API (Free Anonymous Cloud Image Hosting)
             const res = await fetch('https://telegra.ph/upload', {
               method: 'POST',
               body: formData,
@@ -728,7 +852,6 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
 
   useEffect(()=>{const fn=(e)=>{if(e.key==='Escape')onClose();};document.addEventListener('keydown',fn);return()=>document.removeEventListener('keydown',fn);},[onClose]);
 
-  /* Unified Real-Time Preview Settings Object (Combines saved settings with current UI state instantly) */
   const activeSettings = useMemo(() => ({
     ...settings,
     logo: bizLogo,
@@ -750,7 +873,6 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
 
   const saveAll=useCallback(async()=>{if(!user?.uid)return;try{await setDoc(doc(db,`users/${user.uid}/settings`,'invoiceOutputModes'),{...modeSettings,updatedAt:serverTimestamp()},{merge:true});showToast('✅ Saved!');}catch(e){showToast(`❌ ${e.message}`);}}, [user?.uid,modeSettings,showToast]);
   
-  /* Save Business Settings specifically to Firestore */
   const saveBusinessSettings = async () => {
     if (!user?.uid) return;
     try {
@@ -838,7 +960,7 @@ export default function InvoiceOutputManager({invoice,onClose,initialMode='print
     {portalLink?(
       <div style={{background:'#f0fdf4',borderBottom:'1px solid #bbf7d0',padding:'6px 16px',fontSize:11,color:'#16a34a',fontWeight:700}}>
         ✅ Portal: <span style={{color:'#1e293b',fontFamily:'monospace'}}>{portalLink}</span>
-        {isReturn&&<span style={{marginLeft:8,background:'#dc2626',color:'white',fontSize:9,padding:'1px 6px',borderRadius:4}}>↩️ Return</span>}
+        {isReturn&&<span style={{marginLeft:8,background:'#dc2626',color: 'white',fontSize:9,padding:'1px 6px',borderRadius:4}}>↩️ Return</span>}
       </div>
     ):(
       <div style={{background:'#fef3c7',borderBottom:'1px solid #fde68a',padding:'6px 16px',fontSize:11,color:'#92400e',fontWeight:700}}>⚠️ No portal link</div>

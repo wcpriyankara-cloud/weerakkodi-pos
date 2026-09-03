@@ -3,6 +3,7 @@ import {
   initializeFirestore,
   getFirestore,
   enableNetwork,
+  memoryLocalCache, // ★★★ memoryLocalCache එක මෙහිදී එකතු කරන ලදී
 } from 'firebase/firestore';
 import {
   getAuth,
@@ -41,9 +42,10 @@ let db = globalFirebase.__weerakkodi_db__;
 
 if (!db) {
   try {
+    // ★★★ ERROR එක වළක්වන නව Firestore Initialization ක්‍රමය ★★★
     db = initializeFirestore(app, {
-      experimentalAutoDetectLongPolling: true,
-      useFetchStreams: false,
+      localCache: memoryLocalCache(), // Corrupted IndexedDB එක මඟ හැර Memory Cache භාවිතා කරයි
+      experimentalForceLongPolling: true, // Stream වැසී යාම වළක්වා දිගටම සම්බන්ධතාවය තබා ගනී
     });
   } catch {
     db = getFirestore(app);
