@@ -3,6 +3,7 @@
 // components/InvoiceList.jsx
 // ✅ Integrated with correct @/firebaseConfig wrapper
 // ✅ InvoiceOutputManager integrated cleanly for receipts
+// ✅ FIXED: Unit (Pcs) profit calculation by properly applying uomFactor & allocatedCostTotal
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
@@ -91,8 +92,10 @@ const saveInvoiceCache = (uid, list) => {
         qty:it.qty||0, lineTotal:it.lineTotal||0, yourPrice:it.yourPrice||0,
         sellingPrice:it.sellingPrice||0, discAmount:it.discAmount||0,
         costPrice:it.costPrice||0, avgBatchCost:it.avgBatchCost||0,
+        allocatedCostTotal:it.allocatedCostTotal||0,
         photoURL:it.photoURL||'', uom:it.uom||'', warrantyCode:it.warrantyCode||'',
         warrantyPeriod:it.warrantyPeriod||'',
+        uomFactor:it.uomFactor||1,
       })),
     }));
     sessionStorage.setItem(`invoices_${uid}`, JSON.stringify({ data: slim, ts: Date.now() }));
@@ -193,7 +196,7 @@ const normalizeInvoice = (raw, id, col, path) => {
     balance:raw.balance !== undefined ? toNum(raw.balance) : net - pay,
     totalDiscount:toNum(raw.totalDiscount||raw.discount||0), billDiscount:toNum(raw.billDiscount||0),
     billDiscountPercent:toNum(raw.billDiscountPercent||0), exchangeAmount:toNum(raw.exchangeAmount||0),
-    returnAmount:toNum(raw.returnAmount||0), items:raw.items||[], itemCount:raw.itemCount||raw.items?.length||0,
+    returnAmount:toNum(raw.returnAmount||0), itemCount:raw.itemCount||raw.items?.length||0,
     status:raw.status||(isDraft?'draft':'completed'), type:isDraft?'draft':'invoice',
     paymentMethod:raw.paymentMethod||'cash', mode:raw.mode||'invoice',
     createdAt:raw.createdAt||null, date:raw.date||fmtDate(raw.createdAt), time:raw.time||fmtTime(raw.createdAt),
@@ -204,6 +207,25 @@ const normalizeInvoice = (raw, id, col, path) => {
     rep:raw.rep||raw.salesRep||'-', branch:raw.branch||raw.branchName||'-',
     remarks:raw.remarks||raw.invoiceRemark||'',
     uid:raw.uid||raw.userId||raw.ownerId||raw.createdBy||'',
+    previousOutstanding:raw.previousOutstanding !== undefined ? toNum(raw.previousOutstanding) : 0,
+    newOutstanding:raw.newOutstanding !== undefined ? toNum(raw.newOutstanding) : 0,
+    items: (raw.items || []).map((it) => ({
+      name: it.name || '',
+      nameSi: it.nameSi || it.sinhalaName || '',
+      qty: toNum(it.qty || it.quantity || 0),
+      lineTotal: toNum(it.lineTotal || 0),
+      yourPrice: toNum(it.yourPrice || it.sellingPrice || 0),
+      sellingPrice: toNum(it.sellingPrice || 0),
+      discAmount: toNum(it.discAmount || 0),
+      costPrice: toNum(it.costPrice || it.buyingPrice || 0),
+      avgBatchCost: toNum(it.avgBatchCost || 0),
+      allocatedCostTotal: toNum(it.allocatedCostTotal || 0),
+      uomFactor: toNum(it.uomFactor || 1),
+      photoURL: it.photoURL || '',
+      uom: it.uom || '',
+      warrantyCode: it.warrantyCode || '',
+      warrantyPeriod: it.warrantyPeriod || '',
+    })),
   };
 };
 
@@ -222,12 +244,37 @@ const getCustomerBalanceBreakdown = (customer, invoice) => {
 const costOf = (i) => toNum(i.costPrice||i.buyingPrice||i.unitCost||i.cost||i.avgBatchCost||i.purchasePrice||0);
 const sellOf = (i) => toNum(i.yourPrice||i.sellingPrice||i.unitPrice||i.price||i.salePrice||0);
 
+// ✅ FIXED: Unit (Pcs) Profit calculation considering uomFactor and pre-calculated line cost (allocatedCostTotal)
 const itemProfit = (item) => {
-  const qty  = toNum(item.qty||item.quantity||1);
-  const sell = sellOf(item), cost = costOf(item), disc = toNum(item.discAmount||item.discount||0);
-  const rev  = toNum(item.lineTotal)||(sell*qty-disc*qty), lc = cost*qty;
-  const lp   = cost > 0 ? rev - lc : null, mg = rev > 0 && cost > 0 ? (lp/rev)*100 : null;
-  return { qty, sell, cost, disc, rev, lc, lp, mg, hasCost:cost>0 };
+  const qty = toNum(item.qty || item.quantity || 1);
+  const factor = Math.max(0.0001, toNum(item.uomFactor || 1));
+  const sell = sellOf(item);
+  const disc = toNum(item.discAmount || item.discount || 0);
+  const rev = toNum(item.lineTotal) || (sell * qty - disc * qty);
+
+  let lc = 0;
+  let hasCost = false;
+  let costPerUnit = 0;
+
+  // 1. If POS saved pre-allocated batch cost total (completely accurate even with conversions)
+  if (toNum(item.allocatedCostTotal) > 0) {
+    lc = toNum(item.allocatedCostTotal);
+    costPerUnit = R2(lc / qty);
+    hasCost = true;
+  } else {
+    // 2. Otherwise scale the base cost price proportionally by the conversion factor
+    const baseCost = costOf(item);
+    if (baseCost > 0) {
+      costPerUnit = R2(baseCost / factor);
+      lc = R2(costPerUnit * qty);
+      hasCost = true;
+    }
+  }
+
+  const lp = hasCost ? R2(rev - lc) : null;
+  const mg = rev > 0 && hasCost ? (lp / rev) * 100 : null;
+
+  return { qty, sell, cost: costPerUnit, disc, rev, lc, lp, mg, hasCost };
 };
 
 const invoiceProfit = (items) => {
@@ -275,6 +322,8 @@ function ProfitTable({ items, t }) {
     </div>
   );
 }
+
+const R2 = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : Math.round(n * 100) / 100; };
 
 /* ── Payment Modal ── */
 function PaymentModal({ invoice, customer, onClose, onSuccess, user, t }) {
@@ -526,24 +575,36 @@ export default function InvoiceList({ lang: initialLang = 'si' }) {
     setPayModal({ invoice: inv, customer });
   }, [fetchCustomerById]);
 
-  // ★ Open InvoiceOutputManager
+  // ★ Open InvoiceOutputManager with mapped financial attributes
   const openOutput = useCallback(async (inv, e) => {
     e?.stopPropagation();
-    // Build invoice object for InvoiceOutputManager
+    
     const outputInv = {
       ...inv,
-      // InvoiceOutputManager expected fields
       customerAddress: inv.customerAddress || '',
-      grossTotal:      inv.grossTotal || inv.invoiceValue || 0,
-      totalDiscount:   inv.totalDiscount || 0,
-      billDiscount:    inv.billDiscount || 0,
-      billDiscountPercent: inv.billDiscountPercent || 0,
-      exchangeAmount:  inv.exchangeAmount || 0,
-      netAmount:       inv.netAmount || 0,
-      payAmount:       inv.payAmount || 0,
-      balance:         inv.balance || 0,
+      grossTotal:      toNum(inv.grossTotal || inv.invoiceValue || 0),
+      totalDiscount:   toNum(inv.totalDiscount || 0),
+      billDiscount:    toNum(inv.billDiscount || 0),
+      billDiscountPercent: toNum(inv.billDiscountPercent || 0),
+      exchangeAmount:  toNum(inv.exchangeAmount || 0),
+      netAmount:       toNum(inv.netAmount || 0),
+      payAmount:       toNum(inv.payAmount || 0),
+      balance:         toNum(inv.balance || 0),
       paymentMethod:   inv.paymentMethod || 'cash',
       remarks:         inv.remarks || '',
+      previousOutstanding: toNum(inv.previousOutstanding || 0),
+      newOutstanding:      toNum(inv.newOutstanding || 0),
+      items: (inv.items || []).map(it => ({
+        name: it.name || '',
+        nameSi: it.nameSi || it.sinhalaName || '',
+        qty: toNum(it.qty || it.quantity || 1),
+        sellingPrice: toNum(it.sellingPrice || it.unitPrice || 0),
+        yourPrice: toNum(it.yourPrice || it.unitPrice || 0),
+        lineTotal: toNum(it.lineTotal || (toNum(it.yourPrice || it.unitPrice || 0) * toNum(it.qty || 1))),
+        uom: it.uom || '',
+        warrantyCode: it.warrantyCode || '',
+        warrantyPeriod: it.warrantyPeriod || '',
+      }))
     };
     setOutputInvoice(outputInv);
   }, []);
@@ -720,7 +781,7 @@ export default function InvoiceList({ lang: initialLang = 'si' }) {
             <div style={{ fontSize:13, fontWeight:800, color:'#334155', marginBottom:8 }}>{t.totalDebt}</div>
             {Math.abs(bal.previousBalance)>0.01&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:13, marginBottom:4, color:'#64748b' }}><span>{t.previousBalance}</span><span>Rs.{bal.previousBalance.toFixed(2)}</span></div>}
             {bal.thisInvoiceDue>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:13, marginBottom:4, color:'#dc2626' }}><span>{t.thisBill}</span><span>Rs.{bal.thisInvoiceDue.toFixed(2)}</span></div>}
-            <div style={{ borderTop:'1px dashed #e2e8f0', paddingTop:8, marginTop:6, display:'flex', justifyContent:'space-between', fontSize:17, fontWeight:900, color:bal.hasDebt?'#dc2626':bal.hasDeposit?'#16a34a':'#059669' }}>
+            <div style={{ borderTop:'1px solid #e2e8f0', paddingTop:8, marginTop:6, display:'flex', justifyContent:'space-between', fontSize:17, fontWeight:900, color:bal.hasDebt?'#dc2626':bal.hasDeposit?'#16a34a':'#059669' }}>
               <span>{bal.hasDebt?t.totalDebt:bal.hasDeposit?t.deposit:t.noDebt}</span>
               <span>{bal.hasDebt?`Rs.${bal.totalDebt.toFixed(2)}`:bal.hasDeposit?`Rs.${Math.abs(bal.totalDebt).toFixed(2)}`:'OK'}</span>
             </div>
@@ -866,13 +927,13 @@ export default function InvoiceList({ lang: initialLang = 'si' }) {
                       ))}
                     </div>
 
-                    {/* ★ Action buttons — including Send */}
-                    <div style={{ display:'grid', gridTemplateColumns:isDue?'repeat(4,1fr)':'repeat(4,1fr)', gap:6 }}>
+                    {/* Action buttons */}
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6 }}>
                       <button type="button" onClick={(e)=>{e.stopPropagation();setSelected(inv);}} style={S.ac('#6366f1')}>
                         <span style={{ fontSize:18 }}>👁️</span><span style={{ fontSize:9 }}>{t.viewDetails}</span>
                       </button>
 
-                      {/* ★ Send Bill button */}
+                      {/* Send Bill button */}
                       <button type="button" onClick={(e)=>openOutput(inv,e)} style={S.ac('#3b82f6')}>
                         <span style={{ fontSize:18 }}>📤</span><span style={{ fontSize:9 }}>{t.sendBill}</span>
                       </button>
@@ -917,4 +978,4 @@ const S = {
   mb:{ position:'relative', width:'100%', maxWidth:480, background:'white', borderTopLeftRadius:20, borderTopRightRadius:20, boxShadow:'0 -8px 32px rgba(0,0,0,0.2)' },
   ls:{ display:'block', fontWeight:700, fontSize:13, color:'#334155', marginBottom:5 },
   greenBtn:{ width:'100%', padding:13, background:'#16a34a', color:'white', border:'none', borderRadius:10, fontWeight:800, fontSize:16, cursor:'pointer' },
-}; 
+};
