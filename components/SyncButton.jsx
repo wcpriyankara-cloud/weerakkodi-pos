@@ -335,11 +335,11 @@ export default function SyncButton({ uid }) {
     setTimeout(() => setShowResult(false), 5000);
   };
 
-  // ✅ CRITICAL: Don't render anything server-side OR until mounted
+    // ✅ CRITICAL: Don't render anything server-side OR until mounted
   if (!mounted) return null;
 
-    // Always show when user is logged in (uid exists)
-  if (!uid) return null;
+  // ✅ DEBUG: Log render state
+  console.log('[SyncButton] Render:', { uid, pending, isOnline, dbReady: !!db });
 
   return (
     <>
@@ -389,14 +389,16 @@ export default function SyncButton({ uid }) {
           <span style={{ fontSize: 18 }}>🔄</span>
         )}
 
-                <span>
-          {syncing
-            ? status || 'Sync...'
-            : !isOnline
-              ? 'Offline'
-              : pending > 0
-                ? `Sync (${pending})`
-                : 'Synced ✓'
+                  <span>
+          {!uid
+            ? '🔑 No User'
+            : syncing
+              ? status || 'Sync...'
+              : !isOnline
+                ? 'Offline'
+                : pending > 0
+                  ? `Sync (${pending})`
+                  : 'Synced ✓'
           }
         </span>
 
