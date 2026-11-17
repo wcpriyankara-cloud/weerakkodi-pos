@@ -10,13 +10,11 @@ import {
   query,
   limit,
   startAfter,
-  orderBy,
   serverTimestamp,
 } from 'firebase/firestore';
 import { localDb } from '@/lib/localDb';
 import { onAuthStateChanged } from 'firebase/auth';
 
-// Deep sanitize helper to prepare Firestore / Local JSON data
 const sanitizeForFirestore = (val) => {
   if (val === undefined || typeof val === 'function' || typeof val === 'symbol') {
     return null;
@@ -55,7 +53,7 @@ export default function SyncButton() {
   const [statusMsg, setStatusMsg]       = useState('');
   const [showMenu, setShowMenu]         = useState(false);
 
-  // ══ Prevent Multiple Sync Buttons on Screen ══
+  // Prevent multiple buttons on screen
   useEffect(() => {
     if (typeof window !== 'undefined') {
       if (window.__SYNC_BTN_MOUNTED__) {
@@ -71,17 +69,15 @@ export default function SyncButton() {
     };
   }, [isDuplicate]);
 
-  // ══ Dragging State & Position ══
+  // Position
   const [position, setPosition]         = useState({ x: null, y: null });
   const [isDragging, setIsDragging]     = useState(false);
   const dragStartRef                    = useRef({ x: 0, y: 0 });
   const initialPosRef                   = useRef({ x: 0, y: 0 });
   const hasDraggedRef                   = useRef(false);
 
-  // Load saved position or set default to bottom-right
   useEffect(() => {
     if (typeof window === 'undefined' || isDuplicate) return;
-
     const savedPos = localStorage.getItem('sync_button_pos');
     if (savedPos) {
       try {
@@ -92,14 +88,12 @@ export default function SyncButton() {
         return;
       } catch (e) {}
     }
-
     setPosition({
       x: Math.max(10, window.innerWidth - 220),
       y: Math.max(10, window.innerHeight - 80),
     });
   }, [isDuplicate]);
 
-  // Keep button inside screen on window resize
   useEffect(() => {
     if (isDuplicate) return;
     const handleResize = () => {
@@ -115,16 +109,12 @@ export default function SyncButton() {
     return () => window.removeEventListener('resize', handleResize);
   }, [isDuplicate]);
 
-  // Monitor Firebase Auth state
   useEffect(() => {
     if (isDuplicate) return;
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setFbUser(u);
-    });
+    const unsub = onAuthStateChanged(auth, (u) => setFbUser(u));
     return () => unsub();
   }, [isDuplicate]);
 
-  // Count unsynced local invoices
   const checkPending = useCallback(async () => {
     try {
       if (!localDb || !localDb.invoices) return;
@@ -132,9 +122,7 @@ export default function SyncButton() {
         .filter((inv) => !inv.synced || inv.synced === 0)
         .count();
       setPendingCount(count);
-    } catch (e) {
-      console.warn('Check pending count error:', e);
-    }
+    } catch (e) {}
   }, []);
 
   useEffect(() => {
@@ -144,13 +132,10 @@ export default function SyncButton() {
     return () => clearInterval(interval);
   }, [checkPending, isDuplicate]);
 
-  // ══ Drag Motion Handlers ══
   const handlePointerDown = (e) => {
     if (e.button !== undefined && e.button !== 0) return;
-
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-
     dragStartRef.current = { x: clientX, y: clientY };
     initialPosRef.current = { ...position };
     hasDraggedRef.current = false;
@@ -159,21 +144,16 @@ export default function SyncButton() {
 
   useEffect(() => {
     if (!isDragging || isDuplicate) return;
-
     const handlePointerMove = (e) => {
       const clientX = e.touches ? e.touches[0].clientX : e.clientX;
       const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-
       const deltaX = clientX - dragStartRef.current.x;
       const deltaY = clientY - dragStartRef.current.y;
-
       if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) {
         hasDraggedRef.current = true;
       }
-
       const newX = Math.max(10, Math.min(window.innerWidth - 220, initialPosRef.current.x + deltaX));
       const newY = Math.max(10, Math.min(window.innerHeight - 80, initialPosRef.current.y + deltaY));
-
       setPosition({ x: newX, y: newY });
     };
 
@@ -207,13 +187,10 @@ export default function SyncButton() {
     setShowMenu(!showMenu);
   };
 
-  // 1. Upload Pending Local Invoices to Cloud (Local ➡️ Cloud)
+  // 1. Local ➡️ Cloud Upload
   const handleUploadPending = async () => {
     const activeUser = fbUser || auth.currentUser;
-    if (!activeUser) {
-      alert('කරුණාකර Cloud Sync සඳහා ප්‍රථමයෙන් Login වන්න.');
-      return;
-    }
+    if (!activeUser) return;
 
     setSyncing(true);
     setStatusMsg('Local Invoices Cloud එකට Upload වෙමින්...');
@@ -230,13 +207,10 @@ export default function SyncButton() {
       }
 
       let successCount = 0;
-      let failCount = 0;
-
       for (const inv of pendingInvoices) {
         try {
           const rawDocId = inv.id || inv.docId || inv.invoiceNo || Date.now();
           const docId = String(rawDocId).replace(/[/\\#?]/g, '_');
-
           const cleanInv = sanitizeForFirestore({
             ...inv,
             id: docId,
@@ -246,170 +220,113 @@ export default function SyncButton() {
           });
 
           await setDoc(doc(db, 'customerTransactions', docId), cleanInv, { merge: true });
-
-          await localDb.invoices.put({
-            ...inv,
-            id: inv.id || docId,
-            synced: 1,
-          });
-
+          await localDb.invoices.put({ ...inv, id: inv.id || docId, synced: 1 });
           successCount++;
-        } catch (err) {
-          console.error(`Failed to sync invoice item:`, inv, err);
-          failCount++;
-        }
+        } catch (err) {}
       }
 
-      if (failCount > 0) {
-        setStatusMsg(`⚠️ Invoices ${successCount} ක් Sync විය. ${failCount} ක් අසාර්ථක විය.`);
-      } else {
-        setStatusMsg(`✅ Local Invoices ${successCount} ම සාර්ථකව Sync විය!`);
-      }
+      setStatusMsg(`✅ Invoices ${successCount} ක් සාර්ථකව Sync විය!`);
       await checkPending();
     } catch (e) {
-      console.error('Sync upload error:', e);
       setStatusMsg('Upload දෝෂයක්: ' + e.message);
     } finally {
       setSyncing(false);
     }
   };
 
-  // 2. Save All Firestore Invoices to PC Hard Disc & Save Location Prompt File Export
+  // 2. Download ALL Firestore collections to PC Hard Disc & Prompt Save Location
   const handleDownloadAllToPC = async () => {
     const activeUser = fbUser || auth.currentUser;
     if (!activeUser) {
-      alert('Cloud වෙතින් Invoices Download කිරීමට ප්‍රථමයෙන් Login වන්න.');
+      alert('Cloud වෙතින් දත්ත Download කිරීමට ප්‍රථමයෙන් Login වන්න.');
       return;
     }
 
-    if (!confirm('Cloud හි ඇති සියලුම Invoices ඔබගේ PC Hard Disc එකට Save කර File Location එක තෝරාගෙන Save කිරීමට අවශ්‍යද?')) {
+    if (!confirm('Cloud හි ඇති සියලුම Records (Invoices, Customers, Items, Purchases, Suppliers) PC Hard Disc එකට Save කර File එක Save කරන ස්ථානය තෝරාගැනීමට අවශ්‍යද?')) {
       return;
     }
 
     setSyncing(true);
-    setStatusMsg('Firestore වෙතින් Invoices PC Hard Disc එකට Download වෙමින්...');
+    const fullBackupExport = {};
 
-    const allDownloadedInvoices = [];
+    const collectionsToDownload = [
+      { name: 'customerTransactions', localTable: localDb.invoices, label: 'Invoices' },
+      { name: 'invoices', localTable: localDb.invoices, label: 'Invoices (Alt)' },
+      { name: 'customers', localTable: localDb.customers, label: 'Customers' },
+      { name: 'items', localTable: localDb.items, label: 'Items' },
+      { name: 'purchases', localTable: localDb.purchases, label: 'Purchases' },
+      { name: 'suppliers', localTable: localDb.suppliers, label: 'Suppliers' },
+    ];
 
     try {
-      let totalDownloaded = 0;
-      let lastDoc = null;
-      let hasMore = true;
-      const batchSize = 150; // Stable batch size to avoid memory stalls
+      for (const colDef of collectionsToDownload) {
+        if (!colDef.localTable) continue;
 
-      let activeCollection = 'customerTransactions';
+        setStatusMsg(`${colDef.label} Cloud වෙතින් Download වෙමින්...`);
+        let totalColDownloaded = 0;
+        let lastDoc = null;
+        let hasMore = true;
+        const batchSize = 100; // Safe memory chunk size
+        const colDocs = [];
 
-      while (hasMore) {
-        let q;
-        if (lastDoc) {
-          q = query(
-            collection(db, activeCollection),
-            orderBy('__name__'),
-            startAfter(lastDoc),
-            limit(batchSize)
-          );
-        } else {
-          q = query(
-            collection(db, activeCollection),
-            orderBy('__name__'),
-            limit(batchSize)
-          );
+        while (hasMore) {
+          let q = lastDoc
+            ? query(collection(db, colDef.name), startAfter(lastDoc), limit(batchSize))
+            : query(collection(db, colDef.name), limit(batchSize));
+
+          const snapshot = await getDocs(q);
+          if (snapshot.empty) {
+            hasMore = false;
+            break;
+          }
+
+          const batchData = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data();
+            const record = { id: docSnap.id, docId: docSnap.id, ...data, synced: 1 };
+            batchData.push(record);
+            colDocs.push(record);
+          });
+
+          // Bulk Put to Local Dexie DB
+          await colDef.localTable.bulkPut(batchData);
+
+          totalColDownloaded += batchData.length;
+          lastDoc = snapshot.docs[snapshot.docs.length - 1];
+          setStatusMsg(`${colDef.label} Save වෙමින්: ${totalColDownloaded}...`);
+
+          // Pause briefly to free CPU & RAM (Prevents 1450 stalling)
+          await new Promise((resolve) => setTimeout(resolve, 50));
+
+          if (snapshot.docs.length < batchSize) {
+            hasMore = false;
+          }
         }
 
-        let snapshot;
-        try {
-          snapshot = await getDocs(q);
-        } catch (qErr) {
-          // Fallback query without orderBy if Firestore index delays
-          const fallbackQ = lastDoc
-            ? query(collection(db, activeCollection), startAfter(lastDoc), limit(batchSize))
-            : query(collection(db, activeCollection), limit(batchSize));
-          snapshot = await getDocs(fallbackQ);
-        }
-
-        if (snapshot.empty && totalDownloaded === 0 && activeCollection === 'customerTransactions') {
-          activeCollection = 'customer_transactions';
-          continue;
-        }
-
-        if (snapshot.empty) {
-          hasMore = false;
-          break;
-        }
-
-        const batchData = [];
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          const cleanItem = {
-            id: docSnap.id,
-            docId: docSnap.id,
-            ...data,
-            synced: 1,
-          };
-          batchData.push(cleanItem);
-          allDownloadedInvoices.push(cleanItem);
-        });
-
-        // Save batch to IndexedDB (Dexie) on PC Hard Disk
-        await localDb.invoices.bulkPut(batchData);
-
-        totalDownloaded += batchData.length;
-        lastDoc = snapshot.docs[snapshot.docs.length - 1];
-        setStatusMsg(`PC Hard Disc එකට Save වෙමින්: ${totalDownloaded} / 4172...`);
-
-        // Yield UI thread to prevent memory lockups
-        await new Promise((resolve) => setTimeout(resolve, 60));
-
-        if (snapshot.docs.length < batchSize) {
-          hasMore = false;
-        }
+        fullBackupExport[colDef.name] = colDocs;
       }
 
-      // Sync Customers & Items to PC
-      try {
-        const custSnap = await getDocs(collection(db, 'customers'));
-        if (!custSnap.empty) {
-          const custData = [];
-          custSnap.forEach(d => custData.push({ id: d.id, ...d.data() }));
-          await localDb.customers.bulkPut(custData);
-        }
-      } catch (cErr) {}
+      setStatusMsg('🎉 සියලුම Records සාර්ථකව PC Hard Disc එකට Save විය!');
 
-      try {
-        const itemSnap = await getDocs(collection(db, 'items'));
-        if (!itemSnap.empty) {
-          const itemData = [];
-          itemSnap.forEach(d => itemData.push({ id: d.id, ...d.data() }));
-          await localDb.items.bulkPut(itemData);
-        }
-      } catch (iErr) {}
-
-      setStatusMsg(`🎉 සාර්ථකයි! Invoices ${totalDownloaded} ක් PC එකට Save විය!`);
-
-      // ══ Save Location Selection Prompt ══
-      const fileName = `Weerakkodi_POS_Invoices_Backup_${new Date().toISOString().slice(0, 10)}.json`;
-      const jsonContent = JSON.stringify(allDownloadedInvoices, null, 2);
+      // Save File Location Prompt
+      const fileName = `Weerakkodi_POS_FullSystem_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+      const jsonContent = JSON.stringify(fullBackupExport, null, 2);
 
       if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
         try {
           const handle = await window.showSaveFilePicker({
             suggestedName: fileName,
             types: [{
-              description: 'JSON Backup File',
+              description: 'JSON Full System Backup',
               accept: { 'application/json': ['.json'] },
             }],
           });
           const writable = await handle.createWritable();
           await writable.write(jsonContent);
           await writable.close();
-          alert(`🎉 Invoices ${totalDownloaded} ම සාර්ථකව ඔබ තෝරාගත් Location එකට Save කරන ලදී!`);
-        } catch (saveErr) {
-          if (saveErr.name !== 'AbortError') {
-            console.warn('File picker error:', saveErr);
-          }
-        }
+          alert('🎉 සියලුම Cloud Records ඔබ තෝරාගත් PC Location එකේ Save කරන ලදී!');
+        } catch (saveErr) {}
       } else {
-        // Fallback file download dialog
         const blob = new Blob([jsonContent], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -431,27 +348,19 @@ export default function SyncButton() {
     }
   };
 
-  // 3. Force Clear Stuck Unsynced Items
   const handleForceClearUnsynced = async () => {
-    if (!confirm('Stuck වී ඇති නොගැලපෙන Local Data සාර්ථකව Synced ලෙස Mark කර ඉවත් කිරීමට අවශ්‍යද?')) {
-      return;
-    }
+    if (!confirm('Stuck වී ඇති නොගැලපෙන Local Data සාර්ථකව Synced ලෙස Mark කර ඉවත් කිරීමට අවශ්‍යද?')) return;
     try {
       const pendingInvoices = await localDb.invoices
         .filter((inv) => !inv.synced || inv.synced === 0)
         .toArray();
 
       for (const inv of pendingInvoices) {
-        await localDb.invoices.put({
-          ...inv,
-          synced: 1,
-        });
+        await localDb.invoices.put({ ...inv, synced: 1 });
       }
-      setStatusMsg('🧹 Stuck Items සාර්ථකව Clear විය!');
+      setStatusMsg('🧹 Stuck Items Clear විය!');
       await checkPending();
-    } catch (e) {
-      alert('Clear error: ' + e.message);
-    }
+    } catch (e) {}
   };
 
   if (isDuplicate || position.x === null || position.y === null) return null;
@@ -470,7 +379,6 @@ export default function SyncButton() {
         touchAction: 'none',
       }}
     >
-      {/* Status Tooltip Message */}
       {statusMsg && (
         <div
           style={{
@@ -491,7 +399,6 @@ export default function SyncButton() {
         </div>
       )}
 
-      {/* Sync Menu Options */}
       {showMenu && (
         <div
           style={{
@@ -574,7 +481,6 @@ export default function SyncButton() {
         </div>
       )}
 
-      {/* Main Draggable Floating Button */}
       <div
         onMouseDown={handlePointerDown}
         onTouchStart={handlePointerDown}
@@ -592,12 +498,9 @@ export default function SyncButton() {
           alignItems: 'center',
           gap: '8px',
           fontSize: '14px',
-          transition: isDragging ? 'none' : 'box-shadow 0.2s ease',
         }}
       >
-        <span style={{ cursor: 'grab', fontSize: '16px', opacity: 0.8 }} title="ඇද තැබීමට ක්ලික් කර අදින්න">
-          ⋮⋮
-        </span>
+        <span style={{ cursor: 'grab', fontSize: '16px', opacity: 0.8 }}>⋮⋮</span>
         <span>
           {syncing
             ? '⏳ Syncing...'

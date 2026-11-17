@@ -11,7 +11,7 @@
 import localDb from '@/lib/localDb';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { db, isOffline } from '@/shared/firebase-config';
+import { db } from '@/shared/firebase-config';
 import { useUserAuth } from '@/context/UserContext';
 import {
   collection, onSnapshot, doc, increment, writeBatch,
