@@ -176,30 +176,45 @@ export function UserAuthContextProvider({ children }) {
         } catch (e) {}
         loadUserData(firebaseUser);
       } else {
-        // Fallback check: Read saved user from localDb or default UID
-        try {
-          const localUser = await localDb.settings.get('current_user');
-          const lastUid = localStorage.getItem('weerakkodi_last_uid');
-          if (localUser && localUser.uid) {
-            setUser(localUser);
-            prevUidRef.current = localUser.uid;
-          } else {
-            const fallbackUser = {
-              uid: lastUid || 'wlknSmbTOEbcxp527cqGBnc3yu93',
-              email: 'user@weerakkodi.lk',
-              displayName: 'Weerakkodi POS',
-              emailVerified: true,
-            };
-            setUser(fallbackUser);
-            prevUidRef.current = fallbackUser.uid;
+        // Safe check for Electron & Offline state
+        const isElectronEnv = typeof window !== 'undefined' && (
+          Boolean(window.process?.versions?.electron) ||
+          Boolean(window.navigator?.userAgent?.includes('Electron'))
+        );
+        const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+
+        if (isElectronEnv && isOffline) {
+          // Strictly inside Electron AND Offline: use local saved user or fallback
+          try {
+            const localUser = await localDb.settings.get('current_user');
+            if (localUser && localUser.uid) {
+              setUser(localUser);
+              prevUidRef.current = localUser.uid;
+            } else {
+              const fallbackUser = {
+                uid: 'wlknSmbTOEbcxp527cqGBnc3yu93',
+                email: 'chandana@weerakkodi.lk',
+                displayName: 'Chandana Weerakkodi (Offline)',
+                role: 'admin',
+                isOfflineFallback: true,
+              };
+              setUser(fallbackUser);
+              prevUidRef.current = fallbackUser.uid;
+            }
+          } catch (e) {
+            setUser({
+              uid: 'wlknSmbTOEbcxp527cqGBnc3yu93',
+              email: 'chandana@weerakkodi.lk',
+              displayName: 'Chandana Weerakkodi (Offline)',
+              role: 'admin',
+              isOfflineFallback: true,
+            });
           }
-        } catch (e) {
-          setUser({
-            uid: 'wlknSmbTOEbcxp527cqGBnc3yu93',
-            email: 'user@weerakkodi.lk',
-            displayName: 'Weerakkodi POS',
-            emailVerified: true,
-          });
+        } else {
+          // Web browser OR Online Electron: set user to null so Login page displays
+          setUser(null);
+          setUserData(null);
+          prevUidRef.current = null;
         }
       }
       if (isMounted) setLoading(false);
