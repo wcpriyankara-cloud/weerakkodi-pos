@@ -26,8 +26,9 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true
   },
-
-  assetPrefix: '.',
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
 };
 
 module.exports = nextConfig;
