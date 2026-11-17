@@ -1,464 +1,537 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { db, auth } from '@/lib/firebase';
+import {
+  collection,
+  doc,
+  setDoc,
+  getDocs,
+  query,
+  limit,
+  startAfter,
+  serverTimestamp,
+} from 'firebase/firestore';
 import { localDb } from '@/lib/localDb';
-import { useUserAuth } from '@/context/UserContext';
-import { getApps, getApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged } from 'firebase/auth';
 
-// ============ FIREBASE IMPORTS (ROBUST) ============
-let db = null;
-let doc, setDoc, updateDoc, collection, query, where, getDocs, serverTimestamp;
-
-try {
-  const firestore = require('firebase/firestore');
-
-  doc = firestore.doc;
-  setDoc = firestore.setDoc;
-  updateDoc = firestore.updateDoc;
-  collection = firestore.collection;
-  query = firestore.query;
-  where = firestore.where;
-  getDocs = firestore.getDocs;
-  serverTimestamp = firestore.serverTimestamp;
-
-  try {
-    const fb = require('@/firebaseConfig');
-    const candidate = fb.db || fb.default;
-    if (candidate) db = candidate;
-  } catch (e) {}
-
-  if (!db) {
-    try {
-      const apps = getApps();
-      if (apps.length > 0) db = firestore.getFirestore(apps[0]);
-    } catch (e) {}
+// Deep sanitize helper to render valid Firestore data (strips undefined, NaN, functions)
+const sanitizeForFirestore = (val) => {
+  if (val === undefined || typeof val === 'function' || typeof val === 'symbol') {
+    return null;
   }
-} catch (e) {
-  console.error('[SyncButton] Firebase import error:', e);
-}
-
-function isValidDb() {
-  return db !== null;
-}
-
-// Recursive helper to sanitize undefined values for Firestore
-function sanitizeForFirestore(obj) {
-  if (obj === null || obj === undefined) return null;
-  if (typeof obj !== 'object') return obj;
-  if (obj instanceof Date) return obj;
-
-  const clean = Array.isArray(obj) ? [] : {};
-  for (const [key, value] of Object.entries(obj)) {
-    if (value === undefined) continue;
-    if (value && typeof value === 'object' && !(value instanceof Date)) {
-      clean[key] = sanitizeForFirestore(value);
-    } else {
-      clean[key] = value;
+  if (val === null || typeof val !== 'object') {
+    if (typeof val === 'number' && (isNaN(val) || !isFinite(val))) {
+      return 0;
+    }
+    return val;
+  }
+  if (val instanceof Date) {
+    return val.toISOString();
+  }
+  if (Array.isArray(val)) {
+    return val
+      .map(sanitizeForFirestore)
+      .filter((item) => item !== null && item !== undefined);
+  }
+  const cleaned = {};
+  for (const [key, value] of Object.entries(val)) {
+    if (value !== undefined && typeof value !== 'function' && typeof value !== 'symbol') {
+      const sanitizedVal = sanitizeForFirestore(value);
+      if (sanitizedVal !== null && sanitizedVal !== undefined) {
+        cleaned[key] = sanitizedVal;
+      }
     }
   }
-  return clean;
-}
+  return cleaned;
+};
 
-/* ══════════════════════════════════════════
-   COUNT ALL PENDING UNLOADED DATA
-══════════════════════════════════════════ */
-async function countPending() {
-  let count = 0;
-  try {
-    try {
-      const custs = await localDb.customers.toArray();
-      count += custs.filter(c => c.synced === false || c.synced === 0).length;
-    } catch {}
+export default function SyncButton() {
+  const [pendingCount, setPendingCount] = useState(0);
+  const [syncing, setSyncing]           = useState(false);
+  const [fbUser, setFbUser]             = useState(null);
+  const [statusMsg, setStatusMsg]       = useState('');
+  const [showMenu, setShowMenu]         = useState(false);
 
-    try {
-      const txTable = localDb.customerTransactions || localDb.customer_transactions;
-      if (txTable) {
-        const txns = await txTable.toArray();
-        count += txns.filter(t => t.synced === false || t.synced === 0 || t.id?.startsWith('ctxn_')).length;
-      }
-    } catch {}
+  // ══ Dragging State & Position ══
+  const [position, setPosition]         = useState({ x: null, y: null });
+  const [isDragging, setIsDragging]     = useState(false);
+  const dragStartRef                    = useRef({ x: 0, y: 0 });
+  const initialPosRef                   = useRef({ x: 0, y: 0 });
+  const hasDraggedRef                   = useRef(false);
 
-    try {
-      const invs = await localDb.invoices.toArray();
-      count += invs.filter(i => i.synced === false || i.synced === 0).length;
-    } catch {}
-
-    try {
-      const cashTable = localDb.cashTransactions || localDb.cash_transactions;
-      if (cashTable) {
-        const cash = await cashTable.toArray();
-        count += cash.filter(c => c.synced === false || c.synced === 0 || c.id?.startsWith('cash_')).length;
-      }
-    } catch {}
-  } catch (e) {
-    console.warn('[Sync] countPending error:', e.message);
-  }
-  return count;
-}
-
-/* ══════════════════════════════════════════
-   SYNC ALL PENDING DATA TO FIRESTORE
-══════════════════════════════════════════ */
-async function syncAllPending(activeUid, onProgress) {
-  if (!activeUid || !navigator.onLine || !isValidDb()) return { success: 0, failed: 0, total: 0 };
-
-  // Safety check: ensure user is actually logged in to Firebase Auth
-  const apps = getApps();
-  if (!apps.length) return { success: 0, failed: 0, total: 0, unauth: true };
-  const auth = getAuth(getApp());
-  if (!auth.currentUser) {
-    if (onProgress) onProgress('⚠️ පළමුව Login වන්න');
-    return { success: 0, failed: 0, total: 0, unauth: true };
-  }
-
-  let success = 0;
-  let failed = 0;
-  let total = 0;
-
-  const report = (msg) => {
-    if (onProgress) onProgress(msg);
-    console.log(`[Sync] ${msg}`);
-  };
-
-  try {
-    // ── 1. NEW CUSTOMERS ──
-    let allCusts = [];
-    try {
-      allCusts = await localDb.customers.toArray();
-    } catch {}
-
-    const unsyncedCusts = allCusts.filter(c => c.synced === false || c.synced === 0);
-    for (const cust of unsyncedCusts) {
-      total++;
-      report(`Customer: ${cust.name}`);
-      try {
-        const rawPayload = {
-          ...cust,
-          uid: activeUid,
-          userId: activeUid,
-          synced: true,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        };
-        const payload = sanitizeForFirestore(rawPayload);
-        await setDoc(doc(db, 'customers', cust.id), payload, { merge: true });
-        await localDb.customers.update(cust.id, { synced: 1, uid: activeUid });
-        success++;
-      } catch (e) {
-        report(`❌ ${cust.name}: ${e.message}`);
-        failed++;
-      }
-    }
-
-    // ── 2. CUSTOMER TRANSACTIONS ──
-    try {
-      const txTable = localDb.customerTransactions || localDb.customer_transactions;
-      if (txTable) {
-        const txns = await txTable.toArray();
-        const unsyncedTxns = txns.filter(t => t.synced === false || t.synced === 0 || t.id?.startsWith('ctxn_'));
-        for (const tx of unsyncedTxns) {
-          total++;
-          report(`Txn: ${tx.type || 'Transaction'} Rs.${tx.amount || 0}`);
-          try {
-            const rawPayload = {
-              ...tx,
-              uid: activeUid,
-              userId: activeUid,
-              synced: true,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            };
-            const payload = sanitizeForFirestore(rawPayload);
-            await setDoc(doc(db, 'customerTransactions', tx.id), payload, { merge: true });
-            await txTable.update(tx.id, { synced: 1, uid: activeUid });
-            success++;
-          } catch { failed++; }
-        }
-      }
-    } catch {}
-
-    // ── 3. INVOICES ──
-    let unsyncedInvoices = [];
-    try {
-      const allInvs = await localDb.invoices.toArray();
-      unsyncedInvoices = allInvs.filter(i => i.synced === false || i.synced === 0);
-    } catch {}
-
-    for (const inv of unsyncedInvoices) {
-      total++;
-      report(`Invoice: ${inv.invoiceNo || inv.id}`);
-      try {
-        const rawPayload = {
-          ...inv,
-          uid: activeUid,
-          userId: activeUid,
-          synced: true,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        };
-        const payload = sanitizeForFirestore(rawPayload);
-        await setDoc(doc(db, 'invoices', inv.id), payload, { merge: true });
-        await localDb.invoices.update(inv.id, { synced: 1, uid: activeUid });
-        success++;
-      } catch { failed++; }
-    }
-
-    // ── 4. CASH TRANSACTIONS ──
-    try {
-      const cashTable = localDb.cashTransactions || localDb.cash_transactions;
-      if (cashTable) {
-        const cash = await cashTable.toArray();
-        const unsyncedCash = cash.filter(c => c.synced === false || c.synced === 0 || c.id?.startsWith('cash_'));
-        for (const c of unsyncedCash) {
-          total++;
-          report(`Cash: ${c.type || 'Cash'} Rs.${c.amount || 0}`);
-          try {
-            const rawPayload = {
-              ...c,
-              uid: activeUid,
-              userId: activeUid,
-              synced: true,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            };
-            const payload = sanitizeForFirestore(rawPayload);
-            await setDoc(doc(db, `users/${activeUid}/cashTransactions`, c.id), payload, { merge: true });
-            await cashTable.update(c.id, { synced: 1, uid: activeUid });
-            success++;
-          } catch { failed++; }
-        }
-      }
-    } catch {}
-
-  } catch (e) {
-    report(`❌ Sync error: ${e.message}`);
-  }
-
-  return { success, failed, total };
-}
-
-/* ══════════════════════════════════════════
-   SYNC BUTTON COMPONENT (ALWAYS VISIBLE)
-══════════════════════════════════════════ */
-export default function SyncButton({ uid: propUid }) {
-  let user = null;
-  try {
-    const authContext = useUserAuth ? useUserAuth() : null;
-    user = authContext?.user;
-  } catch (e) {}
-
-  const [mounted, setMounted] = useState(false);
-  const [pending, setPending] = useState(0);
-  const [syncing, setSyncing] = useState(false);
-  const [status, setStatus] = useState('');
-  const [showResult, setShowResult] = useState(false);
-  const [result, setResult] = useState(null);
-  const [isOnline, setIsOnline] = useState(true);
-  const [fbUser, setFbUser] = useState(null);
-  const intervalRef = useRef(null);
-
+  // Load saved position or set default to bottom-right
   useEffect(() => {
-    setMounted(true);
-    if (typeof navigator !== 'undefined') {
-      setIsOnline(navigator.onLine);
+    if (typeof window === 'undefined') return;
+
+    const savedPos = localStorage.getItem('sync_button_pos');
+    if (savedPos) {
+      try {
+        const parsed = JSON.parse(savedPos);
+        const clampedX = Math.max(10, Math.min(window.innerWidth - 220, parsed.x));
+        const clampedY = Math.max(10, Math.min(window.innerHeight - 80, parsed.y));
+        setPosition({ x: clampedX, y: clampedY });
+        return;
+      } catch (e) {}
     }
 
-    // Track Firebase Auth user
-    let unsub = () => {};
-    const apps = getApps();
-    if (apps.length) {
-      const auth = getAuth(getApp());
-      setFbUser(auth.currentUser);
-      unsub = onAuthStateChanged(auth, (u) => setFbUser(u));
-    }
+    // Default: Bottom Right
+    setPosition({
+      x: Math.max(10, window.innerWidth - 220),
+      y: Math.max(10, window.innerHeight - 80),
+    });
+  }, []);
+
+  // Keep button inside screen on window resize
+  useEffect(() => {
+    const handleResize = () => {
+      setPosition((prev) => {
+        if (prev.x === null || prev.y === null) return prev;
+        return {
+          x: Math.max(10, Math.min(window.innerWidth - 220, prev.x)),
+          y: Math.max(10, Math.min(window.innerHeight - 80, prev.y)),
+        };
+      });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Monitor Firebase Auth state
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setFbUser(u);
+    });
     return () => unsub();
   }, []);
 
-  const activeUid = propUid || user?.uid || fbUser?.uid || (typeof window !== 'undefined' ? localStorage.getItem('weerakkodi_last_uid') : null) || 'wlknSmbTOEbcxp527cqGBnc3yu93';
-
-  useEffect(() => {
-    if (user?.uid && typeof window !== 'undefined') {
-      localStorage.setItem('weerakkodi_last_uid', user.uid);
-    }
-  }, [user]);
-
-  const refreshCount = useCallback(async () => {
+  // Count unsynced local invoices
+  const checkPending = useCallback(async () => {
     try {
-      const c = await countPending();
-      setPending(c);
+      if (!localDb || !localDb.invoices) return;
+      const count = await localDb.invoices
+        .filter((inv) => !inv.synced || inv.synced === 0)
+        .count();
+      setPendingCount(count);
     } catch (e) {
-      console.warn('[Sync] Count error:', e.message);
+      console.warn('Check pending count error:', e);
     }
   }, []);
 
   useEffect(() => {
-    if (!mounted) return;
-    refreshCount();
-    intervalRef.current = setInterval(refreshCount, 5000);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [mounted, refreshCount]);
+    checkPending();
+    const interval = setInterval(checkPending, 10000);
+    return () => clearInterval(interval);
+  }, [checkPending]);
+
+  // ══ Drag Motion Handlers ══
+  const handlePointerDown = (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+    dragStartRef.current = { x: clientX, y: clientY };
+    initialPosRef.current = { ...position };
+    hasDraggedRef.current = false;
+    setIsDragging(true);
+  };
 
   useEffect(() => {
-    if (!mounted) return;
-    const onOnline = () => {
-      setIsOnline(true);
-      refreshCount();
+    if (!isDragging) return;
+
+    const handlePointerMove = (e) => {
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+      const deltaX = clientX - dragStartRef.current.x;
+      const deltaY = clientY - dragStartRef.current.y;
+
+      if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) {
+        hasDraggedRef.current = true;
+      }
+
+      const newX = Math.max(10, Math.min(window.innerWidth - 220, initialPosRef.current.x + deltaX));
+      const newY = Math.max(10, Math.min(window.innerHeight - 80, initialPosRef.current.y + deltaY));
+
+      setPosition({ x: newX, y: newY });
     };
-    const onOffline = () => setIsOnline(false);
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
+
+    const handlePointerUp = () => {
+      setIsDragging(false);
+      if (hasDraggedRef.current) {
+        localStorage.setItem('sync_button_pos', JSON.stringify(position));
+      }
+    };
+
+    window.addEventListener('mousemove', handlePointerMove);
+    window.addEventListener('mouseup', handlePointerUp);
+    window.addEventListener('touchmove', handlePointerMove, { passive: false });
+    window.addEventListener('touchend', handlePointerUp);
+
     return () => {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('mousemove', handlePointerMove);
+      window.removeEventListener('mouseup', handlePointerUp);
+      window.removeEventListener('touchmove', handlePointerMove);
+      window.removeEventListener('touchend', handlePointerUp);
     };
-  }, [mounted, refreshCount]);
+  }, [isDragging, position]);
 
-  const handleSync = async () => {
-    if (syncing || !isOnline) return;
+  const handleButtonClick = () => {
+    if (hasDraggedRef.current) return;
+    const activeUser = fbUser || auth.currentUser;
+    if (!activeUser) {
+      alert('Cloud Sync විශේෂාංගය සඳහා කරුණාකර පළමුව Log In වන්න.');
+      return;
+    }
+    setShowMenu(!showMenu);
+  };
 
-    if (!fbUser) {
-      setResult({ failed: 1, success: 0, msg: '⚠️ Sync කිරීමට කරුණාකර පළමුව Login වන්න' });
-      setShowResult(true);
-      setTimeout(() => setShowResult(false), 4000);
+  // 1. Upload Pending Local Invoices to Cloud (Local ➡️ Cloud)
+  const handleUploadPending = async () => {
+    const activeUser = fbUser || auth.currentUser;
+    if (!activeUser) {
+      alert('කරුණාකර Cloud Sync සඳහා ප්‍රථමයෙන් Login වන්න.');
       return;
     }
 
     setSyncing(true);
-    setShowResult(false);
-    setStatus('ආරම්භ කරමින්...');
+    setStatusMsg('Local Invoices Cloud එකට Upload වෙමින්...');
 
-    const res = await syncAllPending(activeUid, (msg) => setStatus(msg));
+    try {
+      const pendingInvoices = await localDb.invoices
+        .filter((inv) => !inv.synced || inv.synced === 0)
+        .toArray();
 
-    setResult(res);
-    setShowResult(true);
-    setSyncing(false);
-    setStatus('');
-    refreshCount();
+      if (pendingInvoices.length === 0) {
+        setStatusMsg('Upload කිරීමට අලුත් Invoices නැත.');
+        setSyncing(false);
+        return;
+      }
 
-    setTimeout(() => setShowResult(false), 5000);
+      let successCount = 0;
+      let failCount = 0;
+
+      for (const inv of pendingInvoices) {
+        try {
+          const rawDocId = inv.id || inv.docId || inv.invoiceNo || Date.now();
+          const docId = String(rawDocId).replace(/[/\\#?]/g, '_');
+
+          const cleanInv = sanitizeForFirestore({
+            ...inv,
+            id: docId,
+            synced: true,
+            syncedAt: new Date().toISOString(),
+            updatedAt: serverTimestamp(),
+          });
+
+          await setDoc(doc(db, 'customerTransactions', docId), cleanInv, { merge: true });
+
+          // Safe Dexie update using put (upsert)
+          await localDb.invoices.put({
+            ...inv,
+            id: inv.id || docId,
+            synced: 1,
+          });
+
+          successCount++;
+        } catch (err) {
+          console.error(`Failed to sync invoice item:`, inv, err);
+          failCount++;
+        }
+      }
+
+      if (failCount > 0) {
+        setStatusMsg(`⚠️ Invoices ${successCount} ක් Sync විය. ${failCount} ක් අසාර්ථක විය.`);
+        alert(`අවධානයයි: Invoices ${successCount} ක් Sync වූ අතර ${failCount} ක් Sync නොවීය. අවශ්‍ය නම් "Clear Stuck Items" ක්ලික් කරන්න.`);
+      } else {
+        setStatusMsg(`✅ Local Invoices ${successCount} ම සාර්ථකව Sync විය!`);
+      }
+      await checkPending();
+    } catch (e) {
+      console.error('Sync upload error:', e);
+      setStatusMsg('Upload දෝෂයක්: ' + e.message);
+    } finally {
+      setSyncing(false);
+    }
   };
 
-  if (!mounted) return null;
+  // 2. Download ALL Firestore Invoices & Save to PC Hard Disc (Cloud ➡️ PC Hard Disc)
+  const handleDownloadAllToPC = async () => {
+    const activeUser = fbUser || auth.currentUser;
+    if (!activeUser) {
+      alert('Cloud වෙතින් Invoices Download කිරීමට ප්‍රථමයෙන් Login වන්න.');
+      return;
+    }
+
+    if (!confirm('Cloud හි ඇති සියලුම Invoices, Customers සහ Items ඔබගේ PC Hard Disc එකට Save කිරීමට අවශ්‍යද?')) {
+      return;
+    }
+
+    setSyncing(true);
+    setStatusMsg('Firestore වෙතින් Invoices PC Hard Disc එකට Download වෙමින්...');
+
+    try {
+      let totalDownloaded = 0;
+      let lastDoc = null;
+      let hasMore = true;
+      const batchSize = 500;
+
+      let activeCollection = 'customerTransactions';
+
+      while (hasMore) {
+        let q;
+        if (lastDoc) {
+          q = query(collection(db, activeCollection), limit(batchSize), startAfter(lastDoc));
+        } else {
+          q = query(collection(db, activeCollection), limit(batchSize));
+        }
+
+        const snapshot = await getDocs(q);
+
+        if (snapshot.empty && totalDownloaded === 0 && activeCollection === 'customerTransactions') {
+          activeCollection = 'customer_transactions';
+          continue;
+        }
+
+        if (snapshot.empty) {
+          hasMore = false;
+          break;
+        }
+
+        const batchData = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          batchData.push({
+            id: docSnap.id,
+            docId: docSnap.id,
+            ...data,
+            synced: 1,
+          });
+        });
+
+        await localDb.invoices.bulkPut(batchData);
+
+        totalDownloaded += batchData.length;
+        lastDoc = snapshot.docs[snapshot.docs.length - 1];
+        setStatusMsg(`PC Hard Disc එකට Save වෙමින්: Invoices ${totalDownloaded}...`);
+
+        if (snapshot.docs.length < batchSize) {
+          hasMore = false;
+        }
+      }
+
+      // Sync Customers to PC Hard Disc
+      try {
+        const custSnap = await getDocs(collection(db, 'customers'));
+        if (!custSnap.empty) {
+          const custData = [];
+          custSnap.forEach(d => custData.push({ id: d.id, ...d.data() }));
+          await localDb.customers.bulkPut(custData);
+        }
+      } catch (cErr) {
+        console.warn('Customers download fallback:', cErr);
+      }
+
+      // Sync Items to PC Hard Disc
+      try {
+        const itemSnap = await getDocs(collection(db, 'items'));
+        if (!itemSnap.empty) {
+          const itemData = [];
+          itemSnap.forEach(d => itemData.push({ id: d.id, ...d.data() }));
+          await localDb.items.bulkPut(itemData);
+        }
+      } catch (iErr) {
+        console.warn('Items download fallback:', iErr);
+      }
+
+      setStatusMsg(`🎉 සාර්ථකයි! Invoices ${totalDownloaded} ක් PC Hard Disc එකට Save විය!`);
+      alert(`🎉 Invoices ${totalDownloaded} ක් සහ Customer/Item දත්ත සියල්ල ඔබගේ PC Hard Disc එකට සාර්ථකව Save විය! දැන් Offline අවස්ථාවේදීද මේවා සියල්ල කියවිය හැක.`);
+      await checkPending();
+    } catch (e) {
+      console.error('Download to PC error:', e);
+      setStatusMsg('Download දෝෂයක්: ' + e.message);
+      alert('Download දෝෂයක්: ' + e.message);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // 3. Force Clear Stuck Unsynced Items
+  const handleForceClearUnsynced = async () => {
+    if (!confirm('Stuck වී ඇති නොගැලපෙන Local Data 4 සාර්ථකව Synced ලෙස Mark කර ඉවත් කිරීමට අවශ්‍යද?')) {
+      return;
+    }
+    try {
+      const pendingInvoices = await localDb.invoices
+        .filter((inv) => !inv.synced || inv.synced === 0)
+        .toArray();
+
+      for (const inv of pendingInvoices) {
+        await localDb.invoices.put({
+          ...inv,
+          synced: 1,
+        });
+      }
+      setStatusMsg('🧹 Stuck Items සාර්ථකව Clear විය!');
+      await checkPending();
+    } catch (e) {
+      alert('Clear error: ' + e.message);
+    }
+  };
+
+  if (position.x === null || position.y === null) return null;
+
+  const activeUser = fbUser || auth.currentUser;
+  const isTopHalf = position.y < (typeof window !== 'undefined' ? window.innerHeight / 2 : 400);
 
   return (
-    <>
-      <button
-        onClick={handleSync}
-        disabled={syncing || !isOnline}
-        style={{
-          position: 'fixed',
-          bottom: 24,
-          right: 24,
-          zIndex: 999999,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: syncing ? '12px 20px' : '14px 22px',
-          borderRadius: 50,
-          border: 'none',
-          cursor: syncing || !isOnline ? 'not-allowed' : 'pointer',
-          fontWeight: 800,
-          fontSize: 15,
-          color: 'white',
-          background: !isOnline
-            ? 'linear-gradient(135deg,#f59e0b,#d97706)'
-            : syncing
-              ? 'linear-gradient(135deg,#6366f1,#4f46e5)'
-              : !fbUser
-                ? 'linear-gradient(135deg,#64748b,#475569)'
-                : pending > 0
-                  ? 'linear-gradient(135deg,#ef4444,#dc2626)'
-                  : 'linear-gradient(135deg,#10b981,#059669)',
-          boxShadow: '0 6px 24px rgba(0,0,0,0.3)',
-          transition: 'all 0.3s ease',
-          animation: pending > 0 && !syncing && fbUser ? 'syncPulse 2s infinite' : 'none',
-        }}
-        title={!isOnline ? 'Offline — Internet නැත' : !fbUser ? 'Login required to sync' : `${pending} items sync කිරීමට ඇත`}
-      >
-        {syncing ? (
-          <span style={{
-            width: 18, height: 18,
-            border: '3px solid rgba(255,255,255,0.3)',
-            borderTopColor: 'white',
-            borderRadius: '50%',
-            animation: 'syncSpin 0.8s linear infinite',
-            display: 'inline-block',
-          }} />
-        ) : !isOnline ? (
-          <span style={{ fontSize: 18 }}>📡</span>
-        ) : !fbUser ? (
-          <span style={{ fontSize: 18 }}>🔒</span>
-        ) : (
-          <span style={{ fontSize: 18 }}>🔄</span>
-        )}
-
-        <span>
-          {syncing
-            ? status || 'Sync...'
-            : !isOnline
-              ? 'Offline'
-              : !fbUser
-                ? `Login to Sync (${pending})`
-                : pending > 0
-                  ? `Sync (${pending})`
-                  : 'Synced ✓'
-          }
-        </span>
-
-        {pending > 0 && !syncing && isOnline && (
-          <span style={{
-            background: 'white',
-            color: !fbUser ? '#475569' : '#dc2626',
-            borderRadius: '50%',
-            width: 24, height: 24,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 12, fontWeight: 900,
-          }}>
-            {pending > 99 ? '99+' : pending}
-          </span>
-        )}
-      </button>
-
-      {showResult && result && (
-        <div style={{
-          position: 'fixed',
-          bottom: 90,
-          right: 24,
-          zIndex: 999999,
-          background: result.msg ? '#f59e0b' : result.failed === 0 ? '#10b981' : '#f59e0b',
-          color: 'white',
-          padding: '12px 20px',
-          borderRadius: 12,
-          fontWeight: 700,
-          fontSize: 14,
-          boxShadow: '0 6px 20px rgba(0,0,0,0.2)',
-          animation: 'syncSlideUp 0.3s ease',
-        }}>
-          {result.msg
-            ? result.msg
-            : result.failed === 0
-              ? `✅ ${result.success} items sync විය!`
-              : `⚠️ ${result.success} sync, ${result.failed} failed`
-          }
+    <div
+      style={{
+        position: 'fixed',
+        left: `${position.x}px`,
+        top: `${position.y}px`,
+        zIndex: 9999,
+        userSelect: 'none',
+        touchAction: 'none',
+      }}
+    >
+      {/* Status Tooltip Message */}
+      {statusMsg && (
+        <div
+          style={{
+            position: 'absolute',
+            [isTopHalf ? 'top' : 'bottom']: '55px',
+            right: '0',
+            backgroundColor: '#1e293b',
+            color: '#fff',
+            padding: '8px 14px',
+            borderRadius: '8px',
+            fontSize: '13px',
+            whiteSpace: 'nowrap',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+            border: '1px solid #334155',
+          }}
+        >
+          {statusMsg}
         </div>
       )}
 
-      <style>{`
-        @keyframes syncSpin {
-          to { transform: rotate(360deg); }
-        }
-        @keyframes syncPulse {
-          0%, 100% { box-shadow: 0 6px 24px rgba(239,68,68,0.3); }
-          50% { box-shadow: 0 6px 32px rgba(239,68,68,0.6); }
-        }
-        @keyframes syncSlideUp {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
-    </>
+      {/* Sync Menu Options */}
+      {showMenu && (
+        <div
+          style={{
+            position: 'absolute',
+            [isTopHalf ? 'top' : 'bottom']: '55px',
+            right: '0',
+            backgroundColor: '#ffffff',
+            borderRadius: '12px',
+            boxShadow: '0 10px 25px rgba(0,0,0,0.2)',
+            border: '1px solid #e2e8f0',
+            padding: '8px',
+            minWidth: '240px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+          }}
+        >
+          <button
+            onClick={() => { setShowMenu(false); handleUploadPending(); }}
+            disabled={syncing || !activeUser}
+            style={{
+              padding: '10px 14px',
+              backgroundColor: '#3b82f6',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              fontWeight: '600',
+              cursor: activeUser ? 'pointer' : 'not-allowed',
+              textAlign: 'left',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '13px',
+            }}
+          >
+            <span>⬆️ Upload Local ({pendingCount})</span>
+            <small style={{ opacity: 0.8 }}>PC → Cloud</small>
+          </button>
+
+          <button
+            onClick={() => { setShowMenu(false); handleDownloadAllToPC(); }}
+            disabled={syncing || !activeUser}
+            style={{
+              padding: '10px 14px',
+              backgroundColor: '#10b981',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              fontWeight: '600',
+              cursor: activeUser ? 'pointer' : 'not-allowed',
+              textAlign: 'left',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '13px',
+            }}
+          >
+            <span>⬇️ Save All to PC Hard Disc</span>
+            <small style={{ opacity: 0.8 }}>Cloud → PC</small>
+          </button>
+
+          {pendingCount > 0 && (
+            <button
+              onClick={() => { setShowMenu(false); handleForceClearUnsynced(); }}
+              style={{
+                padding: '8px 14px',
+                backgroundColor: '#f1f5f9',
+                color: '#64748b',
+                border: '1px solid #cbd5e1',
+                borderRadius: '8px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                textAlign: 'left',
+                fontSize: '12px',
+              }}
+            >
+              🧹 Clear Stuck Unsynced ({pendingCount})
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Main Draggable Floating Button */}
+      <div
+        onMouseDown={handlePointerDown}
+        onTouchStart={handlePointerDown}
+        onClick={handleButtonClick}
+        style={{
+          backgroundColor: !activeUser ? '#64748b' : pendingCount > 0 ? '#ef4444' : '#10b981',
+          color: '#ffffff',
+          border: 'none',
+          padding: '10px 18px',
+          borderRadius: '30px',
+          fontWeight: 'bold',
+          cursor: isDragging ? 'grabbing' : syncing ? 'wait' : 'pointer',
+          boxShadow: '0 4px 14px rgba(0,0,0,0.25)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          fontSize: '14px',
+          transition: isDragging ? 'none' : 'box-shadow 0.2s ease',
+        }}
+      >
+        <span style={{ cursor: 'grab', fontSize: '16px', opacity: 0.8 }} title="ඇද තැබීමට ක්ලික් කර අදින්න">
+          ⋮⋮
+        </span>
+        <span>
+          {syncing
+            ? '⏳ Syncing...'
+            : !activeUser
+            ? `🔒 Login to Sync (${pendingCount})`
+            : `🔄 Sync Options (${pendingCount})`}
+        </span>
+      </div>
+    </div>
   );
 }
