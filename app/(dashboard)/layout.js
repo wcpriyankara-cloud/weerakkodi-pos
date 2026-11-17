@@ -2,8 +2,11 @@
 
 import React, { useEffect, useState } from 'react';
 import Sidebar from '@/components/Sidebar';
+import { useUserAuth } from '@/context/UserContext';
+import SyncButton from '@/components/SyncButton';
 
 export default function DashboardLayout({ children }) {
+  const { user } = useUserAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -102,6 +105,9 @@ export default function DashboardLayout({ children }) {
       >
         {children}
       </main>
+
+      {/* ✅ SYNC BUTTON — සෑම dashboard page එකකම පෙනේ */}
+      <SyncButton uid={user?.uid} />
     </div>
   );
 }
