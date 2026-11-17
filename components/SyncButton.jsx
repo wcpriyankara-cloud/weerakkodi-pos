@@ -338,8 +338,8 @@ export default function SyncButton({ uid }) {
   // ✅ CRITICAL: Don't render anything server-side OR until mounted
   if (!mounted) return null;
 
-  // Don't render if nothing pending and online
-  if (pending === 0 && isOnline && !syncing && !showResult) return null;
+    // Always show when user is logged in (uid exists)
+  if (!uid) return null;
 
   return (
     <>
@@ -389,12 +389,14 @@ export default function SyncButton({ uid }) {
           <span style={{ fontSize: 18 }}>🔄</span>
         )}
 
-        <span>
+                <span>
           {syncing
             ? status || 'Sync...'
             : !isOnline
               ? 'Offline'
-              : `Sync (${pending})`
+              : pending > 0
+                ? `Sync (${pending})`
+                : 'Synced ✓'
           }
         </span>
 
