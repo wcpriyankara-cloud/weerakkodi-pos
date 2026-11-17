@@ -1,15 +1,10 @@
-// app/cash/page.jsx
-import CashManagement from '@/components/CashManagement';
+﻿import CashManagement from '@/components/CashManagement';
 
 export const metadata = {
-  title: 'මුදල් සහ බැංකු ලේඛනය | BizManager',
-  description: 'මුදල් ලාච්චුව, බැංකු ගිණුම් ශේෂයන් සහ ලාභ විශ්ලේෂණය',
+  title: 'මුදල් සහ බැංකු ලේඛනය | Cash & Bank Management',
+  description: 'Manage cash drawer and bank accounts',
 };
 
 export default function CashPage() {
-  return (
-    <div style={{ minHeight: '100vh', background: '#f8fafc', paddingBottom: 40 }}>
-      <CashManagement />
-    </div>
-  );
+  return <CashManagement />;
 }

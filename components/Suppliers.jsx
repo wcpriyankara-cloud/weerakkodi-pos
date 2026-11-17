@@ -11,6 +11,7 @@ import React, {
 import { useRouter } from "next/navigation";
 import { db } from "@/shared/firebase-config";
 import { useUserAuth } from "@/context/UserContext";
+import localDb from "@/lib/localDb";
 import {
   collection, addDoc, updateDoc, deleteDoc, doc,
   getDocs, onSnapshot, query, where,
@@ -130,7 +131,12 @@ const repairFromPurchaseInvoices = async (userUid) => {
       console.log(`✅ ${sd.name}: opening=${openBal} + invoices=${invBal} = ${correct} (${cnt} invoices)`);
     }
     console.table(rows);
-    alert(`✅ Repair complete!\n\nSuppliers: ${fixed}\nCollection: ${PURCHASE_COLLECTION}\n\nF12 Console බලන්න.`);
+    alert(`✅ Repair complete!
+
+Suppliers: ${fixed}
+Collection: ${PURCHASE_COLLECTION}
+
+F12 Console බලන්න.`);
   } catch (err) { console.error("❌ Repair failed:", err); alert("❌ Failed: " + err.message); }
 };
 
@@ -265,13 +271,38 @@ function useSuppliers(user) {
   const [loading, setL] = useState(true);
   const [error, setE] = useState(null);
   useEffect(() => {
-    if (!user?.uid) { setL(false); return; }
+    if (!user?.uid) { setL(false); setSup([]); return; }
+    const uid = user.uid;
+    let cancelled = false;
+
+    localDb.suppliers.where('uid').equals(uid).toArray()
+      .then((rows) => {
+        if (!cancelled && rows.length > 0) {
+          setSup(rows.filter((r) => r.uid === uid).sort((a, b) => getTS(b) - getTS(a)));
+          setL(false);
+        }
+      })
+      .catch(() => {});
+
     const u = onSnapshot(
-      query(collection(db, "suppliers"), where("uid", "==", user.uid)),
-      (s) => { setSup(s.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => getTS(b) - getTS(a))); setL(false); setE(null); },
-      (e) => { setE(e.message); setL(false); }
+      query(collection(db, "suppliers"), where("uid", "==", uid)),
+      (s) => {
+        if (cancelled) return;
+        const data = s.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .filter((d) => d.uid === uid)
+          .sort((a, b) => getTS(b) - getTS(a));
+        setSup(data);
+        setL(false);
+        setE(null);
+        localDb.suppliers.bulkPut(data).catch(() => {});
+        if (window.electronAPI && window.electronAPI.saveLocalData) {
+          window.electronAPI.saveLocalData('suppliers_' + uid + '.json', data).catch(() => {});
+        }
+      },
+      (e) => { if (!cancelled) { setE(e.message); setL(false); } }
     );
-    return () => u();
+    return () => { cancelled = true; u(); };
   }, [user?.uid]);
   return { suppliers, loading, error };
 }
@@ -376,7 +407,7 @@ const PayModal = memo(({ show, type, supplier, onClose, onConfirm, busy, banks, 
             {isPay && curBal > 0 && (
               <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                 <button onClick={() => { setAmt((curBal / 2).toFixed(2)); setAErr(""); }} disabled={busy} style={{ flex: 1, padding: "6px 0", fontSize: 11, borderRadius: 6, border: "1px solid #e2e8f0", background: "#f8fafc", cursor: "pointer" }}>½ {fmtCur(curBal / 2)}</button>
-                <button onClick={() => { setAmt(curBal.toFixed(2)); setAErr(""); }} disabled={busy} style={{ flex: 1, padding: "6px 0", fontSize: 11, fontWeight: 700, borderRadius: 6, border: "1px solid #16a34a", background: "#dcfce7", color: "#166534", cursor: "pointer" }}>Full {fmtCur(curBal)}</button>
+                <button onClick={() => { setAmt((Number(curBal) || 0).toFixed(2)); setAErr(""); }} disabled={busy} style={{ flex: 1, padding: "6px 0", fontSize: 11, fontWeight: 700, borderRadius: 6, border: "1px solid #16a34a", background: "#dcfce7", color: "#166534", cursor: "pointer" }}>Full {fmtCur(curBal)}</button>
               </div>
             )}
           </div>
@@ -571,7 +602,7 @@ export default function Suppliers({ lang: externalLang }) {
     try {
       const now = new Date().toISOString();
       const p = { name: form.name.trim(), companyName: form.companyName?.trim() || "", phone: form.phone?.trim() || "", email: form.email?.trim() || "", address: form.address?.trim() || "", city: form.city?.trim() || "", profilePicture: form.profilePicture || "", uid: user.uid, updatedAt: now };
-      if (isEdit) { await updateDoc(doc(db, "suppliers", form.id), p); }
+      if (isEdit) { await updateDoc(doc(db, "suppliers", form.id), p); await localDb.suppliers.put({ ...p, id: form.id, uid: user.uid, synced: true }); }
       else { const ob = parseFloat(form.openingBalance) || 0; await addDoc(collection(db, "suppliers"), { ...p, openingBalance: ob, balance: ob, currentBalance: ob, createdAt: now }); }
       showToast(t.save + " ✅"); setShowForm(false);
     } catch (err) { showToast(t.errSave + ": " + err.message, "error"); }
@@ -643,7 +674,9 @@ export default function Suppliers({ lang: externalLang }) {
     if (!s.phone) { showToast(t.noPhone, "error"); return; }
     const p = fmtPhone(s.phone); if (!p) { showToast(t.badPhone, "error"); return; }
     const b = Math.abs(getSupBal(s));
-    window.open(`https://wa.me/${p}?text=${encodeURIComponent(`ආයුබෝවන් ${s.name},\nශේෂය: Rs.${b.toLocaleString()}\n${pubLink(s.id)}`)}`, "_blank");
+    window.open(`https://wa.me/${p}?text=${encodeURIComponent(`ආයුබෝවන් ${s.name},
+ශේෂය: Rs.${b.toLocaleString()}
+${pubLink(s.id)}`)}`, "_blank");
     closeShare();
   }, [shareMod.sup, t, showToast, closeShare]);
 

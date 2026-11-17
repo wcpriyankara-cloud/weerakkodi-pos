@@ -1,5 +1,6 @@
 import './globals.css';
 import { UserAuthContextProvider } from '@/context/UserContext';
+import SyncButton from '@/components/SyncButton';
 
 /* ═══════════════════════════════════════
    METADATA (server metadata)
@@ -78,6 +79,7 @@ export default function RootLayout({ children }) {
       <body>
         <UserAuthContextProvider>
           {children}
+          <SyncButton />
         </UserAuthContextProvider>
       </body>
     </html>

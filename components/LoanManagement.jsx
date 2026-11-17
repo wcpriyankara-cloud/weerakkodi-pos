@@ -219,16 +219,44 @@ export default function LoanManagement() {
     const u1 = onSnapshot(collection(db, `users/${user.uid}/customerLoans`), s => {
       setLoans(s.docs.map(d => ({ id: d.id, ...d.data() })));
       setLoading(false);
-    });
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     const u2 = onSnapshot(collection(db, `users/${user.uid}/customerLoanPayments`), s => {
       setPayments(s.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     const u3 = onSnapshot(collection(db, `users/${user.uid}/bankAccounts`), s => {
       setBankAccounts(s.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     const u4 = onSnapshot(query(collection(db, 'customers'), where('uid', '==', user.uid)), s => {
       setCustomers(s.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     return () => { u1(); u2(); u3(); u4(); };
   }, [user]);

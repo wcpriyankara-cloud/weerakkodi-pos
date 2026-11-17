@@ -31,3 +31,5 @@ Thumbs.db
 .vercel/
 .vercel
 .env*
+
+serviceAccountKey.json

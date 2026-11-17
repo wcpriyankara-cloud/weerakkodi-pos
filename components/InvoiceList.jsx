@@ -9,7 +9,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
-import { db } from '@/firebaseConfig'; // ★★★ CORRECTED FIREBASE IMPORT ★★★
+import { db } from '@/shared/firebase-config';
 import { useUserAuth } from '@/context/UserContext';
 import {
   collection, query, where, getDocs, getDoc,
@@ -84,7 +84,7 @@ const TRANSLATIONS = {
   },
 };
 
-const INV_CACHE_TTL = 1000 * 60 * 60 * 24; // Cache valid for 24 hours to support offline use
+const INV_CACHE_TTL = Infinity; // Cache persists forever — only replaced by fresh Firebase data
 
 // Save to localStorage instead of sessionStorage to persist offline across browser closures
 const saveInvoiceCache = (uid, list) => {
@@ -111,7 +111,8 @@ const loadInvoiceCache = (uid) => {
     const raw = localStorage.getItem(`invoices_${uid}`);
     if (!raw) return null;
     const { data, ts } = JSON.parse(raw);
-    if (Date.now() - ts > INV_CACHE_TTL) return null;
+    // ✅ No TTL expiry — cache persists until replaced by fresh data
+    if (!Array.isArray(data) || data.length === 0) return null;
     return data;
   } catch { return null; }
 };
@@ -328,6 +329,83 @@ function ProfitTable({ items, t }) {
     </div>
   );
 }
+         /* ── Payment Modal ── */
+function PaymentModal({ invoice, customer, user, t, onClose, onSuccess }) {
+  const [amount, setAmount] = useState('');
+  const [method, setMethod] = useState('cash');
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    const val = toNum(amount);
+    if (val <= 0) { alert(t.paymentRequired); return; }
+    setSaving(true);
+    try {
+      await addDoc(collection(db, 'payments'), {
+        invoiceId: invoice.id,
+        invoicePath: invoice._path,
+        customerId: invoice.customerId,
+        amount: val,
+        method,
+        note,
+        uid: user.uid,
+        createdAt: serverTimestamp(),
+      });
+      const newPaid = R2(invoice.payAmount + val);
+      const newBal  = R2(Math.max(0, invoice.netAmount - newPaid));
+      await updateDoc(doc(db, invoice._path), {
+        payAmount: newPaid,
+        balance: newBal,
+        status: newBal <= 0.01 ? 'completed' : 'partial',
+      });
+      onSuccess();
+    } catch (e) {
+      alert(`${t.paymentError}: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={S.ov} onClick={onClose}>
+      <div style={S.mb} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 20 }}>
+          <h3 style={{ margin: '0 0 14px', fontSize: 18 }}>{t.paymentCollection}</h3>
+          <div style={{ background: '#f8fafc', borderRadius: 8, padding: 12, marginBottom: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+              <span>{t.invoiceDue}</span>
+              <span style={{ fontWeight: 800, color: '#dc2626' }}>Rs.{invoice.balance.toFixed(2)}</span>
+            </div>
+          </div>
+          <label style={S.ls}>{t.paymentAmount}</label>
+          <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)}
+            placeholder={invoice.balance.toFixed(2)}
+            style={{ width: '100%', padding: 12, borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 16, boxSizing: 'border-box', marginBottom: 10 }} />
+          <label style={S.ls}>{t.paymentMethodLabel}</label>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+            {['cash','card','bank','cheque','other'].map((m) => (
+              <button key={m} type="button" onClick={() => setMethod(m)}
+                style={{ flex: 1, minWidth: 60, padding: '8px 4px', borderRadius: 8,
+                  border: method === m ? '2px solid #3b82f6' : '1px solid #e2e8f0',
+                  background: method === m ? '#eff6ff' : 'white', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
+                {payIcon(m)} {t[m] || m}
+              </button>
+            ))}
+          </div>
+          <label style={S.ls}>{t.paymentNote}</label>
+          <input value={note} onChange={(e) => setNote(e.target.value)}
+            style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13, boxSizing: 'border-box', marginBottom: 14 }} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" onClick={onClose}
+              style={{ flex: 1, padding: 12, background: '#f1f5f9', border: 'none', borderRadius: 10, fontWeight: 700, cursor: 'pointer' }}>{t.cancel}</button>
+            <button type="button" onClick={handleSave} disabled={saving}
+              style={{ ...S.greenBtn, flex: 2, opacity: saving ? 0.6 : 1 }}>{saving ? t.saving : t.savePayment}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ══════════════════════════════════════════════════════════════
    MAIN COMPONENT
@@ -422,26 +500,10 @@ export default function InvoiceList({ lang: initialLang = 'si' }) {
       // Plan queries (Applying today's limits dynamically where supported)
       const primaryPlans = INVOICE_COLLECTIONS.map((col) => ({ col, field: 'uid' }));
       
+            // ✅ Index-free: fetch all by uid only, date filtering done client-side
       const primaryResults = await Promise.allSettled(primaryPlans.map(async (p) => {
-        let q;
-        // 🚀 Index-Free Query fallback wrapper
-        try {
-          if (startTimestamp) {
-            q = query(
-              collection(db, p.col),
-              where(p.field, '==', uid),
-              where('createdAt', '>=', startTimestamp)
-            );
-          } else {
-            q = query(collection(db, p.col), where(p.field, '==', uid));
-          }
-          return await getDocs(q);
-        } catch (queryErr) {
-          console.warn(`Firestore optimization query failed for ${p.col}, falling back to client-side filter:`, queryErr.message);
-          // Fallback to fetch only uid (100% index-free safe, no composite indexes required)
-          q = query(collection(db, p.col), where(p.field, '==', uid));
-          return await getDocs(q);
-        }
+        const q = query(collection(db, p.col), where(p.field, '==', uid));
+        return await getDocs(q);
       }));
 
       primaryResults.forEach((res, i) => {
@@ -477,14 +539,40 @@ export default function InvoiceList({ lang: initialLang = 'si' }) {
       setInvoices(list); 
       setLastFetch(Date.now()); 
       saveInvoiceCache(uid, list);
-    } catch (e) {
-      console.error('Fetch error:', e); setFetchErr(true);
+        } catch (e) {
+      console.warn('[InvoiceList] Fetch failed (offline?):', e.message);
+      setFetchErr(false); // Don't show scary error for offline
+      
+      // ✅ Fallback 1: localStorage cache
       const cached = loadInvoiceCache(uid);
-      if (cached && cached.length > 0) { setInvoices(cached); setLastFetch(Date.now()); }
+      if (cached && cached.length > 0) {
+        setInvoices(cached);
+        setLastFetch(Date.now());
+        console.log(`[InvoiceList] Showing ${cached.length} invoices from cache (offline)`);
+      } else {
+        // ✅ Fallback 2: Dexie local DB
+        try {
+          const localDb = (await import('@/lib/localDb')).default;
+          if (localDb && localDb.invoices) {
+            const dexieInvoices = await localDb.invoices.where('uid').equals(uid).toArray();
+            if (dexieInvoices.length > 0) {
+              const normalized = dexieInvoices.map(inv =>
+                normalizeInvoice(inv, inv.id, 'invoices', `invoices/${inv.id}`)
+              ).sort((a, b) => getTsMs(b.createdAt) - getTsMs(a.createdAt));
+              setInvoices(normalized);
+              setLastFetch(Date.now());
+              saveInvoiceCache(uid, normalized);
+              console.log(`[InvoiceList] Showing ${normalized.length} invoices from Dexie (offline)`);
+            }
+          }
+        } catch (dexieErr) {
+          console.warn('[InvoiceList] Dexie fallback failed:', dexieErr.message);
+        }
+      }
     } finally { setLoading(false); setLoadMsg(''); }
   }, [user?.uid, dateF, t.loadingAll]);
 
-  useEffect(() => {
+    useEffect(() => {
     if (authLoading || !user?.uid) return;
     const cached = loadInvoiceCache(user.uid);
     if (cached && cached.length > 0) { 
@@ -497,6 +585,14 @@ export default function InvoiceList({ lang: initialLang = 'si' }) {
     else {
       fetchInvoices();
     }
+
+    // ✅ Auto-refresh when back online
+    const handleOnline = () => {
+      console.log('[InvoiceList] Back online — refreshing invoices...');
+      fetchInvoices(true, false);
+    };
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
   }, [authLoading, user?.uid, fetchInvoices]);
 
   const handleDelete = useCallback(async (inv) => {

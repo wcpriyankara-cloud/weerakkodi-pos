@@ -1,27 +1,59 @@
 {
-  "name": "weerakkodi-pos-app",
-  "version": "0.1.0",
+  "name": "weerakkodi-pos",
+  "version": "1.0.0",
   "private": true,
+  "main": "main.js",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "electron": "electron .",
+    "electron:dev": "concurrently -k -p \"[{name}]\" -n \"NEXT,ELEC\" -c \"cyan.bold,green.bold\" \"npm run dev\" \"npx wait-on -i 2000 -t 180000 http://localhost:3000 && electron .\"",
+    "electron:build": "npm run build && electron-builder --win --x64"
   },
   "dependencies": {
-    "next": "14.2.5",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "firebase": "^10.7.2",
-    "html5-qrcode": "^2.3.8",
     "@zxing/browser": "^0.2.1",
-    "@zxing/library": "^0.23.0"
+    "@zxing/library": "^0.23.0",
+    "dexie": "^3.2.7",
+    "firebase": "^10.8.0",
+    "firebase-admin": "^14.5.0",
+    "lucide-react": "^0.344.0",
+    "next": "^14.2.28",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "eslint": "^8.57.0",
-    "eslint-config-next": "14.2.5",
-    "tailwindcss": "^3.4.1",
-    "autoprefixer": "^10.4.19",
-    "postcss": "^8.4.38"
-  }
+    "autoprefixer": "^10.6.1",
+    "concurrently": "^8.2.2",
+    "electron": "^28.2.0",
+    "electron-builder": "^24.9.1",
+    "postcss": "^8.5.29",
+    "tailwindcss": "^3.4.19",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.weerakkodi.pos",
+    "productName": "Weerakkodi POS",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "main/**/*",
+      "package.json",
+      "main.js",
+      "preload.js"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "description": "Weerakkodi POS System",
+  "author": "Weerakkodi"
 }

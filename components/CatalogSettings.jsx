@@ -148,7 +148,7 @@ export default function CatalogSettings() {
   const [lang, setLang] = useState('si');
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('language');
+      const saved = (typeof window !== 'undefined' ? localStorage.getItem() : null);
       if (saved === 'si' || saved === 'en') setLang(saved);
     } catch {}
     const h = (e) => { if (e.detail === 'si' || e.detail === 'en') setLang(e.detail); };

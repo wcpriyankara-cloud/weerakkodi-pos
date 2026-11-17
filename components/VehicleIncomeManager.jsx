@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 // components/VehicleIncomeManager.jsx
 // ═══════════════════════════════════════════════════════════════
@@ -458,7 +458,7 @@ const tripSearchStr = (tr) =>
 
 const StockBadge = ({ stock, uom }) => {
   const s = R2(stock), z = s <= 0, l = s > 0 && s <= 5;
-  const fmtQ = (v) => { const n = R2(v); return n % 1 === 0 ? String(n) : n.toFixed(2); };
+  const fmtQ = (v) => { const n = R2(v); return n % 1 === 0 ? String(n) : (Number(n) || 0).toFixed(2); };
   return (
     <span style={{
       fontWeight: 'bold', padding: '2px 8px', borderRadius: 4,
@@ -776,7 +776,7 @@ function CargoItemRow({ idx, item, allItems, onChange, onRemove, onQuickPurchase
                               )}
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginTop: 2, flexWrap: 'wrap' }}>
                                 <StockBadge stock={stock} uom={catItem.packSize || catItem.uomName} />
-                                <span style={{ fontWeight: 'bold', color: '#0369a1' }}>Rs.{price.toFixed(2)}</span>
+                                <span style={{ fontWeight: 'bold', color: '#0369a1' }}>Rs.{(Number(price) || 0).toFixed(2)}</span>
                                 {getRack(catItem) && (
                                   <span style={{ fontSize: 11, color: '#e11d48', fontWeight: 'bold' }}>📍 {getRack(catItem)}</span>
                                 )}
@@ -880,7 +880,14 @@ function QuickPurchaseModal({ isOpen, item, user, onClose, t }) {
         const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         setSuppliers(list);
       }
-    );
+    ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     const unsubBanks = onSnapshot(
       collection(db, `users/${user.uid}/bankAccounts`),
@@ -889,7 +896,14 @@ function QuickPurchaseModal({ isOpen, item, user, onClose, t }) {
         setBankAccounts(banks);
         if (banks.length > 0 && !selectedBankId) setSelectedBankId(banks[0].id);
       }
-    );
+    ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     return () => { unsubSuppliers(); unsubBanks(); };
   }, [isOpen, item, user?.uid, selectedBankId]);
@@ -1094,7 +1108,7 @@ function QuickPurchaseModal({ isOpen, item, user, onClose, t }) {
           paymentMethod,
           bankAccountId: paymentMethod === 'bank' ? selectedBankId : null,
           bankName: paymentMethod === 'bank' ? (selBank?.bankName || '') : '',
-          description: `📦 ${supplier?.name || 'Supplier'} — Rs.${paid.toFixed(2)} (Quick Purchase)`,
+          description: `📦 ${supplier?.name || 'Supplier'} — Rs.${(Number(paid) || 0).toFixed(2)} (Quick Purchase)`,
           notes: purchasePayload.notes,
           date: todayStr(),
           time: new Date().toTimeString().slice(0, 5),
@@ -1583,7 +1597,14 @@ function CustomerSearch({ uid, value, onChange, placeholder, t }) {
 
   useEffect(() => {
     if (!uid) return;
-    const unsub = onSnapshot(query(collection(db, 'customers'), where('uid', '==', uid)), (s) => setCustomers(s.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    const unsub = onSnapshot(query(collection(db, 'customers'), where('uid', '==', uid)), (s) => setCustomers(s.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     return unsub;
   }, [uid]);
 
@@ -1925,7 +1946,14 @@ function AddTripModal({ basePath, uid, vehicles, onClose, onSaved, t, lang }) {
     const unsub = onSnapshot(
       query(collection(db, 'items'), where('uid', '==', uid)),
       (snap) => setAllItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
-    );
+    ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     return unsub;
   }, [uid]);
 
@@ -2287,8 +2315,22 @@ export default function VehicleIncomeManager() {
 
   useEffect(() => {
     if (!basePath) return;
-    const unsubV = onSnapshot(collection(db, `${basePath}/vehicles`), (s) => setVehicles(s.docs.map((d) => ({ id: d.id, ...d.data() }))));
-    const unsubT = onSnapshot(query(collection(db, `${basePath}/vehicleTrips`), orderBy('tripDate', 'desc')), (s) => setTrips(s.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    const unsubV = onSnapshot(collection(db, `${basePath}/vehicles`), (s) => setVehicles(s.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
+    const unsubT = onSnapshot(query(collection(db, `${basePath}/vehicleTrips`), orderBy('tripDate', 'desc')), (s) => setTrips(s.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     return () => { unsubV(); unsubT(); };
   }, [basePath]);
 

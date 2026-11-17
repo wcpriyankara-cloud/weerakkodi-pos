@@ -1,18 +1,42 @@
 'use client';
 
 // app/(protected)/stock-value/page.jsx
-// ✅ Total Stock Value Report Page (Updated for exact Purchase Discount sync)
+// ✅ Total Stock Value Report Page
+// ✅ Multi-tenant Data Isolation (user.uid filtered)
+// ✅ Offline-safe Firebase imports with graceful fallback
+// ✅ Auth guard, cross-user leakage prevention
 // ✅ Cost (After Discount Received), Selling, and Expected Profit summary
 // ✅ Filtering by Category, Rack, Stock Status
 // ✅ CSV Export capability
-// ✅ Real-time data sync from Firestore
+// ✅ Real-time data sync from Firestore with error handling
 // ✅ Fully synced with purchase form database fields (buyingDiscount & buyingNetPrice)
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { db } from '@/lib/firebase';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { useUserAuth } from '@/context/UserContext';
 import { useLang } from '@/hooks/useLang';
+
+/* ══════════════════════════════════════════
+   SAFE FIREBASE IMPORTS — 100% OFFLINE SAFE
+══════════════════════════════════════════ */
+let db = null;
+let collection, query, where, onSnapshot;
+
+try {
+  const firebaseMod = require('@/lib/firebase');
+  db = firebaseMod.db || null;
+} catch (e) {
+  console.warn('Firebase core offline:', e);
+}
+
+try {
+  const firestore = require('firebase/firestore');
+  collection = firestore.collection;
+  query = firestore.query;
+  where = firestore.where;
+  onSnapshot = firestore.onSnapshot;
+} catch (e) {
+  console.warn('Firestore SDK offline:', e);
+}
 
 /* ═══════════════════════════════════════
    TRANSLATIONS
@@ -69,6 +93,11 @@ const TEXT = {
     priceRetail:     'සිල්ලර',
     priceWholesale:  'තොග',
     priceLoose:      'ලූස්',
+    authRequired:    'පරිශීලක සත්‍යාපනය අවශ්‍යයි',
+    authMessage:     'තොග වටිනාකම් වාර්තාව බැලීමට කරුණාකර Login වන්න.',
+    offlineMsg:      'Cloud Offline — දත්ත load කළ නොහැක',
+    cloudStatus:     'Cloud',
+    offlineStatus:   'Offline',
   },
   en: {
     pageTitle:       '💰 Total Stock Value',
@@ -121,17 +150,35 @@ const TEXT = {
     priceRetail:     'Retail',
     priceWholesale:  'Wholesale',
     priceLoose:      'Loose',
+    authRequired:    'Authentication Required',
+    authMessage:     'Please login to view stock value report.',
+    offlineMsg:      'Cloud Offline — Cannot load data',
+    cloudStatus:     'Cloud',
+    offlineStatus:   'Offline',
   },
 };
 
 /* ═══════════════════════════════════════
    HELPER FUNCTIONS
 ═══════════════════════════════════════ */
-const R2 = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : Math.round(n * 100) / 100; };
-const fmt = (v) => R2(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const R2 = (v) => {
+  const n = parseFloat(v);
+  return isNaN(n) ? 0 : Math.round(n * 100) / 100;
+};
+
+const fmt = (v) =>
+  R2(v).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
 const fmtQ = (v) => {
   const n = parseFloat(v);
-  return isNaN(n) ? '0' : Number.isInteger(n) ? n.toString() : n.toFixed(2);
+  return isNaN(n)
+    ? '0'
+    : Number.isInteger(n)
+    ? n.toString()
+    : (Number(n) || 0).toFixed(2);
 };
 
 const getActualStock = (item) => {
@@ -141,7 +188,8 @@ const getActualStock = (item) => {
   let ms   = 0;
   if (item.stocks && typeof item.stocks === 'object') {
     ms = Object.values(item.stocks).reduce(
-      (sum, v) => sum + (parseFloat(v) || 0), 0
+      (sum, v) => sum + (parseFloat(v) || 0),
+      0
     );
   }
   return Math.max(0, s, ms, cs);
@@ -151,19 +199,21 @@ const getActualStock = (item) => {
 const getBuyingDiscountPercent = (item) => {
   if (!item) return 0;
   return R2(
-    item.buyingDiscount !== undefined ? item.buyingDiscount :
-    item.discountPercent !== undefined ? item.discountPercent :
-    item.discountReceived !== undefined ? item.discountReceived :
+    item.buyingDiscount    !== undefined ? item.buyingDiscount    :
+    item.discountPercent   !== undefined ? item.discountPercent   :
+    item.discountReceived  !== undefined ? item.discountReceived  :
     item.discount || 0
   );
 };
 
-// ✅ Recalculates Net Buying Price using exact DB parameters (buyingNetPrice, buyingDiscount)
+// ✅ Recalculates Net Buying Price using exact DB parameters
 const getBuyingPrice = (item) => {
   if (!item) return 0;
 
   // 1. If exact pre-calculated Net Buying Price is saved in Firestore, use it directly!
-  const dbNetPrice = R2(item.buyingNetPrice || item.netCost || item.netPrice || 0);
+  const dbNetPrice = R2(
+    item.buyingNetPrice || item.netCost || item.netPrice || 0
+  );
   if (dbNetPrice > 0) return dbNetPrice;
 
   // 2. Fallback: Calculate manually using buying price and discount percent
@@ -172,7 +222,7 @@ const getBuyingPrice = (item) => {
 
   if (bp <= 0) return 0;
   if (discPercent > 0) {
-    return R2(bp - (bp * discPercent / 100)); // ශුද්ධ ගැනුම් මිල ගණනය කිරීම
+    return R2(bp - (bp * discPercent / 100));
   }
   return bp;
 };
@@ -180,14 +230,24 @@ const getBuyingPrice = (item) => {
 const getSellingPrice = (item, mode = 'retail') => {
   if (!item) return 0;
   if (mode === 'wholesale') {
-    return R2(item.sellingPriceWholesale || item.wholesaleSellingPrice || item.wholesalePrice || 0);
+    return R2(
+      item.sellingPriceWholesale ||
+      item.wholesaleSellingPrice ||
+      item.wholesalePrice || 0
+    );
   }
   if (mode === 'loose') {
-    return R2(item.sellingPriceLoose || item.retailSellingPriceLoose || item.loosePrice || 0);
+    return R2(
+      item.sellingPriceLoose ||
+      item.retailSellingPriceLoose ||
+      item.loosePrice || 0
+    );
   }
   return R2(
-    item.sellingPriceRetail || item.retailSellingPrice ||
-    item.sellingPrice || item.price || 0
+    item.sellingPriceRetail ||
+    item.retailSellingPrice ||
+    item.sellingPrice ||
+    item.price || 0
   );
 };
 
@@ -195,8 +255,10 @@ const getYourPrice = (item, mode = 'retail') => {
   if (!item) return 0;
   const sp = getSellingPrice(item, mode);
   let disc = 0;
-  if (mode === 'wholesale') disc = R2(item.wholesaleDiscount || item.wholesaleSellingDiscount || 0);
-  else if (mode === 'loose') disc = R2(item.looseDiscount || item.retailSellingLooseDiscount || 0);
+  if (mode === 'wholesale')
+    disc = R2(item.wholesaleDiscount || item.wholesaleSellingDiscount || 0);
+  else if (mode === 'loose')
+    disc = R2(item.looseDiscount || item.retailSellingLooseDiscount || 0);
   else disc = R2(item.retailDiscount || item.retailSellingDiscount || 0);
 
   if (sp <= 0) return 0;
@@ -223,10 +285,21 @@ const StatCard = React.memo(({ icon, title, value, subtitle, color, bgColor }) =
   }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
       <span style={{ fontSize: 22 }}>{icon}</span>
-      <span style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{title}</span>
+      <span style={{
+        fontSize: 11, color: '#64748b', fontWeight: 700,
+        textTransform: 'uppercase', letterSpacing: '0.5px',
+      }}>
+        {title}
+      </span>
     </div>
-    <div style={{ fontSize: 22, fontWeight: 900, color: color, marginTop: 4 }}>{value}</div>
-    {subtitle && <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>{subtitle}</div>}
+    <div style={{ fontSize: 22, fontWeight: 900, color: color, marginTop: 4 }}>
+      {value}
+    </div>
+    {subtitle && (
+      <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>
+        {subtitle}
+      </div>
+    )}
   </div>
 ));
 StatCard.displayName = 'StatCard';
@@ -239,90 +312,156 @@ export default function StockValuePage() {
   const { lang } = useLang();
   const t = useMemo(() => TEXT[lang] || TEXT.si, [lang]);
 
-  const [items, setItems] = useState([]);
+  const [items, setItems]     = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isOnline, setIsOnline] = useState(
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
 
-  const [searchText, setSearchText] = useState('');
+  const [searchText, setSearchText]       = useState('');
   const [filterCategory, setFilterCategory] = useState('');
-  const [filterRack, setFilterRack] = useState('');
-  const [filterStatus, setFilterStatus] = useState('');
-  const [sortBy, setSortBy] = useState('name');
-  const [priceMode, setPriceMode] = useState('retail');
+  const [filterRack, setFilterRack]       = useState('');
+  const [filterStatus, setFilterStatus]   = useState('');
+  const [sortBy, setSortBy]               = useState('name');
+  const [priceMode, setPriceMode]         = useState('retail');
 
-  /* ── Firestore listener ── */
+  /* ── Online/Offline Network Monitor ── */
   useEffect(() => {
-    if (!user?.uid) return;
-    const unsub = onSnapshot(
-      query(collection(db, 'items'), where('uid', '==', user.uid)),
-      (snap) => {
-        setItems(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-        setLoading(false);
-      },
-      (err) => {
-        console.error('Load error:', err);
-        setLoading(false);
-      }
-    );
-    return () => unsub();
+    const handleOnline  = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  /* ── Firestore Listener with Strict Data Isolation ── */
+  useEffect(() => {
+    // ★ CRITICAL: Clear items when user changes — prevents cross-user data leakage
+    setItems([]);
+    setLoading(true);
+
+    if (!user?.uid) {
+      setLoading(false);
+      return;
+    }
+
+    // If Firebase offline, skip listener (no crash)
+    if (!db || !collection || !query || !where || !onSnapshot) {
+      console.warn('Firestore offline — stock-value listener skipped');
+      setLoading(false);
+      return;
+    }
+
+    let unsub = () => {};
+    try {
+      const q = query(
+        collection(db, 'items'),
+        where('uid', '==', user.uid)
+      );
+
+      unsub = onSnapshot(
+        q,
+        (snap) => {
+          // ★ Double-check: only keep docs belonging to CURRENT user
+          const userItems = snap.docs
+            .map((d) => ({ id: d.id, ...d.data() }))
+            .filter((d) => d.uid === user.uid);
+          setItems(userItems);
+          setLoading(false);
+        },
+        (err) => {
+          console.warn('Stock-value listener error:', err.message);
+          setLoading(false);
+        }
+      );
+    } catch (err) {
+      console.warn('Failed to start stock-value listener:', err.message);
+      setLoading(false);
+    }
+
+    return () => {
+      try { unsub(); } catch {}
+    };
   }, [user?.uid]);
 
   /* ── Extract unique categories & racks ── */
   const categories = useMemo(() => {
     const s = new Set();
-    items.forEach(i => { const c = getCategory(i); if (c) s.add(c); });
+    items.forEach((i) => {
+      const c = getCategory(i);
+      if (c) s.add(c);
+    });
     return [...s].sort();
   }, [items]);
 
   const racks = useMemo(() => {
     const s = new Set();
-    items.forEach(i => { const r = getRack(i); if (r) s.add(r); });
+    items.forEach((i) => {
+      const r = getRack(i);
+      if (r) s.add(r);
+    });
     return [...s].sort();
   }, [items]);
 
   /* ── Enrich items with calculated values ── */
   const enrichedItems = useMemo(() => {
-    return items.map(item => {
-      const stock = getActualStock(item);
-      const cost = getBuyingPrice(item); // exact net buying price is pulled here
+    return items.map((item) => {
+      const stock     = getActualStock(item);
+      const cost      = getBuyingPrice(item);
       const sellPrice = getYourPrice(item, priceMode);
       const costValue = R2(stock * cost);
       const sellValue = R2(stock * sellPrice);
-      const profit = R2(sellValue - costValue);
-      return { 
-        ...item, 
-        _stock: stock, 
-        _cost: cost, 
-        _sellPrice: sellPrice, 
-        _costValue: costValue, 
-        _sellValue: sellValue, 
-        _profit: profit 
+      const profit    = R2(sellValue - costValue);
+      return {
+        ...item,
+        _stock:     stock,
+        _cost:      cost,
+        _sellPrice: sellPrice,
+        _costValue: costValue,
+        _sellValue: sellValue,
+        _profit:    profit,
       };
     });
   }, [items, priceMode]);
 
   /* ── Filtered items ── */
   const filteredItems = useMemo(() => {
-    let list = enrichedItems.filter(item => {
+    let list = enrichedItems.filter((item) => {
       const search = searchText.toLowerCase().trim();
       if (search) {
-        const combined = [item.name, item.sinhalaName, item.nameSi, item.itemCode, item.code, item.barcode]
-          .filter(Boolean).join(' ').toLowerCase();
+        const combined = [
+          item.name, item.sinhalaName, item.nameSi,
+          item.itemCode, item.code, item.barcode,
+        ].filter(Boolean).join(' ').toLowerCase();
         if (!combined.includes(search)) return false;
       }
       if (filterCategory && getCategory(item) !== filterCategory) return false;
       if (filterRack && getRack(item) !== filterRack) return false;
-      if (filterStatus === 'in') { if (item._stock <= 0) return false; }
-      else if (filterStatus === 'low') { if (item._stock <= 0 || item._stock > 5) return false; }
-      else if (filterStatus === 'out') { if (item._stock > 0) return false; }
+
+      if (filterStatus === 'in') {
+        if (item._stock <= 0) return false;
+      } else if (filterStatus === 'low') {
+        if (item._stock <= 0 || item._stock > 5) return false;
+      } else if (filterStatus === 'out') {
+        if (item._stock > 0) return false;
+      }
       return true;
     });
 
     // Sort
-    if (sortBy === 'name') list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    else if (sortBy === 'costHigh') list.sort((a, b) => b._costValue - a._costValue);
-    else if (sortBy === 'costLow') list.sort((a, b) => a._costValue - b._costValue);
-    else if (sortBy === 'stockHigh') list.sort((a, b) => b._stock - a._stock);
-    else if (sortBy === 'stockLow') list.sort((a, b) => a._stock - b._stock);
+    if (sortBy === 'name')
+      list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    else if (sortBy === 'costHigh')
+      list.sort((a, b) => b._costValue - a._costValue);
+    else if (sortBy === 'costLow')
+      list.sort((a, b) => a._costValue - b._costValue);
+    else if (sortBy === 'stockHigh')
+      list.sort((a, b) => b._stock - a._stock);
+    else if (sortBy === 'stockLow')
+      list.sort((a, b) => a._stock - b._stock);
 
     return list;
   }, [enrichedItems, searchText, filterCategory, filterRack, filterStatus, sortBy]);
@@ -331,7 +470,7 @@ export default function StockValuePage() {
   const summary = useMemo(() => {
     let totalCost = 0, totalSell = 0, totalUnits = 0;
     let lowCount = 0, outCount = 0, activeCount = 0;
-    filteredItems.forEach(i => {
+    filteredItems.forEach((i) => {
       totalCost  += i._costValue;
       totalSell  += i._sellValue;
       totalUnits += i._stock;
@@ -344,15 +483,15 @@ export default function StockValuePage() {
     const profit = R2(totalSell - totalCost);
     const margin = totalSell > 0 ? R2((profit / totalSell) * 100) : 0;
     return {
-      totalCost: R2(totalCost),
-      totalSell: R2(totalSell),
-      totalUnits: R2(totalUnits),
+      totalCost:   R2(totalCost),
+      totalSell:   R2(totalSell),
+      totalUnits:  R2(totalUnits),
       profit,
       margin,
       lowCount,
       outCount,
       activeCount,
-      itemCount: filteredItems.length,
+      itemCount:   filteredItems.length,
     };
   }, [filteredItems]);
 
@@ -365,16 +504,17 @@ export default function StockValuePage() {
     setSortBy('name');
   }, []);
 
-  const hasFilters = searchText || filterCategory || filterRack || filterStatus || sortBy !== 'name';
+  const hasFilters =
+    searchText || filterCategory || filterRack || filterStatus || sortBy !== 'name';
 
-  /* ── CSV Export ── */
+  /* ── CSV Export (with user info) ── */
   const exportCSV = useCallback(() => {
     if (!filteredItems.length) return;
     const headers = [
       t.itemName, t.code, t.category, t.rack, t.stockQty,
-      t.buyingPrice, t.sellingPrice, t.costValue, t.sellValue, t.profit
+      t.buyingPrice, t.sellingPrice, t.costValue, t.sellValue, t.profit,
     ];
-    const rows = filteredItems.map(i => [
+    const rows = filteredItems.map((i) => [
       `"${(i.name || '').replace(/"/g, '""')}"`,
       `"${i.itemCode || i.code || ''}"`,
       `"${getCategory(i)}"`,
@@ -386,17 +526,18 @@ export default function StockValuePage() {
       i._sellValue,
       i._profit,
     ]);
-    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `stock-value-${new Date().toISOString().split('T')[0]}.csv`;
+    const userTag = (user?.email || user?.uid || 'user').split('@')[0];
+    link.download = `stock-value-${userTag}-${new Date().toISOString().split('T')[0]}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-  }, [filteredItems, t]);
+  }, [filteredItems, t, user]);
 
   /* ── Styles ── */
   const cardStyle = {
@@ -417,6 +558,29 @@ export default function StockValuePage() {
     outline: 'none',
   };
 
+  /* ── Auth Guard ── */
+  if (!user) {
+    return (
+      <div style={{ textAlign: 'center', padding: 60, minHeight: '70vh' }}>
+        <div style={{
+          maxWidth: 420, margin: '0 auto',
+          background: '#fff', padding: 30, borderRadius: 16,
+          border: '1px solid #e2e8f0',
+          boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)',
+        }}>
+          <div style={{ fontSize: 56, marginBottom: 12 }}>🔒</div>
+          <h2 style={{ color: '#1e293b', fontSize: 20, fontWeight: 700, marginBottom: 8 }}>
+            {t.authRequired}
+          </h2>
+          <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>
+            {t.authMessage}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Loading State ── */
   if (loading) {
     return (
       <div style={{ textAlign: 'center', padding: 50 }}>
@@ -431,6 +595,7 @@ export default function StockValuePage() {
     );
   }
 
+  /* ── Main Render ── */
   return (
     <div style={{ maxWidth: 1400, margin: '0 auto', padding: 16 }}>
       {/* Header */}
@@ -440,47 +605,120 @@ export default function StockValuePage() {
         alignItems: 'center', flexWrap: 'wrap', gap: 10,
       }}>
         <div>
-          <h2 style={{ color: '#1e293b', margin: 0, fontSize: 24 }}>{t.pageTitle}</h2>
-          <p style={{ color: '#64748b', margin: '4px 0 0', fontSize: 13 }}>{t.subtitle}</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <h2 style={{ color: '#1e293b', margin: 0, fontSize: 24 }}>
+              {t.pageTitle}
+            </h2>
+            <span style={{
+              fontSize: 11,
+              padding: '2px 8px',
+              borderRadius: 12,
+              fontWeight: 700,
+              background: isOnline ? '#dcfce7' : '#fee2e2',
+              color: isOnline ? '#166534' : '#991b1b',
+            }}>
+              {isOnline ? `● ${t.cloudStatus}` : `○ ${t.offlineStatus}`}
+            </span>
+          </div>
+          <p style={{ color: '#64748b', margin: '4px 0 0', fontSize: 13 }}>
+            {t.subtitle}
+          </p>
+          <p style={{ color: '#94a3b8', margin: '2px 0 0', fontSize: 11 }}>
+            පරිශීලක: <strong>{user.email || user.displayName || user.uid}</strong>
+          </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {/* Price Mode */}
-          <div style={{ display: 'flex', gap: 2, background: '#f1f5f9', padding: 3, borderRadius: 8 }}>
-            {['retail', 'wholesale', 'loose'].map(m => (
-              <button key={m} onClick={() => setPriceMode(m)} style={{
-                padding: '6px 10px', border: 'none', borderRadius: 6,
-                cursor: 'pointer', fontSize: 12, fontWeight: 700,
-                background: priceMode === m ? '#3b82f6' : 'transparent',
-                color: priceMode === m ? 'white' : '#64748b',
-              }}>
+          <div style={{
+            display: 'flex', gap: 2, background: '#f1f5f9',
+            padding: 3, borderRadius: 8,
+          }}>
+            {['retail', 'wholesale', 'loose'].map((m) => (
+              <button
+                key={m}
+                onClick={() => setPriceMode(m)}
+                style={{
+                  padding: '6px 10px', border: 'none', borderRadius: 6,
+                  cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                  background: priceMode === m ? '#3b82f6' : 'transparent',
+                  color: priceMode === m ? 'white' : '#64748b',
+                }}
+              >
                 {m === 'retail' ? t.priceRetail : m === 'wholesale' ? t.priceWholesale : t.priceLoose}
               </button>
             ))}
           </div>
-          <button onClick={exportCSV} disabled={!filteredItems.length} style={{
-            padding: '8px 14px', background: filteredItems.length ? '#16a34a' : '#cbd5e1',
-            color: 'white', border: 'none', borderRadius: 8,
-            fontSize: 13, fontWeight: 700,
-            cursor: filteredItems.length ? 'pointer' : 'not-allowed',
-          }}>
+          <button
+            onClick={exportCSV}
+            disabled={!filteredItems.length}
+            style={{
+              padding: '8px 14px',
+              background: filteredItems.length ? '#16a34a' : '#cbd5e1',
+              color: 'white', border: 'none', borderRadius: 8,
+              fontSize: 13, fontWeight: 700,
+              cursor: filteredItems.length ? 'pointer' : 'not-allowed',
+            }}
+          >
             {t.exportBtn}
           </button>
         </div>
       </div>
 
+      {/* Offline Warning Banner */}
+      {!isOnline && (
+        <div style={{
+          padding: 12,
+          background: '#fef2f2',
+          border: '1px solid #fecaca',
+          borderRadius: 8,
+          marginBottom: 16,
+          color: '#991b1b',
+          fontSize: 13,
+          fontWeight: 600,
+        }}>
+          ⚠️ {t.offlineMsg}. Internet සම්බන්ධ වූ පසු දත්ත ස්වයංක්‍රීයව යාවත්කාලීන වේ.
+        </div>
+      )}
+
       {/* Summary Cards */}
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-        gap: 12, marginBottom: 20,
+        gap: 12,
+        marginBottom: 20,
       }}>
-        <StatCard icon="📦" title={t.totalItems} value={summary.itemCount} subtitle={`${fmtQ(summary.totalUnits)} ${t.unit}`} color="#3b82f6" bgColor="#eff6ff" />
-        <StatCard icon="💰" title={t.totalCost} value={`Rs.${fmt(summary.totalCost)}`} color="#f59e0b" bgColor="#fffbeb" />
-        <StatCard icon="📈" title={t.totalSelling} value={`Rs.${fmt(summary.totalSell)}`} color="#8b5cf6" bgColor="#f5f3ff" />
-        <StatCard icon="💎" title={t.expectedProfit} value={`Rs.${fmt(summary.profit)}`} subtitle={`${t.profitMargin}: ${summary.margin}%`} color={summary.profit >= 0 ? '#16a34a' : '#dc2626'} bgColor={summary.profit >= 0 ? '#f0fdf4' : '#fef2f2'} />
-        <StatCard icon="🟢" title={t.activeItems} value={summary.activeCount} color="#16a34a" bgColor="#f0fdf4" />
-        <StatCard icon="🟡" title={t.lowStockCount} value={summary.lowCount} color="#f59e0b" bgColor="#fffbeb" />
-        <StatCard icon="🔴" title={t.outOfStockCount} value={summary.outCount} color="#dc2626" bgColor="#fef2f2" />
+        <StatCard
+          icon="📦" title={t.totalItems} value={summary.itemCount}
+          subtitle={`${fmtQ(summary.totalUnits)} ${t.unit}`}
+          color="#3b82f6" bgColor="#eff6ff"
+        />
+        <StatCard
+          icon="💰" title={t.totalCost} value={`Rs.${fmt(summary.totalCost)}`}
+          color="#f59e0b" bgColor="#fffbeb"
+        />
+        <StatCard
+          icon="📈" title={t.totalSelling} value={`Rs.${fmt(summary.totalSell)}`}
+          color="#8b5cf6" bgColor="#f5f3ff"
+        />
+        <StatCard
+          icon="💎" title={t.expectedProfit}
+          value={`Rs.${fmt(summary.profit)}`}
+          subtitle={`${t.profitMargin}: ${summary.margin}%`}
+          color={summary.profit >= 0 ? '#16a34a' : '#dc2626'}
+          bgColor={summary.profit >= 0 ? '#f0fdf4' : '#fef2f2'}
+        />
+        <StatCard
+          icon="🟢" title={t.activeItems} value={summary.activeCount}
+          color="#16a34a" bgColor="#f0fdf4"
+        />
+        <StatCard
+          icon="🟡" title={t.lowStockCount} value={summary.lowCount}
+          color="#f59e0b" bgColor="#fffbeb"
+        />
+        <StatCard
+          icon="🔴" title={t.outOfStockCount} value={summary.outCount}
+          color="#dc2626" bgColor="#fef2f2"
+        />
       </div>
 
       {/* Filters */}
@@ -491,38 +729,71 @@ export default function StockValuePage() {
           gap: 10,
         }}>
           <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>
+            <label style={{
+              fontSize: 11, fontWeight: 700, color: '#64748b',
+              display: 'block', marginBottom: 4,
+            }}>
               {t.searchLabel}
             </label>
-            <input type="text" value={searchText} onChange={e => setSearchText(e.target.value)}
-              placeholder={t.searchPlaceholder} style={inputStyle} />
+            <input
+              type="text"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder={t.searchPlaceholder}
+              style={inputStyle}
+            />
           </div>
 
           <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>
+            <label style={{
+              fontSize: 11, fontWeight: 700, color: '#64748b',
+              display: 'block', marginBottom: 4,
+            }}>
               {t.filterCategory}
             </label>
-            <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={inputStyle}>
+            <select
+              value={filterCategory}
+              onChange={(e) => setFilterCategory(e.target.value)}
+              style={inputStyle}
+            >
               <option value="">{t.all}</option>
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              {categories.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
             </select>
           </div>
 
           <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>
+            <label style={{
+              fontSize: 11, fontWeight: 700, color: '#64748b',
+              display: 'block', marginBottom: 4,
+            }}>
               {t.filterRack}
             </label>
-            <select value={filterRack} onChange={e => setFilterRack(e.target.value)} style={inputStyle}>
+            <select
+              value={filterRack}
+              onChange={(e) => setFilterRack(e.target.value)}
+              style={inputStyle}
+            >
               <option value="">{t.all}</option>
-              {racks.map(r => <option key={r} value={r}>{r}</option>)}
+              {racks.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
             </select>
           </div>
 
           <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>
+            <label style={{
+              fontSize: 11, fontWeight: 700, color: '#64748b',
+              display: 'block', marginBottom: 4,
+            }}>
               {t.filterStatus}
             </label>
-            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={inputStyle}>
+            <select
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
+              style={inputStyle}
+            >
               <option value="">{t.all}</option>
               <option value="in">{t.inStock}</option>
               <option value="low">{t.lowStock}</option>
@@ -531,10 +802,17 @@ export default function StockValuePage() {
           </div>
 
           <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b', display: 'block', marginBottom: 4 }}>
+            <label style={{
+              fontSize: 11, fontWeight: 700, color: '#64748b',
+              display: 'block', marginBottom: 4,
+            }}>
               {t.sortBy}
             </label>
-            <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={inputStyle}>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              style={inputStyle}
+            >
               <option value="name">{t.sortName}</option>
               <option value="costHigh">{t.sortCostHigh}</option>
               <option value="costLow">{t.sortCostLow}</option>
@@ -545,11 +823,20 @@ export default function StockValuePage() {
 
           {hasFilters && (
             <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-              <button onClick={clearFilters} style={{
-                padding: '10px 14px', background: '#fee2e2', color: '#dc2626',
-                border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 700,
-                cursor: 'pointer', width: '100%',
-              }}>
+              <button
+                onClick={clearFilters}
+                style={{
+                  padding: '10px 14px',
+                  background: '#fee2e2',
+                  color: '#dc2626',
+                  border: 'none',
+                  borderRadius: 8,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  width: '100%',
+                }}
+              >
                 {t.clearFilters}
               </button>
             </div>
@@ -557,16 +844,22 @@ export default function StockValuePage() {
         </div>
 
         <div style={{ marginTop: 10, fontSize: 12, color: '#64748b' }}>
-          <strong>{filteredItems.length}</strong> {t.of} <strong>{items.length}</strong> {t.itemsShown}
+          <strong>{filteredItems.length}</strong> {t.of}{' '}
+          <strong>{items.length}</strong> {t.itemsShown}
         </div>
       </div>
 
       {/* Items Table */}
       <div style={{
-        background: 'white', borderRadius: 12,
-        overflow: 'auto', boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
+        background: 'white',
+        borderRadius: 12,
+        overflow: 'auto',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
       }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 900 }}>
+        <table style={{
+          width: '100%', borderCollapse: 'collapse',
+          fontSize: 13, minWidth: 900,
+        }}>
           <thead>
             <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e2e8f0' }}>
               <th style={{ padding: '12px 10px', textAlign: 'left', fontSize: 11, color: '#475569', fontWeight: 700 }}>{t.itemName}</th>
@@ -583,60 +876,102 @@ export default function StockValuePage() {
           <tbody>
             {filteredItems.length === 0 ? (
               <tr>
-                <td colSpan={9} style={{ padding: 40, textAlign: 'center', color: '#94a3b8', fontSize: 14 }}>
+                <td colSpan={9} style={{
+                  padding: 40, textAlign: 'center',
+                  color: '#94a3b8', fontSize: 14,
+                }}>
                   📭 {t.noResults}
                 </td>
               </tr>
-            ) : filteredItems.map(item => {
-              const zero = item._stock <= 0;
-              const low = item._stock > 0 && item._stock <= 5;
-              const discPercent = getBuyingDiscountPercent(item);
-              const hasDiscount = discPercent > 0;
-              return (
-                <tr key={item.id} style={{ borderBottom: '1px solid #f1f5f9', background: zero ? '#fef2f2' : low ? '#fffbeb' : 'white' }}>
-                  <td style={{ padding: '10px', fontWeight: 600, color: '#0f172a' }}>
-                    {item.name}
-                    {(item.sinhalaName || item.nameSi) && (
-                      <div style={{ fontSize: 11, color: '#1e40af', fontWeight: 500, marginTop: 2 }}>
-                        {item.sinhalaName || item.nameSi}
-                      </div>
-                    )}
-                  </td>
-                  <td style={{ padding: '10px', color: '#64748b', fontSize: 12 }}>{item.itemCode || item.code || '-'}</td>
-                  <td style={{ padding: '10px' }}>
-                    {getRack(item) && (
-                      <span style={{ background: '#fef2f2', color: '#e11d48', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>
-                        📍 {getRack(item)}
+            ) : (
+              filteredItems.map((item) => {
+                const zero = item._stock <= 0;
+                const low  = item._stock > 0 && item._stock <= 5;
+                const discPercent = getBuyingDiscountPercent(item);
+                const hasDiscount = discPercent > 0;
+                return (
+                  <tr
+                    key={item.id}
+                    style={{
+                      borderBottom: '1px solid #f1f5f9',
+                      background: zero ? '#fef2f2' : low ? '#fffbeb' : 'white',
+                    }}
+                  >
+                    <td style={{ padding: '10px', fontWeight: 600, color: '#0f172a' }}>
+                      {item.name}
+                      {(item.sinhalaName || item.nameSi) && (
+                        <div style={{
+                          fontSize: 11, color: '#1e40af',
+                          fontWeight: 500, marginTop: 2,
+                        }}>
+                          {item.sinhalaName || item.nameSi}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '10px', color: '#64748b', fontSize: 12 }}>
+                      {item.itemCode || item.code || '-'}
+                    </td>
+                    <td style={{ padding: '10px' }}>
+                      {getRack(item) && (
+                        <span style={{
+                          background: '#fef2f2', color: '#e11d48',
+                          padding: '2px 8px', borderRadius: 4,
+                          fontSize: 11, fontWeight: 700,
+                        }}>
+                          📍 {getRack(item)}
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: '10px', textAlign: 'right' }}>
+                      <span style={{
+                        padding: '3px 8px', borderRadius: 6,
+                        fontSize: 12, fontWeight: 800,
+                        background: zero ? '#fee2e2' : low ? '#fef3c7' : '#dcfce7',
+                        color: zero ? '#dc2626' : low ? '#b45309' : '#166534',
+                      }}>
+                        {zero ? '🔴' : low ? '🟡' : '🟢'} {fmtQ(item._stock)}
                       </span>
-                    )}
-                  </td>
-                  <td style={{ padding: '10px', textAlign: 'right' }}>
-                    <span style={{
-                      padding: '3px 8px', borderRadius: 6,
-                      fontSize: 12, fontWeight: 800,
-                      background: zero ? '#fee2e2' : low ? '#fef3c7' : '#dcfce7',
-                      color: zero ? '#dc2626' : low ? '#b45309' : '#166534',
+                    </td>
+                    <td style={{
+                      padding: '10px', textAlign: 'right',
+                      color: '#0f172a', fontWeight: 'bold',
                     }}>
-                      {zero ? '🔴' : low ? '🟡' : '🟢'} {fmtQ(item._stock)}
-                    </span>
-                  </td>
-                  <td style={{ padding: '10px', textAlign: 'right', color: '#0f172a', fontWeight: 'bold' }}>
-                    Rs.{fmt(item._cost)}
-                    {hasDiscount && (
-                      <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 'bold', marginTop: 3 }}>
-                        🏷️ Disc: {discPercent}%
-                      </div>
-                    )}
-                  </td>
-                  <td style={{ padding: '10px', textAlign: 'right', color: '#64748b' }}>Rs.{fmt(item._sellPrice)}</td>
-                  <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, color: '#b45309' }}>Rs.{fmt(item._costValue)}</td>
-                  <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, color: '#7c3aed' }}>Rs.{fmt(item._sellValue)}</td>
-                  <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, color: item._profit >= 0 ? '#16a34a' : '#dc2626' }}>
-                    Rs.{fmt(item._profit)}
-                  </td>
-                </tr>
-              );
-            })}
+                      Rs.{fmt(item._cost)}
+                      {hasDiscount && (
+                        <div style={{
+                          fontSize: 11, color: '#16a34a',
+                          fontWeight: 'bold', marginTop: 3,
+                        }}>
+                          🏷️ Disc: {discPercent}%
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '10px', textAlign: 'right', color: '#64748b' }}>
+                      Rs.{fmt(item._sellPrice)}
+                    </td>
+                    <td style={{
+                      padding: '10px', textAlign: 'right',
+                      fontWeight: 700, color: '#b45309',
+                    }}>
+                      Rs.{fmt(item._costValue)}
+                    </td>
+                    <td style={{
+                      padding: '10px', textAlign: 'right',
+                      fontWeight: 700, color: '#7c3aed',
+                    }}>
+                      Rs.{fmt(item._sellValue)}
+                    </td>
+                    <td style={{
+                      padding: '10px', textAlign: 'right',
+                      fontWeight: 700,
+                      color: item._profit >= 0 ? '#16a34a' : '#dc2626',
+                    }}>
+                      Rs.{fmt(item._profit)}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
           </tbody>
           {filteredItems.length > 0 && (
             <tfoot>
@@ -644,17 +979,29 @@ export default function StockValuePage() {
                 <td colSpan={3} style={{ padding: '14px 10px', fontSize: 13 }}>
                   🎯 {t.grandTotal} ({filteredItems.length} {t.itemsShown})
                 </td>
-                <td style={{ padding: '14px 10px', textAlign: 'right', fontSize: 14 }}>
+                <td style={{
+                  padding: '14px 10px', textAlign: 'right', fontSize: 14,
+                }}>
                   {fmtQ(summary.totalUnits)}
                 </td>
                 <td colSpan={2}></td>
-                <td style={{ padding: '14px 10px', textAlign: 'right', fontSize: 14, color: '#fbbf24' }}>
+                <td style={{
+                  padding: '14px 10px', textAlign: 'right',
+                  fontSize: 14, color: '#fbbf24',
+                }}>
                   Rs.{fmt(summary.totalCost)}
                 </td>
-                <td style={{ padding: '14px 10px', textAlign: 'right', fontSize: 14, color: '#c4b5fd' }}>
+                <td style={{
+                  padding: '14px 10px', textAlign: 'right',
+                  fontSize: 14, color: '#c4b5fd',
+                }}>
                   Rs.{fmt(summary.totalSell)}
                 </td>
-                <td style={{ padding: '14px 10px', textAlign: 'right', fontSize: 14, color: summary.profit >= 0 ? '#4ade80' : '#f87171' }}>
+                <td style={{
+                  padding: '14px 10px', textAlign: 'right',
+                  fontSize: 14,
+                  color: summary.profit >= 0 ? '#4ade80' : '#f87171',
+                }}>
                   Rs.{fmt(summary.profit)}
                 </td>
               </tr>
@@ -664,9 +1011,23 @@ export default function StockValuePage() {
       </div>
 
       {/* Footer note */}
-      <div style={{ marginTop: 20, padding: 12, background: '#eff6ff', borderRadius: 8, border: '1px solid #bfdbfe', fontSize: 12, color: '#1e40af' }}>
-        💡 <strong>සටහන:</strong> ගැනුම් මිල ගණනය කර ඇත්තේ ලැබුණු වට්ටම (<strong>Buying Discount % / Discount Received %</strong>) අඩු කිරීමෙන් පසුවය. 
-        එමෙන්ම මෙම වටිනාකම් තෝරාගත් <strong>{priceMode === 'retail' ? t.priceRetail : priceMode === 'wholesale' ? t.priceWholesale : t.priceLoose}</strong> මිල අනුව දළ ලාභය ගණනය කර පෙන්වයි.
+      <div style={{
+        marginTop: 20, padding: 12,
+        background: '#eff6ff', borderRadius: 8,
+        border: '1px solid #bfdbfe',
+        fontSize: 12, color: '#1e40af',
+      }}>
+        💡 <strong>සටහන:</strong> ගැනුම් මිල ගණනය කර ඇත්තේ ලැබුණු වට්ටම (
+        <strong>Buying Discount % / Discount Received %</strong>) අඩු කිරීමෙන් පසුවය.
+        එමෙන්ම මෙම වටිනාකම් තෝරාගත්{' '}
+        <strong>
+          {priceMode === 'retail'
+            ? t.priceRetail
+            : priceMode === 'wholesale'
+            ? t.priceWholesale
+            : t.priceLoose}
+        </strong>{' '}
+        මිල අනුව දළ ලාභය ගණනය කර පෙන්වයි.
       </div>
     </div>
   );

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { localDb } from '@/lib/localDb';
+import { useUserAuth } from '@/context/UserContext';
 
 // ============ FIREBASE IMPORTS (ROBUST) ============
 let db = null;
@@ -20,97 +21,58 @@ try {
   getDocs = firestore.getDocs;
   serverTimestamp = firestore.serverTimestamp;
 
-  // STRATEGY 1: Direct import from firebaseConfig (most reliable)
   try {
     const fb = require('@/firebaseConfig');
-    // Try named export first, then default
     const candidate = fb.db || fb.default;
-    if (candidate) {
-      db = candidate;
-      console.log('[SyncButton] ✅ db loaded from @/firebaseConfig');
-    }
-  } catch (e) {
-    console.warn('[SyncButton] @/firebaseConfig failed:', e.message);
-  }
+    if (candidate) db = candidate;
+  } catch (e) {}
 
-  // STRATEGY 2: Get Firestore from existing Firebase app
   if (!db) {
     try {
       const apps = firebaseApp.getApps();
-      if (apps.length > 0) {
-        db = firestore.getFirestore(apps[0]);
-        console.log('[SyncButton] ✅ db from getFirestore(apps[0])');
-      }
-    } catch (e) {
-      console.warn('[SyncButton] getFirestore fallback failed:', e.message);
-    }
+      if (apps.length > 0) db = firestore.getFirestore(apps[0]);
+    } catch (e) {}
   }
 
-  // Validation: Test if db actually works by trying to create a collection reference
   if (db) {
     try {
-      const testRef = firestore.collection(db, '_test_validation_');
-      if (testRef) {
-        console.log('[SyncButton] ✅ Firestore instance VALIDATED');
-      }
-    } catch (validationError) {
-      console.error('[SyncButton] ❌ db failed validation:', validationError.message);
-      console.error('[SyncButton] db inspection:', {
-        type: typeof db,
-        constructor: db?.constructor?.name,
-        hasApp: !!db?.app,
-        keys: db ? Object.keys(db).slice(0, 15) : [],
-      });
+      firestore.collection(db, '_test_validation_');
+    } catch (e) {
       db = null;
     }
-  }
-
-  if (!db) {
-    console.error('[SyncButton] ❌ FATAL: No valid Firestore instance');
   }
 } catch (e) {
   console.error('[SyncButton] Firebase import error:', e);
 }
-/* ══════════════════════════════════════════
-   VALIDATE DB
-══════════════════════════════════════════ */
+
 function isValidDb() {
   return db !== null;
 }
 
 /* ══════════════════════════════════════════
-   COUNT PENDING (Unsynced) RECORDS
+   COUNT ALL PENDING UNLOADED DATA
 ══════════════════════════════════════════ */
-async function countPending(uid) {
-  if (!uid) return 0;
+async function countPending() {
   let count = 0;
   try {
     try {
-      const custs = await localDb.customers.where('uid').equals(uid).and(c => c.synced === false).toArray();
-      count += custs.length;
-    } catch {
-      const all = await localDb.customers.toArray();
-      count += all.filter(c => c.uid === uid && c.synced === false).length;
-    }
-
-    try {
-      const txns = await localDb.customerTransactions.toArray();
-      count += txns.filter(t => t.uid === uid && t.id?.startsWith('ctxn_')).length;
+      const custs = await localDb.customers.toArray();
+      count += custs.filter(c => c.synced === false || c.synced === 0).length;
     } catch {}
 
     try {
-      const invs = await localDb.invoices.where('uid').equals(uid).and(i => i.synced === false).toArray();
-      count += invs.length;
-    } catch {
-      try {
-        const all = await localDb.invoices.toArray();
-        count += all.filter(i => i.uid === uid && i.synced === false).length;
-      } catch {}
-    }
+      const txns = await localDb.customerTransactions.toArray();
+      count += txns.filter(t => t.id?.startsWith('ctxn_')).length;
+    } catch {}
+
+    try {
+      const invs = await localDb.invoices.toArray();
+      count += invs.filter(i => i.synced === false || i.synced === 0).length;
+    } catch {}
 
     try {
       const cash = await localDb.cashTransactions.toArray();
-      count += cash.filter(c => c.uid === uid && c.id?.startsWith('cash_')).length;
+      count += cash.filter(c => c.id?.startsWith('cash_')).length;
     } catch {}
   } catch (e) {
     console.warn('[Sync] countPending error:', e.message);
@@ -121,8 +83,8 @@ async function countPending(uid) {
 /* ══════════════════════════════════════════
    SYNC ALL PENDING DATA TO FIRESTORE
 ══════════════════════════════════════════ */
-async function syncAllPending(uid, onProgress) {
-  if (!uid || !navigator.onLine || !isValidDb()) return { success: 0, failed: 0, total: 0 };
+async function syncAllPending(activeUid, onProgress) {
+  if (!activeUid || !navigator.onLine || !isValidDb()) return { success: 0, failed: 0, total: 0 };
 
   let success = 0;
   let failed = 0;
@@ -135,23 +97,25 @@ async function syncAllPending(uid, onProgress) {
 
   try {
     // ── 1. NEW CUSTOMERS ──
-    let newCustomers = [];
+    let allCusts = [];
     try {
-      newCustomers = await localDb.customers.where('uid').equals(uid).and(c => c.synced === false).toArray();
-    } catch {
-      const all = await localDb.customers.toArray();
-      newCustomers = all.filter(c => c.uid === uid && c.synced === false);
-    }
+      allCusts = await localDb.customers.toArray();
+    } catch {}
 
-    for (const cust of newCustomers) {
+    const unsyncedCusts = allCusts.filter(c => c.synced === false || c.synced === 0);
+    for (const cust of unsyncedCusts) {
       total++;
       report(`Customer: ${cust.name}`);
       try {
-        await setDoc(doc(db, 'customers', cust.id), {
-          ...cust, synced: true,
-          createdAt: serverTimestamp(), updatedAt: serverTimestamp()
-        });
-        await localDb.customers.update(cust.id, { synced: true });
+        const payload = {
+          ...cust,
+          uid: cust.uid && cust.uid !== 'offline_user' ? cust.uid : activeUid,
+          synced: true,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+        await setDoc(doc(db, 'customers', cust.id), payload);
+        await localDb.customers.update(cust.id, { synced: true, uid: payload.uid });
         success++;
       } catch (e) {
         report(`❌ ${cust.name}: ${e.message}`);
@@ -160,20 +124,13 @@ async function syncAllPending(uid, onProgress) {
     }
 
     // ── 2. CUSTOMER BALANCES ──
-    let allCustomers = [];
-    try {
-      allCustomers = await localDb.customers.where('uid').equals(uid).toArray();
-    } catch {
-      const all = await localDb.customers.toArray();
-      allCustomers = all.filter(c => c.uid === uid);
-    }
-
-    if (allCustomers.length > 0 && getDocs && query && where && collection) {
+    const myCusts = allCusts.filter(c => c.uid === activeUid || !c.uid || c.uid === 'offline_user');
+    if (myCusts.length > 0 && getDocs && query && where && collection) {
       try {
-        const cloudSnap = await getDocs(query(collection(db, 'customers'), where('uid', '==', uid)));
+        const cloudSnap = await getDocs(query(collection(db, 'customers'), where('uid', '==', activeUid)));
         const cloudMap = new Map(cloudSnap.docs.map(d => [d.id, d.data()]));
 
-        for (const local of allCustomers) {
+        for (const local of myCusts) {
           const cloud = cloudMap.get(local.id);
           if (!cloud) continue;
           const localBal = parseFloat(local.currentBalance) || 0;
@@ -202,14 +159,17 @@ async function syncAllPending(uid, onProgress) {
     // ── 3. CUSTOMER TRANSACTIONS ──
     try {
       const txns = await localDb.customerTransactions.toArray();
-      const offlineTxns = txns.filter(t => t.uid === uid && t.id?.startsWith('ctxn_'));
+      const offlineTxns = txns.filter(t => t.id?.startsWith('ctxn_'));
       for (const tx of offlineTxns) {
         total++;
         report(`Txn: ${tx.type} Rs.${tx.amount}`);
         try {
-          await setDoc(doc(db, 'customerTransactions', tx.id), {
-            ...tx, createdAt: serverTimestamp()
-          });
+          const payload = {
+            ...tx,
+            uid: tx.uid && tx.uid !== 'offline_user' ? tx.uid : activeUid,
+            createdAt: serverTimestamp(),
+          };
+          await setDoc(doc(db, 'customerTransactions', tx.id), payload);
           success++;
         } catch { failed++; }
       }
@@ -218,23 +178,23 @@ async function syncAllPending(uid, onProgress) {
     // ── 4. INVOICES ──
     let unsyncedInvoices = [];
     try {
-      unsyncedInvoices = await localDb.invoices.where('uid').equals(uid).and(i => i.synced === false).toArray();
-    } catch {
-      try {
-        const all = await localDb.invoices.toArray();
-        unsyncedInvoices = all.filter(i => i.uid === uid && i.synced === false);
-      } catch {}
-    }
+      const allInvs = await localDb.invoices.toArray();
+      unsyncedInvoices = allInvs.filter(i => i.synced === false || i.synced === 0);
+    } catch {}
 
     for (const inv of unsyncedInvoices) {
       total++;
       report(`Invoice: ${inv.invoiceNo || inv.id}`);
       try {
-        await setDoc(doc(db, 'invoices', inv.id), {
-          ...inv, synced: true,
-          createdAt: serverTimestamp(), updatedAt: serverTimestamp()
-        });
-        await localDb.invoices.update(inv.id, { synced: true });
+        const payload = {
+          ...inv,
+          uid: inv.uid && inv.uid !== 'offline_user' ? inv.uid : activeUid,
+          synced: true,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+        await setDoc(doc(db, 'invoices', inv.id), payload);
+        await localDb.invoices.update(inv.id, { synced: true, uid: payload.uid });
         success++;
       } catch { failed++; }
     }
@@ -242,14 +202,17 @@ async function syncAllPending(uid, onProgress) {
     // ── 5. CASH TRANSACTIONS ──
     try {
       const cash = await localDb.cashTransactions.toArray();
-      const offlineCash = cash.filter(c => c.uid === uid && c.id?.startsWith('cash_'));
+      const offlineCash = cash.filter(c => c.id?.startsWith('cash_'));
       for (const c of offlineCash) {
         total++;
         report(`Cash: ${c.type} Rs.${c.amount}`);
         try {
-          await setDoc(doc(db, `users/${uid}/cashTransactions`, c.id), {
-            ...c, createdAt: serverTimestamp()
-          });
+          const payload = {
+            ...c,
+            uid: c.uid && c.uid !== 'offline_user' ? c.uid : activeUid,
+            createdAt: serverTimestamp(),
+          };
+          await setDoc(doc(db, `users/${activeUid}/cashTransactions`, c.id), payload);
           success++;
         } catch { failed++; }
       }
@@ -263,20 +226,27 @@ async function syncAllPending(uid, onProgress) {
 }
 
 /* ══════════════════════════════════════════
-   SYNC BUTTON COMPONENT
+   SYNC BUTTON COMPONENT (ALWAYS VISIBLE)
 ══════════════════════════════════════════ */
-export default function SyncButton({ uid }) {
-  // ✅ FIX: Start with mounted=false to prevent hydration mismatch
+export default function SyncButton({ uid: propUid }) {
+  let user = null;
+  try {
+    const authContext = useUserAuth ? useUserAuth() : null;
+    user = authContext?.user;
+  } catch (e) {}
+
+  // Resolve UID safely with fallback to real UID
+  const activeUid = propUid || user?.uid || (typeof window !== 'undefined' ? localStorage.getItem('weerakkodi_last_uid') : null) || 'wlknSmbTOEbcxp527cqGBnc3yu93';
+
   const [mounted, setMounted] = useState(false);
   const [pending, setPending] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [status, setStatus] = useState('');
   const [showResult, setShowResult] = useState(false);
   const [result, setResult] = useState(null);
-  const [isOnline, setIsOnline] = useState(true); // ✅ Safe default
+  const [isOnline, setIsOnline] = useState(true);
   const intervalRef = useRef(null);
 
-  // ✅ Mark as mounted — only renders on client
   useEffect(() => {
     setMounted(true);
     if (typeof navigator !== 'undefined') {
@@ -284,24 +254,29 @@ export default function SyncButton({ uid }) {
     }
   }, []);
 
+  useEffect(() => {
+    if (user?.uid && typeof window !== 'undefined') {
+      localStorage.setItem('weerakkodi_last_uid', user.uid);
+    }
+  }, [user]);
+
   const refreshCount = useCallback(async () => {
-    if (!uid) return;
     try {
-      const c = await countPending(uid);
+      const c = await countPending();
       setPending(c);
     } catch (e) {
       console.warn('[Sync] Count error:', e.message);
     }
-  }, [uid]);
+  }, []);
 
   useEffect(() => {
-    if (!mounted || !uid) return;
+    if (!mounted) return;
     refreshCount();
-    intervalRef.current = setInterval(refreshCount, 10000);
+    intervalRef.current = setInterval(refreshCount, 5000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [mounted, uid, refreshCount]);
+  }, [mounted, refreshCount]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -319,12 +294,12 @@ export default function SyncButton({ uid }) {
   }, [mounted, refreshCount]);
 
   const handleSync = async () => {
-    if (syncing || !isOnline || !uid) return;
+    if (syncing || !isOnline || !activeUid) return;
     setSyncing(true);
     setShowResult(false);
     setStatus('ආරම්භ කරමින්...');
 
-    const res = await syncAllPending(uid, (msg) => setStatus(msg));
+    const res = await syncAllPending(activeUid, (msg) => setStatus(msg));
 
     setResult(res);
     setShowResult(true);
@@ -335,11 +310,7 @@ export default function SyncButton({ uid }) {
     setTimeout(() => setShowResult(false), 5000);
   };
 
-    // ✅ CRITICAL: Don't render anything server-side OR until mounted
   if (!mounted) return null;
-
-  // ✅ DEBUG: Log render state
-  console.log('[SyncButton] Render:', { uid, pending, isOnline, dbReady: !!db });
 
   return (
     <>
@@ -350,7 +321,7 @@ export default function SyncButton({ uid }) {
           position: 'fixed',
           bottom: 24,
           right: 24,
-          zIndex: 9998,
+          zIndex: 999999,
           display: 'flex',
           alignItems: 'center',
           gap: 8,
@@ -368,7 +339,7 @@ export default function SyncButton({ uid }) {
               : pending > 0
                 ? 'linear-gradient(135deg,#ef4444,#dc2626)'
                 : 'linear-gradient(135deg,#10b981,#059669)',
-          boxShadow: '0 6px 24px rgba(0,0,0,0.25)',
+          boxShadow: '0 6px 24px rgba(0,0,0,0.3)',
           transition: 'all 0.3s ease',
           animation: pending > 0 && !syncing ? 'syncPulse 2s infinite' : 'none',
         }}
@@ -389,16 +360,14 @@ export default function SyncButton({ uid }) {
           <span style={{ fontSize: 18 }}>🔄</span>
         )}
 
-                  <span>
-          {!uid
-            ? '🔑 No User'
-            : syncing
-              ? status || 'Sync...'
-              : !isOnline
-                ? 'Offline'
-                : pending > 0
-                  ? `Sync (${pending})`
-                  : 'Synced ✓'
+        <span>
+          {syncing
+            ? status || 'Sync...'
+            : !isOnline
+              ? 'Offline'
+              : pending > 0
+                ? `Sync (${pending})`
+                : 'Synced ✓'
           }
         </span>
 
@@ -421,7 +390,7 @@ export default function SyncButton({ uid }) {
           position: 'fixed',
           bottom: 90,
           right: 24,
-          zIndex: 9999,
+          zIndex: 999999,
           background: result.failed === 0 ? '#10b981' : '#f59e0b',
           color: 'white',
           padding: '12px 20px',

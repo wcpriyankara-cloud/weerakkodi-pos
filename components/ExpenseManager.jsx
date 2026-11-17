@@ -1,13 +1,7 @@
 // weerakkodi_pos_app/components/ExpenseManager.jsx
 "use client";
 
-import React, {
-  useState,
-  useEffect,
-  useRef,
-  useCallback,
-  useMemo
-} from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { db } from "@/firebaseConfig";
 import { useUserAuth } from "../context/UserContext";
@@ -1055,7 +1049,14 @@ function ExpenseManager({ lang = "si" }) {
           })),
         ]);
       }
-    );
+    ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     const unsubBanks = onSnapshot(
       collection(db, `users/${user.uid}/bankAccounts`),
@@ -1063,7 +1064,14 @@ function ExpenseManager({ lang = "si" }) {
         setBankAccounts(
           snap.docs.map((d) => ({ id: d.id, ...d.data() }))
         )
-    );
+    ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     const unsubSup = onSnapshot(
       query(collection(db, "suppliers"), where("uid", "==", user.uid)),
@@ -1072,7 +1080,14 @@ function ExpenseManager({ lang = "si" }) {
         list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
         setSuppliers(list);
       }
-    );
+    ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     const unsubItems = onSnapshot(
       query(collection(db, "items"), where("uid", "==", user.uid)),
@@ -1081,7 +1096,14 @@ function ExpenseManager({ lang = "si" }) {
         list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
         setInventoryItems(list);
       }
-    );
+    ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     return () => {
       unsubExp();
@@ -2989,7 +3011,7 @@ function ExpenseManager({ lang = "si" }) {
                   type="number"
                   value={
                     hasItemizedExpense
-                      ? expenseItemsTotal.toFixed(2)
+                      ? (Number(expenseItemsTotal) || 0).toFixed(2)
                       : formData.amount
                   }
                   onChange={(e) =>

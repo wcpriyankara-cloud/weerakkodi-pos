@@ -272,8 +272,22 @@ function ChitFundTab({ user, t, lang, bankAccounts }) {
   useEffect(() => {
     if (!user?.uid) return;
     setLoading(true);
-    const u1 = onSnapshot(collection(db, `users/${user.uid}/chitFunds`), s => { setChitFunds(s.docs.map(d => ({ id: d.id, ...d.data() }))); setLoading(false); });
-    const u2 = onSnapshot(collection(db, `users/${user.uid}/chitFundTransactions`), s => { setChitTxns(s.docs.map(d => ({ id: d.id, ...d.data() }))); });
+    const u1 = onSnapshot(collection(db, `users/${user.uid}/chitFunds`), s => { setChitFunds(s.docs.map(d => ({ id: d.id, ...d.data() }))); setLoading(false); },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
+    const u2 = onSnapshot(collection(db, `users/${user.uid}/chitFundTransactions`), s => { setChitTxns(s.docs.map(d => ({ id: d.id, ...d.data() }))); },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     return () => { u1(); u2(); };
   }, [user?.uid]);
 
@@ -530,8 +544,22 @@ function LoansTab({ user, t, lang, bankAccounts }) {
   useEffect(() => {
     if (!user?.uid) return;
     setLoading(true);
-    const u1 = onSnapshot(collection(db, `users/${user.uid}/bankLoans`), s => { setLoans(s.docs.map(d => ({ id: d.id, ...d.data() }))); setLoading(false); });
-    const u2 = onSnapshot(collection(db, `users/${user.uid}/bankLoanPayments`), s => { setPayments(s.docs.map(d => ({ id: d.id, ...d.data() }))); });
+    const u1 = onSnapshot(collection(db, `users/${user.uid}/bankLoans`), s => { setLoans(s.docs.map(d => ({ id: d.id, ...d.data() }))); setLoading(false); },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
+    const u2 = onSnapshot(collection(db, `users/${user.uid}/bankLoanPayments`), s => { setPayments(s.docs.map(d => ({ id: d.id, ...d.data() }))); },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     return () => { u1(); u2(); };
   }, [user?.uid]);
 
@@ -746,7 +774,7 @@ function LoansTab({ user, t, lang, bankAccounts }) {
                 <div style={{ marginTop: 12 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, marginBottom: 4 }}>
                     <span style={{ color: '#64748b', fontWeight: 700 }}>{t.payProgress}</span>
-                    <span style={{ color: inst.color, fontWeight: 800 }}>{progress.toFixed(1)}% · {loan.emiPaid || 0}/{loan.loanTermMonths} {t.instalments}</span>
+                    <span style={{ color: inst.color, fontWeight: 800 }}>{(Number(progress) || 0).toFixed(1)}% · {loan.emiPaid || 0}/{loan.loanTermMonths} {t.instalments}</span>
                   </div>
                   <div style={{ height: 8, background: '#e2e8f0', borderRadius: 4, overflow: 'hidden' }}><div style={{ height: '100%', width: `${progress}%`, background: `linear-gradient(90deg,${inst.color},${inst.color}dd)`, transition: 'width 0.5s' }} /></div>
                 </div>
@@ -924,7 +952,14 @@ export default function BankLoanManagement() {
     if (!user?.uid) return;
     const unsub = onSnapshot(collection(db, `users/${user.uid}/bankAccounts`), s => {
       setBankAccounts(s.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     return unsub;
   }, [user?.uid]);
 

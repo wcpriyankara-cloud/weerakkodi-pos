@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 // components/VehicleExpenseTab.jsx
 
@@ -16,7 +16,7 @@ import {
 ═══════════════════════════════════════ */
 const toNum = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 const fmtC  = (v) => toNum(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const fmtQ  = (v) => { const n = Math.round(toNum(v) * 100) / 100; return n % 1 === 0 ? String(n) : n.toFixed(2); };
+const fmtQ  = (v) => { const n = Math.round(toNum(v) * 100) / 100; return n % 1 === 0 ? String(n) : (Number(n) || 0).toFixed(2); };
 const pad   = (n) => String(n).padStart(2, '0');
 
 const todayStr = () => {
@@ -680,7 +680,14 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
     if (!externalVehicles) {
       unsubs.push(onSnapshot(collection(db, `users/${user.uid}/vehicles`), (s) =>
         setVehicles(s.docs.map((d) => ({ id: d.id, ...d.data() })))
-      ));
+      ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  ));
     }
 
     unsubs.push(onSnapshot(
@@ -696,19 +703,40 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
 
     unsubs.push(onSnapshot(collection(db, `users/${user.uid}/bankAccounts`), (s) =>
       setBankAccounts(s.docs.map((d) => ({ id: d.id, ...d.data() })))
-    ));
+    ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  ));
 
     unsubs.push(onSnapshot(query(collection(db, 'suppliers'), where('uid', '==', user.uid)), (s) => {
       const list = s.docs.map((d) => ({ id: d.id, ...d.data() }));
       list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       setSuppliers(list);
-    }));
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  ));
 
     unsubs.push(onSnapshot(query(collection(db, 'items'), where('uid', '==', user.uid)), (s) => {
       const list = s.docs.map((d) => ({ id: d.id, ...d.data() }));
       list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       setInventoryItems(list);
-    }));
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  ));
 
     unsubs.push(onSnapshot(
       query(collection(db, 'vehicleExpenseCategories'), where('uid', '==', user.uid)),
@@ -1486,7 +1514,7 @@ export default function VehicleExpenseTab({ vehicles: externalVehicles, lang: ex
                 <label style={ST.formLabel}>💰 {t.amount} *</label>
                 <input
                   type="number"
-                  value={hasItems ? itemsTotal.toFixed(2) : form.amount}
+                  value={hasItems ? (Number(itemsTotal) || 0).toFixed(2) : form.amount}
                   onChange={(e) => !hasItems && setField('amount', e.target.value)}
                   style={{ width: '100%', padding: 16, borderRadius: 14, border: '2px solid #ef4444', fontSize: 28, fontWeight: 900, textAlign: 'center', boxSizing: 'border-box', color: '#dc2626', background: hasItems ? '#fef7ed' : '#fef2f2', outline: 'none', opacity: hasItems ? .85 : 1 }}
                   placeholder={form.expenseType === 'fuel' ? `Auto: ${fmtC(fs.autoAmt)}` : '0.00'}

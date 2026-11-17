@@ -302,7 +302,7 @@ export default function StockAdjustmentPage() {
   
   const fmtQ = useCallback((v) => {
     const n = parseFloat(v);
-    return isNaN(n) ? '0' : Number.isInteger(n) ? n.toString() : n.toFixed(2);
+    return isNaN(n) ? '0' : Number.isInteger(n) ? n.toString() : (Number(n) || 0).toFixed(2);
   }, []);
 
   const fmtDate = useCallback((d) => {
@@ -496,7 +496,14 @@ export default function StockAdjustmentPage() {
     const unsubItems = onSnapshot(
       query(collection(db, 'items'), where('uid', '==', user.uid)),
       (snap) => setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
-    );
+    ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     const unsubHistory = onSnapshot(
       query(collection(db, 'stockAdjustments'), where('uid', '==', user.uid)),
@@ -522,7 +529,14 @@ export default function StockAdjustmentPage() {
             [col]: snap.docs.map(d => ({ id: d.id, ...d.data() }))
           }));
         }
-      );
+      ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     });
 
     return () => {

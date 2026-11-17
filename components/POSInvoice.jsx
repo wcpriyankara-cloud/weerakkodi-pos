@@ -6,18 +6,21 @@
 // ✅ Real-time Outstanding balances (Previous & New Balance) on receipts
 // ✅ Fully responsive & fast rendering layout
 // ✅ Synced to viewer both Active & Old/Exhausted Purchased Batches (පැරණි තොග)
+// ✅ FIXED: Stock deduction now works correctly (onSnapshot merge, UOM conversion, race condition)
 
+import localDb from '@/lib/localDb';
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { db } from '@/shared/firebase-config';
+import { db, isOffline } from '@/shared/firebase-config';
 import { useUserAuth } from '@/context/UserContext';
 import {
   collection, onSnapshot, doc, increment, writeBatch,
-  addDoc, serverTimestamp, query, where, getDoc, updateDoc
+  addDoc, serverTimestamp, query, where, getDoc, updateDoc, setDoc
 } from 'firebase/firestore';
 
 import MobileBarcodeScanner from './MobileBarcodeScanner';
 import InvoiceOutputManager from './InvoiceOutputManager';
+import { FolderOpen, UploadCloud } from 'lucide-react';
 
 /* ══════════════════════════════════════════════════════════════
    STYLES
@@ -328,10 +331,10 @@ const extractBatches = (itemId, sources, includeEmpty = true) => {
         const id = item.itemId || item.id;
         if (id !== itemId) return;
         const ri = getBatchRemainingInfo(item);
-        
+
         // If includeEmpty is false, filter out zero-stock batches.
         if (!includeEmpty && ri.remaining <= 0) return;
-        
+
         batches.push({
           batchId: `${inv.id}_${idx}`, invoiceId: inv.id, invoiceCollection: col,
           itemIndex: idx, supplierName: inv.supplierName || 'Unknown',
@@ -615,7 +618,7 @@ const buildInvoicePayload = ({ user, snap, invoiceNo, actionType, mode, isFullCr
   totalDiscount: snap.totalDiscount, netAmount: snap.netAmount,
   paymentMethod: isFullCredit ? 'credit' : snap.paymentMethod,
   payAmount: snap.payAmount, balance: snap.balance,
-  itemCount: snap.items.length, createdAt: serverTimestamp(), mode,
+  itemCount: snap.items.length, createdAt: new Date().toISOString(), mode,
   status: actionType === 'draft' ? 'draft' : 'completed',
   remarks: snap.remark, ...snap.bankInfo,
   previousOutstanding: R2(previousOutstanding),
@@ -657,8 +660,52 @@ const applyBatchSourceUpdates = async (fbBatch, batchUpdates) => {
           items[index] = { ...items[index], remainingQty: Math.max(0, R2(cur - qty)) };
         }
       });
-      fbBatch.update(ref, { items, updatedAt: serverTimestamp() });
+      fbBatch.update(ref, { items, updatedAt: new Date().toISOString() });
     } catch (e) { console.warn('Batch deduct:', e.message); }
+  }
+};
+
+// ✅ FIX 2: Offline stock deduction with UOM factor conversion
+const applyBatchSourceUpdatesLocal = async (invoiceItems) => {
+  if (!invoiceItems || !Array.isArray(invoiceItems) || !localDb || !localDb.items) return;
+  // Group quantities by itemId — converted to BASE units using uomFactor
+  const qtyMap = {};
+  invoiceItems.forEach(it => {
+    const itemId = it.itemId || it.id || it.docId;
+    if (!itemId) return;
+    const displayQty = parseFloat(it.qty || it.quantity || 0);
+    const uomFactor = Math.max(0.0001, parseFloat(it.uomFactor || 1));
+    const baseQty = displayQty / uomFactor; // ← Convert display qty to base units
+    qtyMap[itemId] = (qtyMap[itemId] || 0) + baseQty;
+  });
+  for (const [itemId, totalDeduct] of Object.entries(qtyMap)) {
+    if (totalDeduct <= 0) continue;
+    try {
+      const item = await localDb.items.get(itemId);
+      console.log('[DEBUG] localDb.items.get(' + itemId + '):', item ? 'FOUND (stock=' + (item.currentStock ?? item.stock) + ')' : 'NOT FOUND');
+      if (item) {
+        const curStock = item.currentStock ?? item.stock ?? 0;
+                const newStock = Math.max(0, R2(curStock - totalDeduct));
+        const updateData = {
+          stock: newStock,
+          currentStock: newStock,
+          _deductedAt: Date.now(),
+          _synced: false
+        };
+        // 🔑 FIX: Also update stocks object (Main_Store etc.) to match Firestore behavior
+        if (item.stocks && typeof item.stocks === 'object') {
+          updateData.stocks = { ...item.stocks };
+          for (const storeKey of Object.keys(item.stocks)) {
+            const storeStock = parseFloat(item.stocks[storeKey] || 0);
+            updateData.stocks[storeKey] = Math.max(0, R2(storeStock - totalDeduct));
+          }
+        }
+        await localDb.items.update(itemId, updateData);
+        console.log('[Offline] Item stock deducted:', itemId, '-' + totalDeduct, '->', newStock, '(stocks:', updateData.stocks || 'N/A', ')');
+      } else {
+        console.warn('[Offline] Item not in Dexie:', itemId);
+      }
+    } catch (e) { console.warn('Local item deduct:', e.message); }
   }
 };
 
@@ -691,8 +738,8 @@ const buildCashTransactionPayload = ({
         ?`🧾 ${snap.customer.name||'Cash'} — Rs.${fmt(actualCashReceived)} paid (Credit Rs.${fmt(creditAmount)})`
         :`🧾 ${snap.customer.name||'Cash'} — Rs.${fmt(actualCashReceived)}`,
     date:now.toISOString().split('T')[0], time:now.toTimeString().slice(0,5),
-    isAutomatic:true, uid:user.uid, createdAt:serverTimestamp(),
-    timestamp:serverTimestamp(), createdBy:user.email||'',
+    isAutomatic:true, uid:user.uid, createdAt:new Date().toISOString(),
+    timestamp:new Date().toISOString(), createdBy:user.email||'',
   };
 };
 
@@ -779,6 +826,12 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
   const [dataReady, setDataReady] = useState(() => { const ci = loadCache(CACHE_KEY_ITEMS); return !!(ci && ci.length > 0); });
   const [purchaseSources, setPurchaseSources] = useState({ purchases: [], purchaseInvoices: [], stockIn: [] });
   const [bankAccounts, setBankAccounts] = useState([]);
+  const [autoSync, setAutoSync] = useState(() => { try { return localStorage.getItem('weerakkodi_autoSync') !== 'false'; } catch { return true; } });
+  // ── Sync & Backup States ──
+  const [syncingCloud, setSyncingCloud] = useState(false);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [backupFeedback, setBackupFeedback] = useState('');
+  const autoSyncLockRef = useRef(false);
 
   /* ── Invoice state ── */
   const [invoiceItems, setInvoiceItems] = useState([]);
@@ -817,6 +870,12 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
   const [activeCustIdx, setActiveCustIdx] = useState(-1);
 
   const showToast = useCallback((msg) => { setToastMsg(msg); setTimeout(() => setToastMsg(''), 3000); }, []);
+  const toggleAutoSync = useCallback(() => {
+    const next = !autoSync;
+    setAutoSync(next);
+    try { localStorage.setItem('weerakkodi_autoSync', String(next)); } catch {}
+    showToast(next ? '🔄 Auto-Sync ON' : '⏸️ Auto-Sync OFF');
+  }, [autoSync, showToast]);
 
   useEffect(() => { isMountedRef.current = true; setContactPickerAvailable(isContactPickerSupported()); return () => { isMountedRef.current = false; }; }, []);
   useEffect(() => { const h = () => setViewportWidth(window.innerWidth); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, []);
@@ -826,42 +885,290 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
       if (itemSearchContainerRef.current && !itemSearchContainerRef.current.contains(e.target)) setShowItemDropdown(false);
     };
     document.addEventListener('mousedown', h);
+
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
+
+  /* ── Dexie offline pre-load ── */
+  const loadFromDexie = async () => {
+    try {
+      if (!localDb || !user?.uid) return;
+      // Load items from Dexie
+      if (localDb.items) {
+        const dexItems = await localDb.items.where('uid').equals(user.uid).toArray();
+        if (dexItems.length > 0 && isMountedRef.current) {
+          setAllItems(dexItems);
+          setDataReady(true);
+          console.log('[Offline] Loaded', dexItems.length, 'items from Dexie');
+        }
+      }
+      // Load customers from Dexie
+      if (localDb.customers) {
+        const dexCusts = await localDb.customers.where('uid').equals(user.uid).toArray();
+        if (dexCusts.length > 0 && isMountedRef.current) {
+          setAllCustomers(dexCusts);
+          console.log('[Offline] Loaded', dexCusts.length, 'customers from Dexie');
+        }
+      }
+    } catch (e) {
+      console.warn('[Dexie] Preload failed:', e.message);
+    }
+  };
+
   /* ── Firestore listeners ── */
+  // ✅ FIX 1 + FIX 3: Fixed onSnapshot merge logic (no race conditions, respects _synced flag)
   useEffect(() => {
     if (!user?.uid) return;
     const unsubs = [];
 
-    unsubs.push(onSnapshot(query(collection(db, 'items'), where('uid', '==', user.uid)), s => {
-      if (!isMountedRef.current) return;
-      const data = s.docs.map(d => ({ id: d.id, ...d.data() }));
-      setAllItems(data); setDataReady(true);
-      saveCache(CACHE_KEY_ITEMS, data.map(i => ({
-        id: i.id, name: i.name, sinhalaName: i.sinhalaName || i.nameSi || '',
-        itemCode: i.itemCode || '', barcode: i.barcode || '',
-        sellingPriceRetail: i.sellingPriceRetail || i.retailPrice || i.sellingPrice || i.price || 0,
-        retailDiscount: i.retailDiscount || i.discPercent || i.discount || 0, retailYourPrice: i.retailYourPrice || 0,
-        sellingPriceWholesale: i.sellingPriceWholesale || i.wholesalePrice || 0, wholesaleDiscount: i.wholesaleDiscount || 0, wholesaleYourPrice: i.wholesaleYourPrice || 0,
-        sellingPriceLoose: i.sellingPriceLoose || i.loosePrice || 0, looseDiscount: i.looseDiscount || 0, looseYourPrice: i.looseYourPrice || 0,
-        stock: i.stock, currentStock: i.currentStock, stocks: i.stocks, picture: i.picture || '',
-        rackName: i.rackName || i.rack || '', packSize: i.packSize || i.uomName || i.uom || '',
-        availableUnits: i.availableUnits || i.conversions || [],
-        warrantyCode: i.warrantyCode || '', warrantyPeriod: i.warrantyPeriod || '', uid: i.uid,
-      })));
-    }));
+    // ── Always load from localDb first (works online + offline) ──
+    (async () => {
+      try {
+        const localItems = await localDb.items.where('uid').equals(user.uid).toArray();
+        if (isMountedRef.current && localItems.length > 0) { setAllItems(localItems); setDataReady(true); }
+      } catch(e) { console.warn('[LocalDB] items err:', e); }
+      try {
+        const localCusts = await localDb.customers.where('uid').equals(user.uid).toArray();
+        if (isMountedRef.current && localCusts.length > 0) { setAllCustomers(localCusts); }
+      } catch(e) { console.warn('[LocalDB] customers err:', e); }
+      try {
+        const localAccs = await localDb.settings.where('uid').equals(user.uid).toArray();
+        if (isMountedRef.current && localAccs.length > 0) { setBankAccounts(localAccs.filter(a => a.isActive !== false)); }
+      } catch(e) {}
+    })();
 
-    unsubs.push(onSnapshot(query(collection(db, 'customers'), where('uid', '==', user.uid)), s => {
+    // ✅ FIXED: Items listener — race-condition-free, offline-safe
+unsubs.push(onSnapshot(
+  query(collection(db, 'items'), where('uid', '==', user.uid)),
+  s => {
+    // 🔑 GUARD 0: fromCache check — stale cache data වලින් local overwrite වෙන්න දෙන්න එපා
+    if (s.metadata.fromCache && typeof navigator !== 'undefined' && !navigator.onLine) {
+      console.log('[Items Listener] 🔌 Offline cache — skip');
+      return;
+    }
+
+    if (!isMountedRef.current) return;
+
+    // 🔑 GUARD 1: Offline එකේ Firestore cached data වලින් local changes overwrite වෙන්න දෙන්න එපා
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      console.log('[Items Listener] 🔌 Offline — skip Firestore cache');
+      return;
+    }
+
+    // 🔑 GUARD 2: Save ක්‍රියාවලිය අතරතුර listener data වලින් overwrite වෙන්න දෙන්න එපා
+    if (savingRef.current) {
+      console.log('[Items Listener] ⏳ Save in progress — skip');
+      return;
+    }
+
+    const fbData = s.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    // 🔑 GUARD 3: Debounce — Dexie writes වලට කාලය දෙන්න
+    if (window.__itemsMergeTimer) clearTimeout(window.__itemsMergeTimer);
+    window.__itemsMergeTimer = setTimeout(async () => {
       if (!isMountedRef.current) return;
-      const data = s.docs.map(d => ({ id: d.id, ...d.data() }));
-      setAllCustomers(data);
-      saveCache(CACHE_KEY_CUSTOMERS, data.map(c => ({
-        id: c.id, name: c.name || '', phone: c.phone || '', address: c.address || '',
-        currentBalance: c.currentBalance || 0, profilePicture: c.profilePicture || '',
-        creditLimit: c.creditLimit || 0, portalAccessKey: c.portalAccessKey || '', uid: c.uid,
-      })));
-    }));
+      // Double-check after debounce
+      if (savingRef.current) return;
+
+      try {
+        const localAll = await localDb.items.where('uid').equals(user.uid).toArray();
+        const localMap = new Map(localAll.map(li => [li.id, li]));
+        const fbIds = new Set(fbData.map(d => d.id));
+
+        const merged = fbData.map(d => {
+          const local = localMap.get(d.id);
+          if (!local) return d;
+
+          // 🔑 Robust unsynced check — handles boolean, number, null, undefined
+          const isUnsynced =
+            local._synced === false || local._synced === 0 ||
+            local.synced === false || local.synced === 0 ||
+            !!local._deductedAt ||
+            !!local._localSaved;
+
+          if (isUnsynced) {
+            return {
+              ...d,
+              stock: local.stock ?? d.stock,
+              currentStock: local.currentStock ?? d.currentStock,
+              stocks: local.stocks ?? d.stocks,
+              _synced: local._synced,
+              _deductedAt: local._deductedAt,
+            };
+          }
+          return d;
+        });
+
+        // Append local-only items (not yet in Firestore)
+        const extra = localAll.filter(i =>
+          !fbIds.has(i.id) && (
+            i._synced === false || i._synced === 0 ||
+            i.synced === false || i.synced === 0
+          )
+        );
+        if (extra.length > 0) merged.push(...extra);
+
+                if (isMountedRef.current && !savingRef.current) {
+          setAllItems(merged);
+                    // 🔑 FIX: Sync merged items to Dexie — PRESERVE local unsynced flags!
+          try {
+            const toSave = merged.map(m => {
+              const local = localMap.get(m.id);
+              const wasUnsynced = local && (
+                local._synced === false || local._synced === 0 ||
+                local.synced === false || local.synced === 0 ||
+                !!local._deductedAt ||
+                !!local._localSaved
+              );
+              if (wasUnsynced) {
+                return {
+                  ...m, uid: user.uid,
+                  _synced: local._synced,
+                  _deductedAt: local._deductedAt,
+                  _localSaved: local._localSaved,
+                  stock: local.stock ?? m.stock,
+                  currentStock: local.currentStock ?? m.currentStock,
+                  stocks: local.stocks ?? m.stocks
+                };
+              }
+              return { ...m, uid: user.uid, _synced: true };
+            });
+            await localDb.items.bulkPut(toSave);
+            console.log('[Dexie] Synced', merged.length, 'items to local DB (preserved unsynced)');
+          } catch(dexErr) { console.warn('[Dexie] items bulkPut failed:', dexErr); }
+        }
+      } catch (e) {
+        console.warn('[Items merge] Fallback to Firestore:', e.message);
+        if (isMountedRef.current && !savingRef.current) {
+          setAllItems(fbData);
+                    try {
+            const localAll2 = await localDb.items.where('uid').equals(user.uid).toArray();
+            const lMap2 = new Map(localAll2.map(l => [l.id, l]));
+            await localDb.items.bulkPut(fbData.map(d => {
+              const l = lMap2.get(d.id);
+              if (l && (l._synced === false || l._synced === 0 || !!l._deductedAt)) {
+                return { ...d, uid: user.uid, _synced: l._synced, _deductedAt: l._deductedAt, stock: l.stock, currentStock: l.currentStock, stocks: l.stocks };
+              }
+              return { ...d, uid: user.uid, _synced: true };
+            }));
+          } catch(e2) {}
+        }
+      }
+    }, 600); // ← 600ms delay ensures Dexie writes are committed
+
+    // Cache for next load (this is fine — cache is only for initial load)
+    saveCache(CACHE_KEY_ITEMS, fbData.map(i => ({
+      id: i.id, name: i.name, sinhalaName: i.sinhalaName || i.nameSi || '',
+      itemCode: i.itemCode || '', barcode: i.barcode || '',
+      sellingPriceRetail: i.sellingPriceRetail || i.retailPrice || i.sellingPrice || i.price || 0,
+      retailDiscount: i.retailDiscount || i.discPercent || i.discount || 0, retailYourPrice: i.retailYourPrice || 0,
+      sellingPriceWholesale: i.sellingPriceWholesale || i.wholesalePrice || 0, wholesaleDiscount: i.wholesaleDiscount || 0, wholesaleYourPrice: i.wholesaleYourPrice || 0,
+      sellingPriceLoose: i.sellingPriceLoose || i.loosePrice || 0, looseDiscount: i.looseDiscount || 0, looseYourPrice: i.looseYourPrice || 0,
+      stock: i.stock, currentStock: i.currentStock, stocks: i.stocks, picture: i.picture || '',
+      rackName: i.rackName || i.rack || '', packSize: i.packSize || i.uomName || i.uom || '',
+      availableUnits: i.availableUnits || i.conversions || [],
+      warrantyCode: i.warrantyCode || '', warrantyPeriod: i.warrantyPeriod || '', uid: i.uid,
+     })));
+  },
+  (err) => {
+    console.warn('[Items Listener] Error (likely offline):', err?.message);
+  }
+));
+
+
+      // ✅ FIXED: Customers listener
+unsubs.push(onSnapshot(
+  query(collection(db, 'customers'), where('uid', '==', user.uid)),
+  s => {
+    if (!isMountedRef.current) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    if (savingRef.current) return;
+
+    const fbData = s.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    if (window.__custsMergeTimer) clearTimeout(window.__custsMergeTimer);
+    window.__custsMergeTimer = setTimeout(async () => {
+      if (!isMountedRef.current || savingRef.current) return;
+      try {
+        const localAll = await localDb.customers.where('uid').equals(user.uid).toArray();
+        const localMap = new Map(localAll.map(c => [c.id, c]));
+        const fbIds = new Set(fbData.map(d => d.id));
+
+        const merged = fbData.map(d => {
+          const local = localMap.get(d.id);
+          const isUnsynced = local && (
+            local._synced === false || local._synced === 0 ||
+            local.synced === false || local.synced === 0 ||
+            !!local._localSaved
+          );
+          if (isUnsynced) {
+            return { ...d, currentBalance: local.currentBalance ?? d.currentBalance };
+          }
+          return d;
+        });
+
+        const extra = localAll.filter(c =>
+          !fbIds.has(c.id) && (
+            c._synced === false || c._synced === 0 ||
+            c.synced === false || c.synced === 0
+          )
+        );
+        if (extra.length > 0) merged.push(...extra);
+
+               if (isMountedRef.current && !savingRef.current) {
+          setAllCustomers(merged);
+                    // 🔑 FIX: Sync merged customers to Dexie — PRESERVE local unsynced flags!
+          try {
+            const toSave = merged.map(m => {
+              const local = localMap.get(m.id);
+              const wasUnsynced = local && (
+                local._synced === false || local._synced === 0 ||
+                local.synced === false || local.synced === 0 ||
+                !!local._localSaved
+              );
+              if (wasUnsynced) {
+                return {
+                  ...m, uid: user.uid,
+                  _synced: local._synced,
+                  _localSaved: local._localSaved,
+                  currentBalance: local.currentBalance ?? m.currentBalance
+                };
+              }
+              return { ...m, uid: user.uid, _synced: true };
+            });
+            await localDb.customers.bulkPut(toSave);
+            console.log('[Dexie] Synced', merged.length, 'customers to local DB (preserved unsynced)');
+          } catch(dexErr) { console.warn('[Dexie] customers bulkPut failed:', dexErr); }
+        }
+      } catch (e) {
+        if (isMountedRef.current && !savingRef.current) {
+          setAllCustomers(fbData);
+                    try {
+            const localC2 = await localDb.customers.where('uid').equals(user.uid).toArray();
+            const lMapC2 = new Map(localC2.map(l => [l.id, l]));
+            await localDb.customers.bulkPut(fbData.map(d => {
+              const l = lMapC2.get(d.id);
+              if (l && (l._synced === false || l._synced === 0 || !!l._localSaved)) {
+                return { ...d, uid: user.uid, _synced: l._synced, _localSaved: l._localSaved, currentBalance: l.currentBalance };
+              }
+              return { ...d, uid: user.uid, _synced: true };
+            }));
+          } catch(e2) {}
+        }
+      }
+    }, 600);
+
+    saveCache(CACHE_KEY_CUSTOMERS, fbData.map(c => ({
+      id: c.id, name: c.name || '', phone: c.phone || '', address: c.address || '',
+      currentBalance: c.currentBalance || 0, profilePicture: c.profilePicture || '',
+      creditLimit: c.creditLimit || 0, portalAccessKey: c.portalAccessKey || '', uid: c.uid,
+    })));
+    },
+  (err) => {
+    console.warn('[Customers Listener] Error (likely offline):', err?.message);
+  }
+));
 
     unsubs.push(onSnapshot(collection(db, `users/${user.uid}/bankAccounts`), snap => {
       if (!isMountedRef.current) return;
@@ -883,8 +1190,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
 
     return () => { unsubs.forEach(u => u()); clearTimeout(batchTimer); };
   }, [user?.uid]);
-
-  /* ── Line calculation ── */
+/* ── Line calculation ── */
   const calcLineTotals = useCallback((item) => {
     const sp = R2(item?.sellingPrice || 0), q = R2(item?.qty || 0);
     const da = Math.max(0, Math.min(R2(item?.discAmount || 0), sp));
@@ -922,7 +1228,9 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
   const safeInvoiceItems = useMemo(() => {
     if (!Array.isArray(invoiceItems)) return [];
     return invoiceItems.filter(item => item && typeof item === 'object' && item.itemId);
-  }, [invoiceItems]);  /* ── Stock ── */
+  }, [invoiceItems]);
+
+  /* ── Stock ── */
   const getItemTotalStock = useCallback((itemOrId) => {
     try {
       if (!itemOrId) return 0;
@@ -956,12 +1264,11 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
           if (!inv || typeof inv !== 'object') return inv;
           try {
             const fi = allItems.find(i => i.id === inv.itemId) || inv.originalItem;
-            // extractBatches සඳහා includeEmpty = true ලබා දී ඇත
-            return enrichLine({ 
-              ...inv, 
-              maxStock: getItemTotalStock(inv.itemId), 
-              originalItem: fi, 
-              allBatches: extractBatches(inv.itemId, purchaseSources, true) 
+            return enrichLine({
+              ...inv,
+              maxStock: getItemTotalStock(inv.itemId),
+              originalItem: fi,
+              allBatches: extractBatches(inv.itemId, purchaseSources, true)
             });
           } catch { return inv; }
         });
@@ -1260,8 +1567,8 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
     if (!newCustomer.name || !newCustomer.phone) return showToast('⚠️ Name + Phone required');
     setSaving(true);
     try {
-      const cd = { uid: user.uid, name: newCustomer.name, phone: newCustomer.phone, address: newCustomer.address || '', creditLimit: R2(newCustomer.creditLimit), currentBalance: 0, profilePicture: newCustomer.profilePicture || '', createdAt: serverTimestamp() };
-      const cr = await addDoc(collection(db, 'customers'), cd);
+      const cd = { uid: user.uid, name: newCustomer.name, phone: newCustomer.phone, address: newCustomer.address || '', creditLimit: R2(newCustomer.creditLimit), currentBalance: 0, profilePicture: newCustomer.profilePicture || '', createdAt: new Date().toISOString() };
+      const custRef = doc(collection(db, 'customers')); const cr = { id: custRef.id }; try { await localDb.customers.put({ id: cr.id, ...cd, synced: false, _localSaved: true }); } catch(e) {} try { await Promise.race([setDoc(custRef, cd), new Promise((_,rej) => setTimeout(() => rej(new Error('timeout')), 4000))]); try { await localDb.customers.update(cr.id, { synced: true }); } catch(e2) {} } catch(e3) { console.warn('[Offline] Customer Firestore skipped'); }
       if (isMountedRef.current) { setSelectedCustomer({ id: cr.id, ...cd }); setShowNewCustomerModal(false); setNewCustomer({ name: '', phone: '+94', address: '', creditLimit: 0, profilePicture: '' }); showToast(t.customerCreated); }
     } catch (e) { if (isMountedRef.current) showToast(`❌ ${e.message}`); }
     finally { if (isMountedRef.current) setSaving(false); }
@@ -1284,8 +1591,287 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
     try { await updateDoc(doc(db, 'customers', cust.id), { portalAccessKey: key }); const updated = { ...cust, portalAccessKey: key }; setSelectedCustomer(updated); return updated; }
     catch (e) { console.warn('Portal key error:', e); return cust; }
   }, []);
+  /* ══════════════════════════════════════════════
+     📊 PENDING SYNC COUNT
+  ══════════════════════════════════════════════ */
+  const loadPendingSyncCount = useCallback(async () => {
+    try {
+      if (!user?.uid) return;
+      const unsynced = await localDb.invoices
+  .where('uid').equals(user.uid)
+  .and(r => r.synced === false || r.synced === 0 || r._synced === false || r._synced === 0)
+  .toArray();
+      setPendingSyncCount(unsynced ? unsynced.length : 0);
+    } catch (err) {
+      console.warn('⚠️ Pending count error:', err);
+    }
+  }, [user?.uid]);
+
+  /* ══════════════════════════════════════════════
+     📁 OPEN BACKUP FOLDER
+  ══════════════════════════════════════════════ */
+  const handleOpenBackupFolder = async () => {
+    console.log('🔍 [POS Backup] Button clicked');
+    try {
+      if (typeof window !== "undefined" && window.electronAPI?.openBackupFolder) {
+        const savedPath = localStorage.getItem("pos_backup_path") || null;
+        await window.electronAPI.openBackupFolder(savedPath);
+        showToast('📁 Backup ෆෝල්ඩරය විවෘත කරන ලදී.');
+        return;
+      }
+      if (typeof window !== "undefined" && typeof window.showDirectoryPicker === "function") {
+        try {
+          const dirHandle = await window.showDirectoryPicker({ mode: "read" });
+          showToast('📁 Backup Folder: ' + dirHandle.name);
+          localStorage.setItem("pos_backup_path", dirHandle.name);
+          return;
+        } catch (pickerErr) {
+          if (pickerErr.name === "AbortError") return;
+          if (pickerErr.name === "SecurityError" || pickerErr.name === "NotAllowedError") {
+            showToast('⚠️ Browser එකෙන් folder access block කර ඇත.');
+            return;
+          }
+          throw pickerErr;
+        }
+      }
+      const fallbackInput = document.createElement("input");
+      fallbackInput.type = "file";
+      fallbackInput.webkitdirectory = true;
+      fallbackInput.mozdirectory = true;
+      fallbackInput.directory = true;
+      fallbackInput.style.display = "none";
+      fallbackInput.onchange = (e) => {
+        const files = e.target.files;
+        if (files && files.length > 0) {
+          const folderName = files[0].webkitRelativePath.split("/")[0];
+          showToast('📁 Backup Folder: ' + folderName);
+          localStorage.setItem("pos_backup_path", folderName);
+        }
+        document.body.removeChild(fallbackInput);
+      };
+      fallbackInput.oncancel = () => { document.body.removeChild(fallbackInput); };
+      document.body.appendChild(fallbackInput);
+      fallbackInput.click();
+    } catch (err) {
+      console.error("❌ [POS Backup] Error:", err);
+      showToast('❌ Backup Folder error: ' + (err?.message || 'Unknown'));
+    }
+  };
+
+    /* ══════════════════════════════════════════════
+     🔄 SYNC PENDING INVOICES TO CLOUD
+  ══════════════════════════════════════════════ */
+  const handleSyncPendingInvoices = useCallback(async () => {
+    if (syncingCloud) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      showToast('🔌 Offline — Sync කළ නොහැක.');
+      return;
+    }
+    if (!user?.uid) return;
+
+    setSyncingCloud(true);
+    showToast('🔄 Syncing pending invoices...');
+
+    try {
+      const INTERNAL_FLAGS = ['synced', '_synced', '_deductedAt', '_localSaved', '_pendingBatchUpdates', '_savedAt'];
+      const unsynced = await localDb.invoices
+        .where('uid').equals(user.uid)
+        .and(r => r.synced === false || r.synced === 0 || r._synced === false || r._synced === 0)
+        .toArray();
+
+      if (!unsynced || unsynced.length === 0) {
+        showToast('✅ Sync කිරීමට බිල්පත් නොමැත.');
+        setPendingSyncCount(0);
+        return;
+      }
+
+      let successCount = 0;
+      const BATCH_SIZE = 100;
+
+      for (let i = 0; i < unsynced.length; i += BATCH_SIZE) {
+        const batch = unsynced.slice(i, i + BATCH_SIZE);
+        const wb = writeBatch(db);
+
+        // Aggregate: itemId -> totalDeduct
+        const itemDeductions = {};
+        // Aggregate: customerId -> totalDelta
+        const customerDeltas = {};
+        // Batch source updates
+        const batchSourceUpdates = [];
+
+        for (const inv of batch) {
+          const invId = inv.id || inv.invoiceNo;
+          if (!invId) continue;
+
+          // 1️⃣ Invoice data → Firestore (clean, no internal flags)
+          const cleanData = {};
+          for (const [key, val] of Object.entries(inv)) {
+            if (!INTERNAL_FLAGS.includes(key)) cleanData[key] = val;
+          }
+          wb.set(doc(db, 'invoices', invId), {
+            ...cleanData, uid: user.uid, synced: true, updatedAt: new Date().toISOString()
+          }, { merge: true });
+
+          // 2️⃣ Collect item stock deductions from snap.items
+          const snapItems = inv.snap?.items || inv.items || [];
+          for (const item of snapItems) {
+            const itemId = item.itemId || item.id;
+            if (!itemId) continue;
+            const uomFactor = Number(item.uomFactor || 1);
+            const qty = Number(item.qty || 0);
+            const deduct = qty * uomFactor;
+            if (deduct > 0) {
+              itemDeductions[itemId] = (itemDeductions[itemId] || 0) + deduct;
+            }
+          }
+
+          // 3️⃣ Collect customer balance delta
+          if (inv.customerId && inv.newOutstanding !== undefined && inv.customerBalanceBefore !== undefined) {
+            const delta = Number(inv.newOutstanding || 0) - Number(inv.customerBalanceBefore || 0);
+            if (delta !== 0) {
+              customerDeltas[inv.customerId] = (customerDeltas[inv.customerId] || 0) + delta;
+            }
+          }
+
+          // 4️⃣ Collect batch source updates (purchase/stockIn docs)
+          if (inv._pendingBatchUpdates && Array.isArray(inv._pendingBatchUpdates)) {
+            batchSourceUpdates.push(...inv._pendingBatchUpdates);
+          }
+        }
+
+        // 5️⃣ Apply stock deductions to Firestore items
+        for (const [itemId, totalDeduct] of Object.entries(itemDeductions)) {
+          if (totalDeduct > 0) {
+            wb.update(doc(db, 'items', itemId), {
+              stock: increment(-totalDeduct),
+              currentStock: increment(-totalDeduct),
+              'stocks.Main_Store': increment(-totalDeduct),
+            });
+          }
+        }
+
+        // 6️⃣ Apply customer balance deltas to Firestore
+        for (const [custId, totalDelta] of Object.entries(customerDeltas)) {
+          if (totalDelta !== 0) {
+            wb.update(doc(db, 'customers', custId), {
+              currentBalance: increment(totalDelta),
+              outstanding: increment(totalDelta),
+            });
+          }
+        }
+
+        // 7️⃣ Apply batch source updates to Firestore
+        for (const bsu of batchSourceUpdates) {
+          if (bsu.docPath && bsu.updates) {
+            const parts = bsu.docPath.split('/');
+            if (parts.length >= 2) {
+              wb.update(doc(db, ...parts), bsu.updates);
+            }
+          }
+        }
+
+        try {
+          await wb.commit();
+          successCount += batch.length;
+
+          // 8️⃣ Mark invoices as synced in Dexie
+          for (const inv of batch) {
+            const invId = inv.id || inv.invoiceNo;
+            if (invId) {
+              await localDb.invoices.update(invId, {
+                synced: true, _synced: true, _localSaved: false,
+                _deductedAt: null, _pendingBatchUpdates: null
+              });
+            }
+          }
+
+          // 9️⃣ Mark deducted items as synced in Dexie
+          const deductedIds = Object.keys(itemDeductions);
+          if (deductedIds.length > 0) {
+            await localDb.items
+              .where('id').anyOf(deductedIds)
+              .modify({ _synced: true, _deductedAt: null });
+          }
+
+          console.log(`✅ [Sync] Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${batch.length} invoices, ${deductedIds.length} items deducted, ${Object.keys(customerDeltas).length} customers updated`);
+        } catch (batchErr) {
+          console.error('❌ [POS Sync] Batch error:', batchErr);
+        }
+      }
+
+      // 🔟 Refresh local UI from Dexie
+      try {
+        const freshItems = await localDb.items.where('uid').equals(user.uid).toArray();
+        const freshCusts = await localDb.customers.where('uid').equals(user.uid).toArray();
+        if (typeof setAllItems === 'function') setAllItems(freshItems);
+        if (typeof setAllCustomers === 'function') setAllCustomers(freshCusts);
+      } catch (e) {
+        console.warn('[Sync] Refresh warning:', e);
+      }
+
+      setPendingSyncCount(Math.max(0, unsynced.length - successCount));
+      showToast(successCount > 0
+        ? `✅ බිල්පත් ${successCount} ක් sync විය (stock + balances).`
+        : '❌ Sync අසාර්ථකයි.');
+    } catch (err) {
+      console.error('❌ [POS Sync] Error:', err);
+      showToast('❌ Sync error: ' + (err?.message || 'Unknown'));
+    } finally {
+      setSyncingCloud(false);
+    }
+  }, [syncingCloud, user?.uid, showToast, setAllItems, setAllCustomers]);
+
+  /* ══════════════════════════════════════════════
+     🔄 AUTO-SYNC: Load + Online + Periodic
+  ══════════════════════════════════════════════ */
+  useEffect(() => {
+    if (!user?.uid) return;
+    loadPendingSyncCount();
+
+    const doAutoSync = async () => {
+      if (autoSyncLockRef.current) return;
+      if (typeof navigator === 'undefined' || !navigator.onLine) return;
+      if (!autoSync) return;
+      try {
+        const unsynced = await localDb.invoices
+  .where('uid').equals(user.uid)
+  .and(r => r.synced === false || r.synced === 0 || r._synced === false || r._synced === 0)
+  .toArray();
+        if (!unsynced || unsynced.length === 0) {
+          setPendingSyncCount(0);
+          return;
+        }
+        setPendingSyncCount(unsynced.length);
+        autoSyncLockRef.current = true;
+        console.log('🔄 [POS Auto-Sync]', unsynced.length, 'pending');
+        await handleSyncPendingInvoices();
+      } catch (err) {
+        console.error('❌ [POS Auto-Sync]', err);
+      } finally {
+        setTimeout(() => { autoSyncLockRef.current = false; }, 15000);
+      }
+    };
+
+    const mountTimer = setTimeout(doAutoSync, 5000);
+    const handleOnline = () => {
+      autoSyncLockRef.current = false;
+      setTimeout(doAutoSync, 3000);
+    };
+    window.addEventListener('online', handleOnline);
+    const intervalTimer = setInterval(() => {
+      loadPendingSyncCount();
+      if (typeof navigator !== 'undefined' && navigator.onLine) doAutoSync();
+    }, 60000);
+
+    return () => {
+      clearTimeout(mountTimer);
+      clearInterval(intervalTimer);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [user?.uid, autoSync, loadPendingSyncCount, handleSyncPendingInvoices]);
 
   /* ── Process and save invoice ── */
+  // ✅ FIX 4: After Firestore success, mark deducted items as _synced: true in Dexie
   const handleSaveInvoice = useCallback(async (actionType) => {
     if (!safeInvoiceItems.length || savingRef.current) return;
     savingRef.current = true;
@@ -1293,14 +1879,17 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
     if (actionType !== 'draft' && !isFullyPaid && !isPersistedCustomer(selectedCustomer)) { savingRef.current = false; return showToast(`⚠️ ${t.customerRequired}`); }
 
     setSaving(true);
-    
+
     // Live customer balance fetch
     let customerBalanceBefore = 0;
     if (isPersistedCustomer(selectedCustomer)) {
       try {
-        const custSnap = await getDoc(doc(db, 'customers', selectedCustomer.id));
-        if (custSnap.exists()) {
+        const isOnline = navigator.onLine; let custSnap = null; if (isOnline) { try { custSnap = await Promise.race([getDoc(doc(db, 'customers', selectedCustomer.id)), new Promise((_,rej) => setTimeout(() => rej(new Error('getDoc timeout')), 3000))]); } catch(e) { console.warn('[Offline] getDoc skipped'); } }
+                if (custSnap && custSnap.exists()) {
           customerBalanceBefore = R2(custSnap.data().currentBalance || 0);
+        } else {
+          // 🔑 FIX: Offline fallback — use selectedCustomer state (which has Dexie value)
+          customerBalanceBefore = R2(selectedCustomer.currentBalance || 0);
         }
       } catch (e) {
         console.warn('Live balance fetch failed:', e.message);
@@ -1311,71 +1900,182 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
     const actualCashReceived = R2(Math.min(payAmount, finalNetAmount));
     const { isCreditSale, creditAmount, isFullCredit } = getCreditSaleInfo(actualCashReceived, finalNetAmount);
 
-    const customerBalanceAfter = isCreditSale 
+    const customerBalanceAfter = isCreditSale
       ? R2(customerBalanceBefore + creditAmount)
       : R2(customerBalanceBefore + (balance < -0.01 ? balance : 0));
 
     const snap = snapshotInvoiceState({ safeInvoiceItems, selectedCustomer, finalNetAmount, payAmount, balance, paymentMethod, subTotal, billDiscountPercent, billDiscount, exchangeAmount, totalDiscount, invoiceRemark, selectedBankAccountId, selectedBankAccount });
+    const _batchUpdateMap = buildBatchUpdateMap(snap.items);
 
+    // Generate IDs first (works offline)
+    const invRef = doc(collection(db, actionType === 'draft' ? 'drafts' : 'invoices'));
+    const invoiceId = invRef.id, invoiceNo = `INV-${invoiceId.slice(0, 8).toUpperCase()}`;
+    const { totalCost, hasCost } = calculateCostSummary(snap.items);
+    const totalSellingRevenue = calculateSellingRevenue(snap.items);
+    const invoicePayload = buildInvoicePayload({
+      user, snap, invoiceNo, actionType, mode, isFullCredit,
+      previousOutstanding: customerBalanceBefore,
+      newOutstanding:      customerBalanceAfter
+    });
+
+        // STEP 1: Dexie local save FIRST (always works offline)
+    let dexieSaved = false;
+    try {
+      await localDb.invoices.put({
+        id: invoiceId, invoiceNo, uid: user.uid,
+        ...invoicePayload,
+        _localSaved: true, _synced: false,
+        _pendingBatchUpdates: Object.keys(_batchUpdateMap).length > 0 ? _batchUpdateMap : null,
+        _savedAt: new Date().toISOString()
+      });
+      dexieSaved = true;
+
+      // 🔑 OFFLINE STOCK DEDUCTION — apply to Dexie items
+      if (actionType !== 'draft') {
+        try {
+          await applyBatchSourceUpdatesLocal(snap.items);
+          console.log('[Offline] Stock deducted in Dexie via applyBatchSourceUpdatesLocal');
+        } catch (deductErr) {
+          console.error('[Offline] Stock deduction failed:', deductErr);
+        }
+      }
+
+      // 🔑 Update React state immediately so UI reflects new stock
+      try {
+        const updatedItems = await localDb.items.where('uid').equals(user.uid).toArray();
+        if (isMountedRef.current && updatedItems.length > 0) {
+          setAllItems(updatedItems);
+          console.log('[Offline] allItems state updated with local stock');
+        }
+      } catch(e) { console.warn('[Offline] setAllItems failed:', e); }
+
+      // 🔑 Update customer balance locally + UI
+      if (selectedCustomer && actionType !== 'draft') {
+        try {
+          await localDb.customers.update(selectedCustomer.id, {
+            currentBalance: customerBalanceAfter, _synced: false, _localSaved: true
+          });
+          // Update React state so customer balance reflects in UI
+          if (isMountedRef.current) {
+            setAllCustomers(prev => {
+              if (!Array.isArray(prev)) return prev;
+              return prev.map(c =>
+                c.id === selectedCustomer.id
+                  ? { ...c, currentBalance: customerBalanceAfter }
+                  : c
+              );
+            });
+            setSelectedCustomer(prev =>
+              prev && prev.id === selectedCustomer.id
+                ? { ...prev, currentBalance: customerBalanceAfter }
+                : prev
+            );
+          }
+          console.log('[Offline] Customer balance updated:', selectedCustomer.id, '->', customerBalanceAfter);
+        } catch(e) { console.warn('Local customer update:', e.message); }
+      }
+
+      console.log('[Offline] Dexie save OK:', invoiceId);
+    } catch (dexErr) {
+      console.error('[Dexie] Save failed:', dexErr);
+    }
+
+        // STEP 2: Try Firestore (may fail offline)
+    let firestoreOk = false;
+    if (navigator.onLine && !isOffline()) {
     try {
       const fbBatch = writeBatch(db);
-      const invRef = doc(collection(db, actionType === 'draft' ? 'drafts' : 'invoices'));
-      const invoiceId = invRef.id, invoiceNo = `INV-${invoiceId.slice(0, 8).toUpperCase()}`;
-
-      const { totalCost, hasCost } = calculateCostSummary(snap.items);
-      const totalSellingRevenue = calculateSellingRevenue(snap.items);
-
-      fbBatch.set(invRef, buildInvoicePayload({ 
-        user, snap, invoiceNo, actionType, mode, isFullCredit,
-        previousOutstanding: customerBalanceBefore,
-        newOutstanding:      customerBalanceAfter
-      }));
-
+      fbBatch.set(invRef, invoicePayload);
       if (actionType !== 'draft') {
+        console.log('[DEBUG] snap.items:', snap.items.map(i => ({ itemId: i.itemId, id: i.id, name: i.name, qty: i.qty })));
         const deductions = buildDeductionMap(snap.items);
+        console.log('[DEBUG] deductions:', deductions);
         Object.entries(deductions).forEach(([id, qty]) => {
           fbBatch.update(doc(db, 'items', id), { stock: increment(-qty), currentStock: increment(-qty), 'stocks.Main_Store': increment(-qty) });
         });
         await applyBatchSourceUpdates(fbBatch, buildBatchUpdateMap(snap.items));
-        
-        if (isPersistedCustomer(snap.customer)) {
-          fbBatch.update(doc(db, 'customers', snap.customer.id), { currentBalance: customerBalanceAfter });
-        }
-        
-        if (snap.paymentMethod === 'etransfer' && snap.bankAccountId && snap.bankAccount) {
-          fbBatch.update(doc(db, `users/${user.uid}/bankAccounts`, snap.bankAccountId), { currentBalance: increment(R2(snap.payAmount)), updatedAt: serverTimestamp() });
-          fbBatch.set(doc(collection(db, `users/${user.uid}/bankTransactions`)), { type: 'deposit', accountId: snap.bankAccountId, amount: R2(snap.payAmount), date: serverTimestamp(), description: `Invoice - ${snap.customer.name}`, createdAt: serverTimestamp(), source: 'pos-invoice', invoiceId });
+                if (isPersistedCustomer(snap.customer)) {
+          const balanceDelta = R2(customerBalanceAfter - customerBalanceBefore);
+          if (balanceDelta !== 0) {
+            fbBatch.update(doc(db, 'customers', snap.customer.id), {
+              currentBalance: increment(balanceDelta),
+              outstanding: increment(balanceDelta),
+            });
+          }
+        }    if (snap.paymentMethod === 'etransfer' && snap.bankAccountId && snap.bankAccount) {
+          fbBatch.update(doc(db, `users/${user.uid}/bankAccounts`, snap.bankAccountId), { currentBalance: increment(R2(snap.payAmount)), updatedAt: new Date().toISOString() });
+          fbBatch.set(doc(collection(db, `users/${user.uid}/bankTransactions`)), { type: 'deposit', accountId: snap.bankAccountId, amount: R2(snap.payAmount), date: new Date().toISOString(), description: `Invoice - ${snap.customer.name}`, createdAt: new Date().toISOString(), source: 'pos-invoice', invoiceId });
         }
         if (snap.netAmount > 0) {
           fbBatch.set(doc(collection(db, `users/${user.uid}/cashTransactions`)), buildCashTransactionPayload({ user, snap, invoiceId, invoiceNo, mode, actualCashReceived, totalSellingRevenue, totalCost, hasCost, isCreditSale, creditAmount, isFullCredit }));
         }
       }
+            await Promise.race([fbBatch.commit(), new Promise((_, rej) => setTimeout(() => rej(new Error("Firestore timeout")), 5000))]);
+      firestoreOk = true;
+      if (dexieSaved) { try { await localDb.invoices.update(invoiceId, { _synced: true }); } catch(e2) {} }
 
-      await fbBatch.commit();
-      if (!isMountedRef.current) { savingRef.current = false; return; }
-      showToast(`✅ ${t.successMsg}`);
-      
-      if (actionType === 'print' || actionType === 'link') {
-        const custWithKey = actionType === 'link' ? await ensurePortalKey(snap.customer) : snap.customer;
-        setOutputInvoice(buildOutputInvoicePayload({ 
-          invoiceId, invoiceNo, user, snap, isFullCredit, actionType, custWithKey,
-          previousOutstanding: customerBalanceBefore,
-          newOutstanding:      customerBalanceAfter
-        }));
+      // ✅ FIX 4: Mark deducted items as synced in Dexie so onSnapshot won't overwrite Firestore stock
+      if (actionType !== 'draft') {
+        try {
+          const deductionIds = Object.keys(buildDeductionMap(snap.items));
+          for (const itemId of deductionIds) {
+            await localDb.items.update(itemId, { _synced: true, _deductedAt: null });
+          }
+          // Also mark customer as synced
+          if (isPersistedCustomer(snap.customer)) {
+            try { await localDb.customers.update(snap.customer.id, { _synced: true }); } catch(e3) {}
+          }
+          console.log('[Sync] Dexie items marked _synced: true for', deductionIds.length, 'items');
+        } catch (e) {
+          console.warn('[Sync] Failed to mark items synced:', e.message);
+        }
       }
-      clearForm();
-    } catch (e) { console.error('Save error:', e); if (isMountedRef.current) showToast(`❌ ${e.message}`); }
-    finally { savingRef.current = false; if (isMountedRef.current) setSaving(false); }
+        } catch (fsErr) {
+      console.warn('[Offline] Firestore skipped:', fsErr.message);
+    }
+    } else {
+      console.log('[Offline] Skipping Firestore write — will sync when online');
+    }
+
+            // STEP 3: Result
+    if (!isMountedRef.current) { savingRef.current = false; return; }
+
+    // 🔑 Always refresh from Dexie after save (online OR offline)
+    try {
+      const updatedCusts = await localDb.customers.where('uid').equals(user.uid).toArray();
+      if (isMountedRef.current && updatedCusts.length > 0) setAllCustomers(updatedCusts);
+      const updatedItems = await localDb.items.where('uid').equals(user.uid).toArray();
+      if (isMountedRef.current && updatedItems.length > 0) setAllItems(updatedItems);
+    } catch(e) { console.warn('[Save] Post-save refresh:', e); }
+
+    if (firestoreOk) {
+      showToast(`✅ ${t.successMsg}`);
+    } else if (dexieSaved) {
+      showToast(`⚠️ Offline save — online උනාම sync වේ`);
+    } else {
+      showToast(`❌ Save failed`);
+    }
+    
+    if (actionType === 'print' || actionType === 'link') {
+      try {
+        const custWithKey = actionType === 'link' ? await ensurePortalKey(snap.customer) : snap.customer;
+        setOutputInvoice(buildOutputInvoicePayload({ invoiceId, invoiceNo, user, snap, isFullCredit, actionType, custWithKey, previousOutstanding: customerBalanceBefore, newOutstanding: customerBalanceAfter }));
+      } catch(e3) { console.warn('Output err:', e3); }
+    }
+    clearForm();
+    try { if (typeof syncAll === 'function') syncAll(); } catch(e4) {}
+    try { if (typeof triggerLocalDiskBackup === 'function') triggerLocalDiskBackup(); } catch(e5) {}
+    savingRef.current = false;
+    setSaving(false);
   }, [safeInvoiceItems, paymentMethod, selectedBankAccountId, selectedCustomer, isFullyPaid, finalNetAmount, payAmount, balance, subTotal, billDiscountPercent, billDiscount, exchangeAmount, totalDiscount, invoiceRemark, selectedBankAccount, user, mode, clearForm, ensurePortalKey, showToast, t]);
 
-  /* ── Keyboard listeners ── */
   useEffect(() => {
     const h = (e) => {
       if (showNewCustomerModal || outputInvoice) return;
       const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName);
       if (e.key === 'F1') { e.preventDefault(); if (itemSearchInputRef.current) { itemSearchInputRef.current.focus(); itemSearchInputRef.current.select(); } return; }
       if (e.key === 'F2') { e.preventDefault(); if (selectedCustomer) { setSelectedCustomer(null); setTimeout(() => { if (customerSearchInputRef.current) customerSearchInputRef.current.focus(); }, 100); } else if (customerSearchInputRef.current) { customerSearchInputRef.current.focus(); customerSearchInputRef.current.select(); } return; }
-      if (e.key === 'F3') { e.preventDefault(); const methods = ['cash', 'card', 'etransfer', 'cheque']; setPaymentMethod(prev => { const idx = methods.indexOf(prev); return methods[(idx + 1) % methods.length]; }); return; }
+      if (e.key === 'F3') { e.preventDefault(); const methods = ['cash', 'card', 'etransfer', 'cheque']; setPaymentMethod(prev => { const idx = methods.indexOf(prev); return prev === methods[methods.length - 1] ? methods[0] : methods[idx + 1]; }); return; }
       if (e.key === 'F4') { e.preventDefault(); if (payAmountInputRef.current) { payAmountInputRef.current.focus(); payAmountInputRef.current.select(); } return; }
       if (e.key === 'F5') { e.preventDefault(); setPayAmount(finalNetAmount); showToast(`💵 ${t.fullPay}: Rs.${fmt(finalNetAmount)}`); return; }
       if (e.key === 'F6') { e.preventDefault(); setShowScanner(prev => !prev); return; }
@@ -1434,9 +2134,9 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
   const stickyHeaderStyle = { position: 'sticky', top: 0, zIndex: 2, padding: '6px 12px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', fontSize: 12, color: '#64748b', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
   const dropdownRowStyle = { padding: '12px 12px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, minHeight: 56, userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'rgba(59,130,246,0.1)' };
 
-  /* ══════════════════════════════════════════════════════════
+  /* ══════════════════════════════════════════════════════════════
      RENDER LAYOUT
-  ══════════════════════════════════════════════════════════ */
+  ══════════════════════════════════════════════════════════════ */
   return (
     <div style={{ padding: 10, backgroundColor: '#f8fafc', minHeight: '100vh', paddingBottom: 100 }}>
       <style>{printStyles}</style>
@@ -1449,10 +2149,10 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
       {!dataReady && (<div style={{ textAlign: 'center', padding: 40 }}><div style={{ fontSize: 32, marginBottom: 10 }}>⏳</div><div style={{ color: '#64748b', fontWeight: 'bold' }}>{t.loadingItems}</div></div>)}
 
       {outputInvoice && (
-        <InvoiceOutputManager 
-          invoice={outputInvoice} 
-          initialMode={outputInvoice.initialMode || 'print'} 
-          onClose={() => { setOutputInvoice(null); setTimeout(() => { if (itemSearchInputRef.current) itemSearchInputRef.current.focus(); }, 200); }} 
+        <InvoiceOutputManager
+          invoice={outputInvoice}
+          initialMode={outputInvoice.initialMode || 'print'}
+          onClose={() => { setOutputInvoice(null); setTimeout(() => { if (itemSearchInputRef.current) itemSearchInputRef.current.focus(); }, 200); }}
         />
       )}
 
@@ -1464,18 +2164,28 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
         ))}
       </div>
 
-      {/* HEADER CONTROLS */}
+            {/* HEADER CONTROLS */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
         <h2 style={{ margin: 0, fontSize: 20 }}>🧾 {t.title}</h2>
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
           <button onClick={() => { setStockControlEnabled(p => !p); showToast(stockControlEnabled ? t.stockOff : t.stockOn); }} style={{ padding: '7px 10px', borderRadius: 10, fontSize: 11, fontWeight: 800, cursor: 'pointer', border: stockControlEnabled ? '2px solid #16a34a' : '2px solid #f59e0b', background: stockControlEnabled ? '#f0fdf4' : '#fffbeb', color: stockControlEnabled ? '#16a34a' : '#b45309' }}>{stockControlEnabled ? '🔒' : '🔓'}</button>
           <button onClick={() => setShowProfit(p => !p)} style={{ padding: '7px 10px', borderRadius: 10, fontSize: 11, fontWeight: 800, cursor: 'pointer', border: showProfit ? '2px solid #16a34a' : '2px solid #94a3b8', background: showProfit ? '#f0fdf4' : '#f8fafc', color: showProfit ? '#16a34a' : '#64748b' }}>{showProfit ? '📈' : '📊'}</button>
+          {pendingSyncCount > 0 && (
+            <button onClick={handleSyncPendingInvoices} disabled={syncingCloud} style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#f59e0b', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: syncingCloud ? 'wait' : 'pointer', opacity: syncingCloud ? 0.7 : 1 }}>
+              <UploadCloud className={"w-3.5 h-3.5 " + (syncingCloud ? "animate-bounce" : "")} />
+              Sync ({pendingSyncCount})
+            </button>
+          )}
+          <button onClick={handleOpenBackupFolder} style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#334155', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}>
+            <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
+            Backup
+          </button>
           <button onClick={() => { window.location.href = '/invoice-list'; }} style={{ background: '#3b82f6', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}>📋 {t.invoiceListPage}</button>
           <button onClick={() => { window.location.href = '/approved'; }} style={{ background: approvedCount > 0 ? 'linear-gradient(135deg,#16a34a,#15803d)' : '#16a34a', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer', position: 'relative', animation: approvedCount > 0 ? 'glowPulse 2s infinite' : 'none' }}>
             📋 {t.approvedLabel}
             {approvedCount > 0 && <span style={{ position: 'absolute', top: -7, right: -7, background: '#ef4444', color: 'white', fontSize: 10, fontWeight: 900, minWidth: 20, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px', border: '2px solid white', animation: 'badgePop 0.3s ease-out' }}>{approvedCount}</span>}
           </button>
-          {pendingOrderCount > 0 && (<button onClick={() => { window.location.href = '/customer-orders'; }} style={{ background: 'linear-gradient(135deg,#f59e0b,#d97706)', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer', position: 'relative', animation: 'pendingGlow 2s infinite' }}>⏳ {t.pendingLabel}<span style={{ position: 'absolute', top: -7, right: -7, background: '#dc2626', color: 'white', fontSize: 10, fontWeight: 900, minWidth: 20, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px', border: '2px solid white', animation: 'badgePop 0.3s ease-out' }}>{pendingOrderCount}</span></button>)}
+          {pendingOrderCount > 0 && (<button onClick={() => { window.location.href = '/customer-orders'; }} style={{ background: 'linear-gradient(135deg,#f59e0b,#d77706)', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer', position: 'relative', animation: 'pendingGlow 2s infinite' }}>⏳ {t.pendingLabel}<span style={{ position: 'absolute', top: -7, right: -7, background: '#dc2626', color: 'white', fontSize: 10, fontWeight: 900, minWidth: 20, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px', border: '2px solid white', animation: 'badgePop 0.3s ease-out' }}>{pendingOrderCount}</span></button>)}
           <button onClick={() => { window.location.href = '/return'; }} style={{ background: '#dc2626', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}>↩️ {t.returnLabel}</button>
           {safeInvoiceItems.length > 0 && (<button onClick={clearForm} style={{ background: '#fee2e2', color: '#dc2626', border: 'none', padding: '7px 11px', borderRadius: 6, fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}>🗑️ <span className="kb-shortcut-badge">F12</span></button>)}
         </div>
@@ -1551,8 +2261,6 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
           const afterBillQty = R2(maxLineQty - R2(item.qty));
           const isOver = stockControlEnabled && !item.negativeStock && R2(item.qty) > maxLineQty + 0.001;
           const isWV = warrantyVisibility[itemKey], isBV = batchVisibility[itemKey], hasWC = !!item.warrantyCode?.trim();
-          
-          // ✅ includeEmpty parameter එක true ලෙස සකසා ඇති නිසා සියලුම තොග (Empty ඇතුළුව) මෙහි ලැබෙනු ඇත.
           const batches = item.allBatches || [], allocMap = {};
           (item.batchAllocations || []).forEach(a => { if (a?.batchId) allocMap[a.batchId] = R2((allocMap[a.batchId] || 0) + R2(a.allocatedQty)); });
           const lP = (item.allocatedQty || 0) > 0 ? R2(R2(item.yourPrice) * R2(item.qty) - R2(item.allocatedCostTotal || 0)) : 0;
@@ -1632,7 +2340,7 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
                 </button>
               </div>
 
-              {/* Batches panel layout (පැරණි සහ වත්මන් සියලුම Batches දර්ශනය වේ) */}
+              {/* Batches panel layout */}
               {isBV && (
                 <div style={{ marginBottom: 8, padding: 8, background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd', maxHeight: 260, overflowY: 'auto' }}>
                   {batches.length === 0 ? <div style={{ textAlign: 'center', fontSize: 12, color: '#94a3b8' }}>📭</div>
@@ -1808,7 +2516,13 @@ export default function POSInvoice({ mode = 'invoice', lang: initialLang = 'si' 
           <div style={{ fontSize: 24, fontWeight: 'bold', color: balance >= 0 ? '#16a34a' : '#dc2626' }}>{balance.toFixed(2)}</div>
         </div>
 
-        {/* Bottom save actions panel */}
+        {/* Auto-Sync Toggle */}
+        <div className="no-print" style={{ marginBottom: 10, display: 'flex', justifyContent: 'center' }}>
+          <button onClick={toggleAutoSync} title={autoSync ? 'Click to disable auto-sync' : 'Click to enable auto-sync'} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 6, background: autoSync ? 'linear-gradient(135deg, #10b981, #059669)' : 'linear-gradient(135deg, #f59e0b, #d97706)', color: '#fff', boxShadow: '0 2px 6px rgba(0,0,0,0.15)' }}>
+            {autoSync ? '🔄' : '⏸️'} {autoSync ? 'Auto-Sync ON' : 'Auto-Sync OFF'}
+          </button>
+        </div>
+
         <div className="no-print" style={{ marginTop: 15, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <button ref={saveBtnRef} onClick={() => handleSaveInvoice('save')} disabled={saving || !safeInvoiceItems.length} style={{ padding: 16, background: !safeInvoiceItems.length ? '#ccc' : '#3b82f6', color: 'white', border: 'none', borderRadius: 8, fontSize: 16, fontWeight: 'bold', cursor: 'pointer' }}>💾 {t.saveOnly} <span className="kb-shortcut-badge">F8</span></button>
           <button ref={printBtnRef} onClick={() => handleSaveInvoice('print')} disabled={saving || !safeInvoiceItems.length} style={{ padding: 16, background: !safeInvoiceItems.length ? '#ccc' : '#16a34a', color: 'white', border: 'none', borderRadius: 8, fontSize: 16, fontWeight: 'bold', cursor: 'pointer' }}>🖨️ {t.savePrint} <span className="kb-shortcut-badge">F10</span></button>

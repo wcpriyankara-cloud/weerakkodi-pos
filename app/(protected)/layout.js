@@ -6,6 +6,7 @@ import React, { useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useUserAuth } from '@/context/UserContext';
 import DashboardShell from '@/components/DashboardShell';
+import SyncButton from '@/components/SyncButton';
 
 function FullPageLoader() {
   return (
@@ -90,5 +91,10 @@ export default function ProtectedLayout({ children }) {
     return <FullPageLoader />;
   }
 
-  return <DashboardShell>{children}</DashboardShell>;
+  return (
+    <>
+      <DashboardShell>{children}</DashboardShell>
+      <SyncButton uid={user?.uid} />
+    </>
+  );
 }

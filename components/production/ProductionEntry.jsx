@@ -630,7 +630,7 @@ export default function ProductionEntry({ lang = 'si' }) {
                   setPaymentMethod(pm.key);
                   if (pm.key === 'credit') setPayAmount('0');
                   else if (!payAmount || payAmount === '0')
-                    setPayAmount(effectiveTotal % 1 === 0 ? String(effectiveTotal) : effectiveTotal.toFixed(2));
+                    setPayAmount(effectiveTotal % 1 === 0 ? String(effectiveTotal) : (Number(effectiveTotal) || 0).toFixed(2));
                 }}
                 style={{
                   flex: 1, minWidth: isSmallMobile ? 55 : 65,
@@ -674,7 +674,7 @@ export default function ProductionEntry({ lang = 'si' }) {
                   if (raw === '' || raw === '.') { setPayAmount(''); return; }
                   const num = parseFloat(raw);
                   if (!isNaN(num) && num >= 0)
-                    setPayAmount(num % 1 === 0 ? String(num) : num.toFixed(2));
+                    setPayAmount(num % 1 === 0 ? String(num) : (Number(num) || 0).toFixed(2));
                 }}
                 onFocus={(e) => {
                   setTimeout(() => {
@@ -698,7 +698,7 @@ export default function ProductionEntry({ lang = 'si' }) {
             </div>
             <button type="button"
               onClick={() => setPayAmount(
-                effectiveTotal % 1 === 0 ? String(effectiveTotal) : effectiveTotal.toFixed(2)
+                effectiveTotal % 1 === 0 ? String(effectiveTotal) : (Number(effectiveTotal) || 0).toFixed(2)
               )}
               disabled={isCredit}
               style={{
@@ -723,7 +723,7 @@ export default function ProductionEntry({ lang = 'si' }) {
                 .filter((v, i, a) => v > 0 && a.indexOf(v) === i)
                 .slice(0, 4)
                 .map((v) => {
-                  const vs = v % 1 === 0 ? String(v) : v.toFixed(2);
+                  const vs = v % 1 === 0 ? String(v) : (Number(v) || 0).toFixed(2);
                   return (
                     <button key={v} type="button" onClick={() => setPayAmount(vs)}
                       style={{
@@ -1063,7 +1063,7 @@ export default function ProductionEntry({ lang = 'si' }) {
                         <FL label={t.qty}>
                           <input type="text" inputMode="decimal" placeholder="0" value={o.qty}
                             onChange={(e) => { const val = e.target.value; if (val === '' || /^\d*\.?\d{0,2}$/.test(val)) setOutputs((x) => x.map((z, j) => j === i ? { ...z, qty: val } : z)); }}
-                            onBlur={(e) => { const val = e.target.value.trim(); if (val && !isNaN(parseFloat(val))) { const num = parseFloat(val); setOutputs((x) => x.map((z, j) => j === i ? { ...z, qty: num % 1 === 0 ? String(num) : num.toFixed(2) } : z)); } }}
+                            onBlur={(e) => { const val = e.target.value.trim(); if (val && !isNaN(parseFloat(val))) { const num = parseFloat(val); setOutputs((x) => x.map((z, j) => j === i ? { ...z, qty: num % 1 === 0 ? String(num) : (Number(num) || 0).toFixed(2) } : z)); } }}
                             style={{ ...S.inp, fontWeight: 700, textAlign: 'center' }} />
                         </FL>
                         <FL label={t.unit}>
@@ -1076,7 +1076,7 @@ export default function ProductionEntry({ lang = 'si' }) {
                             <span style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: '#64748b', fontSize: 12, fontWeight: 700, pointerEvents: 'none' }}>Rs.</span>
                             <input type="text" inputMode="decimal" placeholder="0.00" value={o.unitPrice}
                               onChange={(e) => { const val = e.target.value; if (val === '' || /^\d*\.?\d{0,2}$/.test(val)) setOutputs((x) => x.map((z, j) => j === i ? { ...z, unitPrice: val } : z)); }}
-                              onBlur={(e) => { const val = e.target.value.trim(); if (val && !isNaN(parseFloat(val))) { const num = parseFloat(val); setOutputs((x) => x.map((z, j) => j === i ? { ...z, unitPrice: num % 1 === 0 ? String(num) : num.toFixed(2) } : z)); } }}
+                              onBlur={(e) => { const val = e.target.value.trim(); if (val && !isNaN(parseFloat(val))) { const num = parseFloat(val); setOutputs((x) => x.map((z, j) => j === i ? { ...z, unitPrice: num % 1 === 0 ? String(num) : (Number(num) || 0).toFixed(2) } : z)); } }}
                               style={{ ...S.inp, fontWeight: 700, textAlign: 'right', paddingLeft: 32 }} />
                           </div>
                         </FL>

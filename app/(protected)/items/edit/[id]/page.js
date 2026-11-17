@@ -1,18 +1,21 @@
-'use client';
+// Auto-generated static export wrapper
+import React, { Suspense } from 'react';
+import DynamicClient from './DynamicClient';
 
-import { useParams, useRouter } from 'next/navigation';
-import ItemFormPage from '@/components/items/ItemFormPage';
+export async function generateStaticParams() {
+  return [
+    {
+    "id": "default"
+}
+  ];
+}
 
-export default function EditItemPage() {
-  const { id }  = useParams();
-  const router  = useRouter();
+export const dynamicParams = false;
 
+export default function StaticExportPage() {
   return (
-    <ItemFormPage
-      mode="edit"
-      itemId={id}
-      onSuccess={() => router.push('/items')}
-      onCancel={() => router.push('/items')}
-    />
+    <Suspense fallback={<div className="min-h-screen bg-slate-900 text-slate-300 flex items-center justify-center p-6">Loading...</div>}>
+      <DynamicClient />
+    </Suspense>
   );
 }

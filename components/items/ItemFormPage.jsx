@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
@@ -14,6 +14,14 @@ import {
   getDownloadURL,
   deleteObject,
 } from 'firebase/storage';
+
+// ★ OFFLINE IMPORTS
+import {
+  saveItemLocal, getItemsLocal,
+  addToSyncQueue, getSyncQueue,
+  cacheRefData, getCachedRefData,
+} from '@/lib/offlineDB';
+import { processSyncQueue, isOnline } from '@/lib/syncManager';
 
 /* ══════════════════════════════════════════
    CONSTANTS
@@ -215,7 +223,7 @@ function ToggleRow({ label, desc, checked, onChange, color = 'peer-checked:bg-bl
 /* ══════════════════════════════════════════
    IMAGE UPLOAD SECTION
 ══════════════════════════════════════════ */
-function ImageUploadSection({ formData, uid, itemId, onImagesChange }) {
+function ImageUploadSection({ formData, uid, itemId, onImagesChange, isOnline }) {
   const [uploading, setUploading]           = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
   const fileInputRef = useRef(null);
@@ -232,6 +240,15 @@ function ImageUploadSection({ formData, uid, itemId, onImagesChange }) {
     return { url, path };
   };
 
+  // ★ OFFLINE: Convert file to base64 for local storage
+  const fileToBase64 = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
   const handleFiles = async (files) => {
     if (!files?.length) return;
     setUploading(true);
@@ -240,11 +257,24 @@ function ImageUploadSection({ formData, uid, itemId, onImagesChange }) {
     for (let i = 0; i < files.length; i++) {
       setUploadProgress(`Uploading ${i + 1}/${files.length}...`);
       try {
-        const { url, path } = await uploadToStorage(files[i]);
-        newImages.push(url);
-        newPaths.push(path);
+        if (isOnline) {
+          const { url, path } = await uploadToStorage(files[i]);
+          newImages.push(url);
+          newPaths.push(path);
+        } else {
+          // ★ OFFLINE: Save as base64 locally
+          const base64 = await fileToBase64(files[i]);
+          newImages.push(base64);
+          newPaths.push(`offline_pending_${Date.now()}_${i}`);
+        }
       } catch (err) {
         console.error('Upload failed:', err);
+        // Fallback to base64 on error
+        try {
+          const base64 = await fileToBase64(files[i]);
+          newImages.push(base64);
+          newPaths.push(`offline_fallback_${Date.now()}_${i}`);
+        } catch {}
       }
     }
     onImagesChange({
@@ -258,7 +288,7 @@ function ImageUploadSection({ formData, uid, itemId, onImagesChange }) {
   const removeImage = async (idx) => {
     const imgs  = [...(formData.images || [])];
     const paths = [...(formData.imagePaths || [])];
-    if (paths[idx]) {
+    if (paths[idx] && isOnline && !paths[idx].startsWith('offline_')) {
       try { await deleteObject(storageRef(storage, paths[idx])); } catch {}
     }
     imgs.splice(idx, 1);
@@ -281,6 +311,11 @@ function ImageUploadSection({ formData, uid, itemId, onImagesChange }) {
               {idx === 0 && (
                 <span className="absolute bottom-1 left-1 bg-blue-600
                   text-white text-[9px] px-1.5 py-0.5 rounded font-bold">Main</span>
+              )}
+              {/* ★ OFFLINE indicator */}
+              {(formData.imagePaths || [])[idx]?.startsWith('offline_') && (
+                <span className="absolute top-1 left-1 bg-orange-500
+                  text-white text-[8px] px-1 py-0.5 rounded font-bold">💾</span>
               )}
               <button onClick={() => removeImage(idx)}
                 className="absolute -top-2 -right-2 bg-red-600 text-white
@@ -368,9 +403,18 @@ function SmartSelectWithManage({
       if (colorPicker) newDoc.color = editColor;
       if (parentFilter) newDoc[parentFilter.field] = parentFilter.value;
       extraFields.forEach(ef => { if (editExtras[ef.key]) newDoc[ef.key] = editExtras[ef.key]; });
-      const docRef = await addDoc(collection(db, collectionName), newDoc);
-      showToast?.(`✅ "${nameToAdd.trim()}" එක් කරන ලදී`);
-      return docRef.id;
+
+      // ★ OFFLINE: Check online status
+      if (isOnline()) {
+        const docRef = await addDoc(collection(db, collectionName), newDoc);
+        showToast?.(`✅ "${nameToAdd.trim()}" එක් කරන ලදී`);
+        return docRef.id;
+      } else {
+        const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        await addToSyncQueue(uid, 'add', collectionName, newDoc, localId);
+        showToast?.(`💾 "${nameToAdd.trim()}" offline සුරකින ලදී`);
+        return localId;
+      }
     } catch (e) {
       showToast?.('❌ Error: ' + e.message, 'error');
       return null;
@@ -391,7 +435,13 @@ function SmartSelectWithManage({
       const updateData = { name: editName.trim(), updatedAt: new Date().toISOString() };
       if (colorPicker) updateData.color = editColor;
       extraFields.forEach(ef => { if (editExtras[ef.key] !== undefined) updateData[ef.key] = editExtras[ef.key]; });
-      await updateDoc(doc(db, collectionName, editItem.id), updateData);
+
+      if (isOnline() && !editItem.id?.startsWith('local_')) {
+        await updateDoc(doc(db, collectionName, editItem.id), updateData);
+      } else {
+        await addToSyncQueue(uid, 'update', collectionName, updateData, editItem.id);
+      }
+
       if (value === editItem.id) onSelect(editItem.id, editName.trim());
       showToast?.(`✅ "${editName.trim()}" යාවත්කාලීන කරන ලදී`);
       setEditItem(null); setEditName(''); setEditExtras({});
@@ -404,7 +454,11 @@ function SmartSelectWithManage({
     if (!confirm(`"${item.name}" මකා දැමීමට අවශ්‍යද?`)) return;
     setIsDeleting(item.id);
     try {
-      await deleteDoc(doc(db, collectionName, item.id));
+      if (isOnline() && !item.id?.startsWith('local_')) {
+        await deleteDoc(doc(db, collectionName, item.id));
+      } else {
+        await addToSyncQueue(uid, 'delete', collectionName, {}, item.id);
+      }
       if (value === item.id) onSelect('', '');
       showToast?.(`🗑️ "${item.name}" මකා දමන ලදී`);
     } catch (e) {
@@ -610,10 +664,6 @@ function SmartSelectWithManage({
 
 /* ══════════════════════════════════════════════════════════════
    UOM SMART SELECT WITH CREATE + MANAGE
-   - Select existing UOM
-   - ➕ Create new UOM with conversions
-   - ✏️ Edit UOM name/conversions
-   - 🗑️ Delete UOM
 ══════════════════════════════════════════════════════════════ */
 function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast }) {
   const [isOpen, setIsOpen]             = useState(false);
@@ -623,17 +673,13 @@ function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast })
   const [isEditOpen, setIsEditOpen]     = useState(false);
   const [editUom, setEditUom]           = useState(null);
   const [isDeleting, setIsDeleting]     = useState(null);
-
-  // Create / Edit form state
   const [newUomName, setNewUomName]     = useState('');
   const [newUomSymbol, setNewUomSymbol] = useState('');
   const [conversions, setConversions]   = useState([]);
   const [isSaving, setIsSaving]         = useState(false);
-
   const ref = useRef(null);
 
   const selectedUom = uoms.find(u => u.id === value);
-
   const filtered = uoms.filter(u =>
     (u.fromUnitName || '').toLowerCase().includes(search.toLowerCase()) ||
     (u.symbol || '').toLowerCase().includes(search.toLowerCase())
@@ -649,263 +695,141 @@ function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast })
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  /* ── Add conversion row ── */
-  const addConversionRow = () => {
-    setConversions(prev => [...prev, { toUnitName: '', rate: '', symbol: '' }]);
-  };
+  const addConversionRow = () => setConversions(prev => [...prev, { toUnitName: '', rate: '', symbol: '' }]);
+  const updateConversion = (idx, field, val) => setConversions(prev => { const n = [...prev]; n[idx] = { ...n[idx], [field]: val }; return n; });
+  const removeConversion = (idx) => setConversions(prev => prev.filter((_, i) => i !== idx));
+  const openCreate = () => { setNewUomName(''); setNewUomSymbol(''); setConversions([]); setIsCreateOpen(true); };
+  const openEdit = (uom) => { setEditUom(uom); setNewUomName(uom.fromUnitName || ''); setNewUomSymbol(uom.symbol || ''); setConversions(uom.conversions?.map(c => ({ ...c })) || []); setIsEditOpen(true); };
 
-  const updateConversion = (idx, field, val) => {
-    setConversions(prev => {
-      const next = [...prev];
-      next[idx] = { ...next[idx], [field]: val };
-      return next;
-    });
-  };
-
-  const removeConversion = (idx) => {
-    setConversions(prev => prev.filter((_, i) => i !== idx));
-  };
-
-  /* ── Open create modal ── */
-  const openCreate = () => {
-    setNewUomName('');
-    setNewUomSymbol('');
-    setConversions([]);
-    setIsCreateOpen(true);
-  };
-
-  /* ── Open edit modal ── */
-  const openEdit = (uom) => {
-    setEditUom(uom);
-    setNewUomName(uom.fromUnitName || '');
-    setNewUomSymbol(uom.symbol || '');
-    setConversions(uom.conversions?.map(c => ({ ...c })) || []);
-    setIsEditOpen(true);
-  };
-
-  /* ── Quick add from common ── */
   const quickAddCommon = async (commonUom) => {
     if (!uid) return;
-    const exists = uoms.find(u =>
-      (u.fromUnitName || '').toLowerCase() === commonUom.name.toLowerCase()
-    );
-    if (exists) {
-      showToast?.(`"${commonUom.name}" දැනටමත් ඇත`, 'error');
-      return;
+    if (uoms.find(u => (u.fromUnitName || '').toLowerCase() === commonUom.name.toLowerCase())) {
+      showToast?.(`"${commonUom.name}" දැනටමත් ඇත`, 'error'); return;
     }
     setIsSaving(true);
     try {
-      const docRef = await addDoc(collection(db, 'uoms'), {
-        fromUnitName: commonUom.name,
-        symbol:       commonUom.symbol,
-        conversions:  [],
-        uid,
-        createdAt:    new Date().toISOString(),
-      });
-      showToast?.(`✅ "${commonUom.name}" එක් කරන ලදී`);
-      onSelect(docRef.id, commonUom.name, []);
-    } catch (e) {
-      showToast?.('❌ Error: ' + e.message, 'error');
-    } finally { setIsSaving(false); }
+      const uomData = { fromUnitName: commonUom.name, symbol: commonUom.symbol, conversions: [], uid, createdAt: new Date().toISOString() };
+      if (isOnline()) {
+        const docRef = await addDoc(collection(db, 'uoms'), uomData);
+        showToast?.(`✅ "${commonUom.name}" එක් කරන ලදී`);
+        onSelect(docRef.id, commonUom.name, []);
+      } else {
+        const localId = `local_${Date.now()}`;
+        await addToSyncQueue(uid, 'add', 'uoms', uomData, localId);
+        showToast?.(`💾 "${commonUom.name}" offline සුරකින ලදී`);
+        onSelect(localId, commonUom.name, []);
+      }
+    } catch (e) { showToast?.('❌ Error: ' + e.message, 'error'); }
+    finally { setIsSaving(false); }
   };
 
-  /* ── Save new UOM ── */
   const saveNewUom = async () => {
-    if (!newUomName.trim() || !uid) {
-      showToast?.('කරුණාකර මිනුම් නම ඇතුළත් කරන්න', 'error');
-      return;
-    }
+    if (!newUomName.trim() || !uid) { showToast?.('කරුණාකර මිනුම් නම ඇතුළත් කරන්න', 'error'); return; }
     setIsSaving(true);
     try {
-      const validConversions = conversions
-        .filter(c => c.toUnitName.trim() && c.rate)
-        .map(c => ({
-          toUnitName: c.toUnitName.trim(),
-          rate:       Number(c.rate) || 1,
-          symbol:     c.symbol || '',
-        }));
-
-      const docRef = await addDoc(collection(db, 'uoms'), {
-        fromUnitName: newUomName.trim(),
-        symbol:       newUomSymbol.trim(),
-        conversions:  validConversions,
-        uid,
-        createdAt:    new Date().toISOString(),
-      });
-      showToast?.(`✅ "${newUomName.trim()}" UOM එක් කරන ලදී`);
-      onSelect(docRef.id, newUomName.trim(), validConversions);
-      setIsCreateOpen(false);
-      setNewUomName('');
-      setNewUomSymbol('');
-      setConversions([]);
-    } catch (e) {
-      showToast?.('❌ Error: ' + e.message, 'error');
-    } finally { setIsSaving(false); }
+      const validConversions = conversions.filter(c => c.toUnitName.trim() && c.rate).map(c => ({ toUnitName: c.toUnitName.trim(), rate: Number(c.rate) || 1, symbol: c.symbol || '' }));
+      const uomData = { fromUnitName: newUomName.trim(), symbol: newUomSymbol.trim(), conversions: validConversions, uid, createdAt: new Date().toISOString() };
+      if (isOnline()) {
+        const docRef = await addDoc(collection(db, 'uoms'), uomData);
+        showToast?.(`✅ "${newUomName.trim()}" UOM එක් කරන ලදී`);
+        onSelect(docRef.id, newUomName.trim(), validConversions);
+      } else {
+        const localId = `local_${Date.now()}`;
+        await addToSyncQueue(uid, 'add', 'uoms', uomData, localId);
+        showToast?.(`💾 "${newUomName.trim()}" offline සුරකින ලදී`);
+        onSelect(localId, newUomName.trim(), validConversions);
+      }
+      setIsCreateOpen(false); setNewUomName(''); setNewUomSymbol(''); setConversions([]);
+    } catch (e) { showToast?.('❌ Error: ' + e.message, 'error'); }
+    finally { setIsSaving(false); }
   };
 
-  /* ── Update UOM ── */
   const updateUom = async () => {
     if (!editUom || !newUomName.trim()) return;
     setIsSaving(true);
     try {
-      const validConversions = conversions
-        .filter(c => c.toUnitName.trim() && c.rate)
-        .map(c => ({
-          toUnitName: c.toUnitName.trim(),
-          rate:       Number(c.rate) || 1,
-          symbol:     c.symbol || '',
-        }));
-
-      await updateDoc(doc(db, 'uoms', editUom.id), {
-        fromUnitName: newUomName.trim(),
-        symbol:       newUomSymbol.trim(),
-        conversions:  validConversions,
-        updatedAt:    new Date().toISOString(),
-      });
-
-      if (value === editUom.id) {
-        onSelect(editUom.id, newUomName.trim(), validConversions);
+      const validConversions = conversions.filter(c => c.toUnitName.trim() && c.rate).map(c => ({ toUnitName: c.toUnitName.trim(), rate: Number(c.rate) || 1, symbol: c.symbol || '' }));
+      const updateData = { fromUnitName: newUomName.trim(), symbol: newUomSymbol.trim(), conversions: validConversions, updatedAt: new Date().toISOString() };
+      if (isOnline() && !editUom.id?.startsWith('local_')) {
+        await updateDoc(doc(db, 'uoms', editUom.id), updateData);
+      } else {
+        await addToSyncQueue(uid, 'update', 'uoms', updateData, editUom.id);
       }
-
+      if (value === editUom.id) onSelect(editUom.id, newUomName.trim(), validConversions);
       showToast?.(`✅ "${newUomName.trim()}" යාවත්කාලීන කරන ලදී`);
-      setIsEditOpen(false);
-      setEditUom(null);
-    } catch (e) {
-      showToast?.('❌ Error: ' + e.message, 'error');
-    } finally { setIsSaving(false); }
+      setIsEditOpen(false); setEditUom(null);
+    } catch (e) { showToast?.('❌ Error: ' + e.message, 'error'); }
+    finally { setIsSaving(false); }
   };
 
-  /* ── Delete UOM ── */
   const deleteUom = async (uom) => {
     if (!confirm(`"${uom.fromUnitName}" මකා දැමීමට අවශ්‍යද?`)) return;
     setIsDeleting(uom.id);
     try {
-      await deleteDoc(doc(db, 'uoms', uom.id));
+      if (isOnline() && !uom.id?.startsWith('local_')) {
+        await deleteDoc(doc(db, 'uoms', uom.id));
+      } else {
+        await addToSyncQueue(uid, 'delete', 'uoms', {}, uom.id);
+      }
       if (value === uom.id) onSelect('', '', []);
       showToast?.(`🗑️ "${uom.fromUnitName}" මකා දමන ලදී`);
-    } catch (e) {
-      showToast?.('❌ Error: ' + e.message, 'error');
-    } finally { setIsDeleting(null); }
+    } catch (e) { showToast?.('❌ Error: ' + e.message, 'error'); }
+    finally { setIsDeleting(null); }
   };
 
-  /* ── UOM Create/Edit Form (shared) ── */
   const renderUomForm = (isEdit) => (
     <div className="p-4 space-y-4">
-      {/* Base unit name */}
       <div>
-        <label className="block text-sm font-bold text-gray-800 mb-1">
-          📏 මූලික මිනුම් නම *
-        </label>
+        <label className="block text-sm font-bold text-gray-800 mb-1">📏 මූලික මිනුම් නම *</label>
         <input className="w-full border-2 border-gray-200 p-3 rounded-xl text-sm font-bold outline-none focus:border-teal-400"
-          value={newUomName} onChange={(e) => setNewUomName(e.target.value)}
-          placeholder="උදා: Kilogram, Piece, Meter..." autoFocus />
+          value={newUomName} onChange={(e) => setNewUomName(e.target.value)} placeholder="උදා: Kilogram, Piece, Meter..." autoFocus />
       </div>
-
-      {/* Symbol */}
       <div>
-        <label className="block text-sm font-bold text-gray-800 mb-1">
-          🔤 සංකේතය (Symbol)
-        </label>
+        <label className="block text-sm font-bold text-gray-800 mb-1">🔤 සංකේතය (Symbol)</label>
         <input className="w-full border-2 border-gray-200 p-3 rounded-xl text-sm outline-none focus:border-teal-400"
-          value={newUomSymbol} onChange={(e) => setNewUomSymbol(e.target.value)}
-          placeholder="උදා: kg, pcs, m..." />
+          value={newUomSymbol} onChange={(e) => setNewUomSymbol(e.target.value)} placeholder="උදා: kg, pcs, m..." />
       </div>
-
-      {/* Quick select from common UOMs (only for create) */}
       {!isEdit && (
         <div>
-          <label className="block text-sm font-bold text-gray-800 mb-2">
-            ⚡ ඉක්මන් තේරීම
-          </label>
+          <label className="block text-sm font-bold text-gray-800 mb-2">⚡ ඉක්මන් තේරීම</label>
           <div className="flex flex-wrap gap-1.5">
             {COMMON_UOMS.slice(0, 12).map(cu => (
-              <button key={cu.name} type="button"
-                onClick={() => { setNewUomName(cu.name); setNewUomSymbol(cu.symbol); }}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition-all
-                  ${newUomName === cu.name
-                    ? 'bg-teal-600 text-white border-teal-600'
-                    : 'bg-white text-gray-700 border-gray-200 hover:border-teal-300'
-                  }`}>
+              <button key={cu.name} type="button" onClick={() => { setNewUomName(cu.name); setNewUomSymbol(cu.symbol); }}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition-all ${newUomName === cu.name ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-gray-700 border-gray-200 hover:border-teal-300'}`}>
                 {cu.name} ({cu.symbol})
               </button>
             ))}
           </div>
         </div>
       )}
-
-      {/* Conversions */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <label className="block text-sm font-bold text-gray-800">
-            🔄 පරිවර්තන (Conversions)
-          </label>
-          <button type="button" onClick={addConversionRow}
-            className="text-xs bg-teal-100 text-teal-700 px-3 py-1 rounded-lg font-bold hover:bg-teal-200">
-            ➕ පරිවර්තනයක් එක් කරන්න
-          </button>
+          <label className="block text-sm font-bold text-gray-800">🔄 පරිවර්තන (Conversions)</label>
+          <button type="button" onClick={addConversionRow} className="text-xs bg-teal-100 text-teal-700 px-3 py-1 rounded-lg font-bold hover:bg-teal-200">➕ පරිවර්තනයක්</button>
         </div>
-
         {conversions.length === 0 ? (
           <div className="p-4 bg-gray-50 rounded-xl text-center text-gray-400 text-sm border-2 border-dashed">
-            <div className="text-2xl mb-1">🔄</div>
-            <p>පරිවර්තන නොමැත</p>
-            <p className="text-[10px] mt-1">උදා: 1 Kilogram = 1000 Gram</p>
+            <div className="text-2xl mb-1">🔄</div><p>පරිවර්තන නොමැත</p>
           </div>
         ) : (
           <div className="space-y-3">
             {conversions.map((conv, idx) => (
               <div key={idx} className="bg-teal-50 p-3 rounded-xl border border-teal-200">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-bold text-teal-700 bg-teal-100 px-2 py-0.5 rounded-full">
-                    #{idx + 1}
-                  </span>
-                  <span className="text-xs text-teal-600 flex-1">
-                    1 {newUomName || '...'} = {conv.rate || '?'} {conv.toUnitName || '...'}
-                  </span>
-                  <button type="button" onClick={() => removeConversion(idx)}
-                    className="w-6 h-6 bg-red-100 text-red-600 rounded-full flex items-center justify-center text-xs hover:bg-red-200">✕</button>
+                  <span className="text-xs font-bold text-teal-700 bg-teal-100 px-2 py-0.5 rounded-full">#{idx + 1}</span>
+                  <span className="text-xs text-teal-600 flex-1">1 {newUomName || '...'} = {conv.rate || '?'} {conv.toUnitName || '...'}</span>
+                  <button type="button" onClick={() => removeConversion(idx)} className="w-6 h-6 bg-red-100 text-red-600 rounded-full flex items-center justify-center text-xs hover:bg-red-200">✕</button>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="text-[10px] text-gray-500 block mb-0.5">ඒකකය</label>
-                    <input className="w-full border p-2 rounded-lg text-sm outline-none focus:border-teal-400"
-                      value={conv.toUnitName} onChange={(e) => updateConversion(idx, 'toUnitName', e.target.value)}
-                      placeholder="Gram..." />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-gray-500 block mb-0.5">අනුපාතය</label>
-                    <input type="number" min="0" step="any"
-                      className="w-full border p-2 rounded-lg text-sm outline-none focus:border-teal-400 font-bold"
-                      value={conv.rate} onChange={(e) => updateConversion(idx, 'rate', e.target.value)}
-                      placeholder="1000" />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-gray-500 block mb-0.5">සංකේතය</label>
-                    <input className="w-full border p-2 rounded-lg text-sm outline-none focus:border-teal-400"
-                      value={conv.symbol || ''} onChange={(e) => updateConversion(idx, 'symbol', e.target.value)}
-                      placeholder="g" />
-                  </div>
+                  <input className="w-full border p-2 rounded-lg text-sm outline-none" value={conv.toUnitName} onChange={(e) => updateConversion(idx, 'toUnitName', e.target.value)} placeholder="ඒකකය" />
+                  <input type="number" min="0" step="any" className="w-full border p-2 rounded-lg text-sm outline-none font-bold" value={conv.rate} onChange={(e) => updateConversion(idx, 'rate', e.target.value)} placeholder="අනුපාතය" />
+                  <input className="w-full border p-2 rounded-lg text-sm outline-none" value={conv.symbol || ''} onChange={(e) => updateConversion(idx, 'symbol', e.target.value)} placeholder="සංකේතය" />
                 </div>
               </div>
             ))}
           </div>
         )}
       </div>
-
-      {/* Preview */}
-      {newUomName && (
-        <div className="p-3 bg-green-50 border border-green-200 rounded-xl">
-          <div className="text-xs font-bold text-green-700 mb-1">📋 පෙරදසුන</div>
-          <div className="text-sm font-bold text-green-800">
-            {newUomName} {newUomSymbol ? `(${newUomSymbol})` : ''}
-          </div>
-          {conversions.filter(c => c.toUnitName && c.rate).map((c, i) => (
-            <div key={i} className="text-xs text-green-600 mt-0.5">
-              🔄 1 {newUomName} = {c.rate} {c.toUnitName}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 
@@ -914,265 +838,96 @@ function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast })
       <div className="flex items-center justify-between mb-1">
         <label className="block text-sm font-bold text-gray-800">📐 මිනුම් සැකසුම (UOM)</label>
         <div className="flex gap-1">
-          <button type="button" onClick={openCreate}
-            className="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-lg font-bold hover:bg-teal-200">
-            ➕ නව UOM
-          </button>
-          <button type="button" onClick={() => setIsManageOpen(true)}
-            className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-lg font-bold hover:bg-indigo-200">
-            ⚙️ කළමනාකරණය
-          </button>
+          <button type="button" onClick={openCreate} className="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-lg font-bold hover:bg-teal-200">➕ නව UOM</button>
+          <button type="button" onClick={() => setIsManageOpen(true)} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-lg font-bold hover:bg-indigo-200">⚙️ කළමනාකරණය</button>
         </div>
       </div>
-
-      {/* Selector */}
-      <div onClick={() => setIsOpen(!isOpen)}
-        className="border-2 p-3 rounded-xl bg-white cursor-pointer flex justify-between items-center shadow-sm hover:border-blue-400">
+      <div onClick={() => setIsOpen(!isOpen)} className="border-2 p-3 rounded-xl bg-white cursor-pointer flex justify-between items-center shadow-sm hover:border-blue-400">
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          {selectedUom && (
-            <span className="bg-teal-100 text-teal-700 text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0">
-              {selectedUom.symbol || selectedUom.fromUnitName?.slice(0, 3)}
-            </span>
-          )}
-          <span className={`truncate ${value ? 'text-gray-900 font-medium' : 'text-gray-400'}`}>
-            {value ? (selectedUom?.fromUnitName || displayValue || 'Selected') : 'මිනුම් ක්‍රමය තෝරන්න...'}
-          </span>
+          {selectedUom && <span className="bg-teal-100 text-teal-700 text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0">{selectedUom.symbol || selectedUom.fromUnitName?.slice(0, 3)}</span>}
+          <span className={`truncate ${value ? 'text-gray-900 font-medium' : 'text-gray-400'}`}>{value ? (selectedUom?.fromUnitName || displayValue || 'Selected') : 'මිනුම් ක්‍රමය තෝරන්න...'}</span>
         </div>
         <span className={`text-gray-500 transition-transform shrink-0 ml-2 ${isOpen ? 'rotate-180' : ''}`}>▼</span>
       </div>
-
-      {/* Conversions preview */}
       {selectedUom?.conversions?.length > 0 && (
         <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-xl">
           <div className="text-xs font-bold text-blue-700 mb-1">📊 පරිවර්තන:</div>
           <div className="flex flex-wrap gap-1.5">
             {selectedUom.conversions.map((conv, i) => (
-              <span key={i} className="bg-white text-blue-800 text-[11px] px-2 py-1 rounded-lg border border-blue-200 font-medium">
-                1 {selectedUom.fromUnitName} = {conv.rate} {conv.toUnitName}
-              </span>
+              <span key={i} className="bg-white text-blue-800 text-[11px] px-2 py-1 rounded-lg border border-blue-200 font-medium">1 {selectedUom.fromUnitName} = {conv.rate} {conv.toUnitName}</span>
             ))}
           </div>
         </div>
       )}
-
-      {/* Dropdown */}
       {isOpen && (
         <div className="absolute z-30 w-full bg-white border-2 border-gray-200 mt-1 shadow-2xl max-h-72 overflow-hidden rounded-xl">
           <div className="sticky top-0 bg-white border-b">
-            <input autoFocus className="w-full p-3 outline-none text-gray-900 bg-gray-50"
-              placeholder="🔍 UOM සොයන්න..." value={search}
-              onChange={(e) => setSearch(e.target.value)} onClick={(e) => e.stopPropagation()} />
+            <input autoFocus className="w-full p-3 outline-none text-gray-900 bg-gray-50" placeholder="🔍 UOM සොයන්න..." value={search} onChange={(e) => setSearch(e.target.value)} onClick={(e) => e.stopPropagation()} />
           </div>
           <div className="max-h-52 overflow-y-auto">
-            {value && (
-              <div onMouseDown={(e) => { e.preventDefault(); onSelect('', '', []); setIsOpen(false); }}
-                className="p-3 hover:bg-red-50 cursor-pointer border-b text-red-600 font-medium">
-                ✕ ඉවත් කරන්න
-              </div>
-            )}
+            {value && <div onMouseDown={(e) => { e.preventDefault(); onSelect('', '', []); setIsOpen(false); }} className="p-3 hover:bg-red-50 cursor-pointer border-b text-red-600 font-medium">✕ ඉවත් කරන්න</div>}
             {filtered.map(uom => (
-              <div key={uom.id} onMouseDown={(e) => {
-                e.preventDefault();
-                onSelect(uom.id, uom.fromUnitName, uom.conversions || []);
-                setIsOpen(false); setSearch('');
-              }} className={`p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0
-                ${value === uom.id ? 'bg-blue-100 text-blue-800 font-medium' : 'text-gray-800'}`}>
-                <div className="flex items-center gap-2">
-                  <span className="bg-teal-100 text-teal-700 text-[10px] px-1.5 py-0.5 rounded font-bold">
-                    {uom.symbol || uom.fromUnitName?.slice(0, 3)}
-                  </span>
-                  <span className="font-medium flex-1">{uom.fromUnitName}</span>
-                  {value === uom.id && <span>✓</span>}
-                </div>
-                {uom.conversions?.length > 0 && (
-                  <div className="text-[10px] text-gray-400 mt-0.5 ml-8">
-                    {uom.conversions.map(c => `1:${c.rate} ${c.toUnitName}`).join(' | ')}
-                  </div>
-                )}
+              <div key={uom.id} onMouseDown={(e) => { e.preventDefault(); onSelect(uom.id, uom.fromUnitName, uom.conversions || []); setIsOpen(false); setSearch(''); }}
+                className={`p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0 ${value === uom.id ? 'bg-blue-100 text-blue-800 font-medium' : 'text-gray-800'}`}>
+                <span className="font-medium">{uom.fromUnitName}</span>
               </div>
             ))}
-
-            {/* Quick create from dropdown */}
-            {search && filtered.length === 0 && (
-              <div onMouseDown={(e) => { e.preventDefault(); setNewUomName(search); setNewUomSymbol(''); setConversions([]); setIsCreateOpen(true); setIsOpen(false); }}
-                className="p-3 bg-green-50 text-green-700 font-bold cursor-pointer hover:bg-green-100 flex items-center gap-2">
-                ➕ "{search}" UOM එකක් නිර්මාණය කරන්න
-              </div>
-            )}
-
-            {filtered.length === 0 && !search && (
-              <div className="p-4 text-center text-gray-400 text-sm">
-                <p>UOM නොමැත</p>
-                <button type="button" onClick={() => { setIsOpen(false); openCreate(); }}
-                  className="mt-2 text-teal-600 font-bold text-xs hover:underline">
-                  ➕ නව UOM එකක් නිර්මාණය කරන්න
-                </button>
-              </div>
-            )}
+            {filtered.length === 0 && <div className="p-4 text-center text-gray-400 text-sm">UOM නොමැත</div>}
           </div>
         </div>
       )}
-
-      {/* ═══ CREATE UOM MODAL ═══ */}
       {isCreateOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
-          onClick={() => setIsCreateOpen(false)}>
-          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl animate-slideUp"
-            onClick={(e) => e.stopPropagation()}>
-            <div className="bg-gradient-to-r from-teal-600 to-emerald-600 p-4 text-white">
-              <div className="flex items-center justify-between">
-                <h2 className="font-bold text-lg">➕ නව UOM නිර්මාණය</h2>
-                <button onClick={() => setIsCreateOpen(false)}
-                  className="bg-white/20 hover:bg-white/30 rounded-full w-8 h-8 flex items-center justify-center font-bold">✕</button>
-              </div>
-              <p className="text-white/70 text-xs mt-1">මිනුම් ඒකකය සහ පරිවර්තන සකසන්න</p>
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50" onClick={() => setIsCreateOpen(false)}>
+          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="bg-gradient-to-r from-teal-600 to-emerald-600 p-4 text-white flex items-center justify-between">
+              <h2 className="font-bold text-lg">➕ නව UOM නිර්මාණය</h2>
+              <button onClick={() => setIsCreateOpen(false)} className="bg-white/20 rounded-full w-8 h-8 font-bold">✕</button>
             </div>
-
-            <div className="flex-1 overflow-y-auto">
-              {renderUomForm(false)}
-            </div>
-
+            <div className="flex-1 overflow-y-auto">{renderUomForm(false)}</div>
             <div className="p-4 border-t flex gap-3">
-              <button type="button" onClick={() => setIsCreateOpen(false)}
-                className="flex-1 bg-gray-200 py-3 rounded-xl font-bold hover:bg-gray-300">
-                ❌ අවලංගු
-              </button>
-              <button type="button" onClick={saveNewUom} disabled={isSaving || !newUomName.trim()}
-                className="flex-[2] bg-teal-600 text-white py-3 rounded-xl font-bold hover:bg-teal-700 disabled:opacity-50">
-                {isSaving ? '⏳ සුරකිමින්...' : '💾 UOM සුරකින්න'}
-              </button>
+              <button onClick={() => setIsCreateOpen(false)} className="flex-1 bg-gray-200 py-3 rounded-xl font-bold">❌ අවලංගු</button>
+              <button onClick={saveNewUom} disabled={isSaving || !newUomName.trim()} className="flex-[2] bg-teal-600 text-white py-3 rounded-xl font-bold disabled:opacity-50">{isSaving ? '⏳' : '💾 සුරකින්න'}</button>
             </div>
           </div>
-          <style>{`
-            @keyframes slideUp { from { opacity:0; transform:translateY(30px); } to { opacity:1; transform:translateY(0); } }
-            .animate-slideUp { animation: slideUp 0.3s ease; }
-          `}</style>
         </div>
       )}
-
-      {/* ═══ EDIT UOM MODAL ═══ */}
       {isEditOpen && editUom && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
-          onClick={() => { setIsEditOpen(false); setEditUom(null); }}>
-          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl animate-slideUp"
-            onClick={(e) => e.stopPropagation()}>
-            <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-4 text-white">
-              <div className="flex items-center justify-between">
-                <h2 className="font-bold text-lg">✏️ UOM සංස්කරණය</h2>
-                <button onClick={() => { setIsEditOpen(false); setEditUom(null); }}
-                  className="bg-white/20 hover:bg-white/30 rounded-full w-8 h-8 flex items-center justify-center font-bold">✕</button>
-              </div>
-              <p className="text-white/70 text-xs mt-1">"{editUom.fromUnitName}" සංස්කරණය කරන්න</p>
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50" onClick={() => { setIsEditOpen(false); setEditUom(null); }}>
+          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-4 text-white flex items-center justify-between">
+              <h2 className="font-bold text-lg">✏️ UOM සංස්කරණය</h2>
+              <button onClick={() => { setIsEditOpen(false); setEditUom(null); }} className="bg-white/20 rounded-full w-8 h-8 font-bold">✕</button>
             </div>
-
-            <div className="flex-1 overflow-y-auto">
-              {renderUomForm(true)}
-            </div>
-
+            <div className="flex-1 overflow-y-auto">{renderUomForm(true)}</div>
             <div className="p-4 border-t flex gap-3">
-              <button type="button" onClick={() => { setIsEditOpen(false); setEditUom(null); }}
-                className="flex-1 bg-gray-200 py-3 rounded-xl font-bold hover:bg-gray-300">
-                ❌ අවලංගු
-              </button>
-              <button type="button" onClick={updateUom} disabled={isSaving || !newUomName.trim()}
-                className="flex-[2] bg-amber-500 text-white py-3 rounded-xl font-bold hover:bg-amber-600 disabled:opacity-50">
-                {isSaving ? '⏳ සුරකිමින්...' : '✅ යාවත්කාලීන'}
-              </button>
+              <button onClick={() => { setIsEditOpen(false); setEditUom(null); }} className="flex-1 bg-gray-200 py-3 rounded-xl font-bold">❌ අවලංගු</button>
+              <button onClick={updateUom} disabled={isSaving || !newUomName.trim()} className="flex-[2] bg-amber-500 text-white py-3 rounded-xl font-bold disabled:opacity-50">{isSaving ? '⏳' : '✅ යාවත්කාලීන'}</button>
             </div>
           </div>
-          <style>{`
-            @keyframes slideUp { from { opacity:0; transform:translateY(30px); } to { opacity:1; transform:translateY(0); } }
-            .animate-slideUp { animation: slideUp 0.3s ease; }
-          `}</style>
         </div>
       )}
-
-      {/* ═══ MANAGE UOM MODAL ═══ */}
       {isManageOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
-          onClick={() => setIsManageOpen(false)}>
-          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl animate-slideUp"
-            onClick={(e) => e.stopPropagation()}>
-            <div className="bg-gradient-to-r from-teal-600 to-cyan-600 p-4 text-white">
-              <div className="flex items-center justify-between">
-                <h2 className="font-bold text-lg">📐 UOM කළමනාකරණය</h2>
-                <div className="flex gap-2">
-                  <button onClick={openCreate}
-                    className="bg-white/20 hover:bg-white/30 rounded-lg px-3 py-1 text-sm font-bold">➕ නව</button>
-                  <button onClick={() => setIsManageOpen(false)}
-                    className="bg-white/20 hover:bg-white/30 rounded-full w-8 h-8 flex items-center justify-center font-bold">✕</button>
-                </div>
-              </div>
-              <p className="text-white/70 text-xs mt-1">UOM තෝරන්න, සංස්කරණය කරන්න, මකන්න</p>
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50" onClick={() => setIsManageOpen(false)}>
+          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="bg-gradient-to-r from-teal-600 to-cyan-600 p-4 text-white flex items-center justify-between">
+              <h2 className="font-bold text-lg">📐 UOM කළමනාකරණය</h2>
+              <button onClick={() => setIsManageOpen(false)} className="bg-white/20 rounded-full w-8 h-8 font-bold">✕</button>
             </div>
-
-            {/* Quick add common UOMs */}
-            <div className="p-3 border-b bg-teal-50">
-              <label className="text-xs font-bold text-teal-700 block mb-2">⚡ ඉක්මනින් එක් කරන්න:</label>
-              <div className="flex flex-wrap gap-1.5">
-                {COMMON_UOMS.filter(cu => !uoms.find(u =>
-                  (u.fromUnitName || '').toLowerCase() === cu.name.toLowerCase()
-                )).slice(0, 10).map(cu => (
-                  <button key={cu.name} type="button" onClick={() => quickAddCommon(cu)} disabled={isSaving}
-                    className="px-2 py-1 bg-white border border-teal-200 rounded-lg text-[11px] font-bold text-teal-700 hover:bg-teal-100 disabled:opacity-50">
-                    ➕ {cu.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* UOM List */}
             <div className="flex-1 overflow-y-auto">
-              {uoms.length === 0 ? (
-                <div className="p-8 text-center text-gray-400">
-                  <div className="text-4xl mb-2">📐</div>
-                  <p className="font-medium">UOM නොමැත</p>
-                  <p className="text-xs mt-1">ඉහත බටන් එකින් හෝ ➕ නව බටනයෙන් එක් කරන්න</p>
-                </div>
-              ) : uoms.map(uom => (
-                <div key={uom.id} className={`px-4 py-3 border-b hover:bg-gray-50 ${value === uom.id ? 'bg-blue-50' : ''} ${isDeleting === uom.id ? 'opacity-50' : ''}`}>
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-teal-100 flex items-center justify-center shrink-0">
-                      <span className="text-teal-700 font-bold text-xs">{uom.symbol || uom.fromUnitName?.slice(0, 2)}</span>
-                    </div>
-
-                    <div className="flex-1 min-w-0 cursor-pointer" onClick={() => {
-                      onSelect(uom.id, uom.fromUnitName, uom.conversions || []);
-                      setIsManageOpen(false);
-                    }}>
-                      <div className="font-bold text-gray-800">{uom.fromUnitName}</div>
-                      {uom.conversions?.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {uom.conversions.map((c, i) => (
-                            <span key={i} className="bg-teal-50 text-teal-600 text-[9px] px-1.5 py-0.5 rounded font-medium border border-teal-100">
-                              1:{c.rate} {c.toUnitName}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {value === uom.id && (
-                      <span className="bg-blue-600 text-white text-[9px] px-2 py-0.5 rounded-full font-bold shrink-0">✓</span>
-                    )}
-
-                    <button type="button" onClick={(e) => { e.stopPropagation(); openEdit(uom); setIsManageOpen(false); }}
-                      className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center hover:bg-amber-200 shrink-0">✏️</button>
-                    <button type="button" onClick={(e) => { e.stopPropagation(); deleteUom(uom); }} disabled={isDeleting === uom.id}
-                      className="w-8 h-8 rounded-lg bg-red-100 text-red-700 flex items-center justify-center hover:bg-red-200 shrink-0 disabled:opacity-50">🗑️</button>
+              {uoms.map(uom => (
+                <div key={uom.id} className="px-4 py-3 border-b hover:bg-gray-50 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-teal-100 flex items-center justify-center shrink-0">
+                    <span className="text-teal-700 font-bold text-xs">{uom.symbol || '?'}</span>
                   </div>
+                  <div className="flex-1 cursor-pointer" onClick={() => { onSelect(uom.id, uom.fromUnitName, uom.conversions || []); setIsManageOpen(false); }}>
+                    <div className="font-bold text-gray-800">{uom.fromUnitName}</div>
+                  </div>
+                  <button onClick={(e) => { e.stopPropagation(); openEdit(uom); setIsManageOpen(false); }} className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">✏️</button>
+                  <button onClick={(e) => { e.stopPropagation(); deleteUom(uom); }} className="w-8 h-8 rounded-lg bg-red-100 text-red-700 flex items-center justify-center">🗑️</button>
                 </div>
               ))}
             </div>
-
-            <div className="p-3 bg-gray-50 border-t text-center">
-              <span className="text-xs text-gray-500 font-medium">📊 මුළු UOM: {uoms.length}</span>
-            </div>
           </div>
-          <style>{`
-            @keyframes slideUp { from { opacity:0; transform:translateY(30px); } to { opacity:1; transform:translateY(0); } }
-            .animate-slideUp { animation: slideUp 0.3s ease; }
-          `}</style>
         </div>
       )}
     </div>
@@ -1184,378 +939,650 @@ function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast })
 ══════════════════════════════════════════ */
 export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel }) {
   const { user } = useUserAuth();
-  const router   = useRouter();
+  const router = useRouter();
 
-  const [formData, setFormData] = useState(INITIAL_FORM);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isLoading, setIsLoading] = useState(mode === 'edit');
-  const [toast, setToast]       = useState(null);
+  const [formData, setFormData]           = useState(INITIAL_FORM);
+  const [originalData, setOriginalData]   = useState(null);
+  const [loading, setLoading]             = useState(false);
+  const [saving, setSaving]               = useState(false);
+  const [toast, setToast]                 = useState(null);
+  const [activeTab, setActiveTab]         = useState('basic');
 
-  const [brands, setBrands]             = useState([]);
-  const [categories, setCategories]     = useState([]);
+  // ★ OFFLINE state
+  const [online, setOnline] = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [syncing, setSyncing] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
+
+  // Reference data
+  const [brands,        setBrands]        = useState([]);
+  const [categories,    setCategories]    = useState([]);
   const [subCategories, setSubCategories] = useState([]);
-  const [uoms, setUoms]                 = useState([]);
-  const [suppliers, setSuppliers]       = useState([]);
-  const [colors, setColors]             = useState([]);
-  const [racks, setRacks]               = useState([]);
-  const [items, setItems]               = useState([]);
+  const [uoms,          setUoms]          = useState([]);
+  const [colors,        setColors]        = useState([]);
+  const [racks,         setRacks]         = useState([]);
+  const [suppliers,     setSuppliers]     = useState([]);
 
   const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type });
   }, []);
 
+  // ══════════════════════════════════════════
+  //  OFFLINE / ONLINE LISTENERS
+  // ══════════════════════════════════════════
+  useEffect(() => {
+    const onOn = async () => {
+      setOnline(true);
+      if (user?.uid) {
+        setSyncing(true);
+        try {
+          await processSyncQueue(user.uid);
+          const queue = await getSyncQueue(user.uid);
+          setPendingCount(queue.filter(q => !q.processed).length);
+          showToast('✅ Online — දත්ත sync කරන ලදී');
+        } catch (e) {
+          console.error('Sync error:', e);
+        } finally {
+          setSyncing(false);
+        }
+      }
+    };
+    const onOff = () => {
+      setOnline(false);
+      showToast('🔴 Offline — දත්ත Hard Disk එකට සුරැකේ', 'error');
+    };
+    window.addEventListener('online', onOn);
+    window.addEventListener('offline', onOff);
+    return () => {
+      window.removeEventListener('online', onOn);
+      window.removeEventListener('offline', onOff);
+    };
+  }, [user?.uid, showToast]);
+
+  // ══════════════════════════════════════════
+  //  LOAD REFERENCE DATA (brands, categories, etc.)
+  // ══════════════════════════════════════════
   useEffect(() => {
     if (!user?.uid) return;
-    const cols = [
+
+    const collections = [
       { name: 'brands',        setter: setBrands },
       { name: 'categories',    setter: setCategories },
       { name: 'subCategories', setter: setSubCategories },
       { name: 'uoms',          setter: setUoms },
-      { name: 'suppliers',     setter: setSuppliers },
       { name: 'colors',        setter: setColors },
       { name: 'racks',         setter: setRacks },
-      { name: 'items',         setter: setItems },
+      { name: 'suppliers',     setter: setSuppliers },
     ];
-    const unsubs = cols.map(({ name, setter }) => {
-      const q = query(collection(db, name), where('uid', '==', user.uid));
-      return onSnapshot(q, (snap) => {
-        setter(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      });
+
+    const unsubs = [];
+
+    collections.forEach(({ name, setter }) => {
+      try {
+        if (isOnline()) {
+          const q = query(collection(db, name), where('uid', '==', user.uid));
+          const unsub = onSnapshot(q, async (snap) => {
+            const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            setter(data);
+            // ★ Cache locally
+            try { await cacheRefData(name, user.uid, data); } catch {}
+          }, async (err) => {
+            console.warn(`[${name}] Firestore error, loading cache:`, err);
+            const cached = await getCachedRefData(name, user.uid);
+            setter(cached || []);
+          });
+          unsubs.push(unsub);
+        } else {
+          getCachedRefData(name, user.uid).then(cached => setter(cached || []));
+        }
+      } catch (e) {
+        console.error(`[${name}] error:`, e);
+        getCachedRefData(name, user.uid).then(cached => setter(cached || []));
+      }
     });
-    return () => unsubs.forEach((u) => u());
+
+    return () => unsubs.forEach(u => u && u());
   }, [user?.uid]);
 
+  // ══════════════════════════════════════════
+  //  LOAD EXISTING ITEM (edit mode)
+  // ══════════════════════════════════════════
   useEffect(() => {
-    if (mode !== 'edit' || !itemId || !user?.uid) { setIsLoading(false); return; }
+    if (mode !== 'edit' || !itemId || !user?.uid) return;
+
     const loadItem = async () => {
+      setLoading(true);
       try {
-        const snap = await getDoc(doc(db, 'items', itemId));
-        if (snap.exists()) {
-          const item = { id: snap.id, ...snap.data() };
-          if (item.uid !== user.uid) { showToast('Unauthorized', 'error'); setIsLoading(false); return; }
-          const itemImages = Array.isArray(item.images) ? item.images : item.picture ? [item.picture] : [];
-          setFormData({ ...INITIAL_FORM, ...item, images: itemImages, imagePaths: Array.isArray(item.imagePaths) ? item.imagePaths : [] });
+        if (isOnline() && !itemId.startsWith('local_')) {
+          const snap = await getDoc(doc(db, 'items', itemId));
+          if (snap.exists()) {
+            const data = { id: snap.id, ...snap.data() };
+            setFormData({ ...INITIAL_FORM, ...data });
+            setOriginalData(data);
+          }
+        } else {
+          const localItems = await getItemsLocal(user.uid);
+          const found = localItems.find(i => i.id === itemId);
+          if (found) {
+            setFormData({ ...INITIAL_FORM, ...found });
+            setOriginalData(found);
+          }
         }
-      } catch (e) { showToast('Item load failed: ' + e.message, 'error'); }
-      finally { setIsLoading(false); }
+      } catch (e) {
+        console.error('Load item error:', e);
+        showToast('❌ Item load කිරීමේ දෝෂයක්', 'error');
+      } finally {
+        setLoading(false);
+      }
     };
+
     loadItem();
   }, [mode, itemId, user?.uid, showToast]);
 
-  useEffect(() => {
-    if (mode === 'add') {
-      setFormData((prev) => ({ ...prev, itemCode: `ITM-${String(items.length + 1).padStart(5, '0')}` }));
+  // ══════════════════════════════════════════
+  //  FORM FIELD UPDATE HELPER
+  // ══════════════════════════════════════════
+  const updateField = useCallback((field, value) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+  }, []);
+
+  const updateFields = useCallback((updates) => {
+    setFormData(prev => ({ ...prev, ...updates }));
+  }, []);
+
+  // ══════════════════════════════════════════
+  //  SAVE HANDLER (with offline support)
+  // ══════════════════════════════════════════
+  const handleSave = async () => {
+    if (!formData.name?.trim()) {
+      showToast('කරුණාකර භාණ්ඩයේ නම ඇතුළත් කරන්න', 'error');
+      return;
     }
-  }, [mode, items.length]);
+    if (!user?.uid) {
+      showToast('පරිශීලක ප්‍රවේශය අවශ්‍යයි', 'error');
+      return;
+    }
 
-  const handleChange = useCallback((field, value) => {
-    setFormData((prev) => {
-      const next = { ...prev, [field]: value };
-      const priceFields = ['sellingPriceRetail','retailDiscount','sellingPriceWholesale','wholesaleDiscount','sellingPriceLoose','looseDiscount'];
-      if (priceFields.includes(field)) {
-        next.retailYourPrice    = calcNet(next.sellingPriceRetail, next.retailDiscount);
-        next.wholesaleYourPrice = calcNet(next.sellingPriceWholesale, next.wholesaleDiscount);
-        next.looseYourPrice     = calcNet(next.sellingPriceLoose, next.looseDiscount);
-      }
-      return next;
-    });
-  }, []);
-
-  const handleImagesChange = useCallback(({ images, imagePaths }) => {
-    setFormData((prev) => ({ ...prev, images, imagePaths }));
-  }, []);
-
-  const generateBarcode = useCallback(() => {
-    const code = Date.now().toString().slice(-8) + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-    handleChange('barcode', code);
-  }, [handleChange]);
-
-  const saveItem = useCallback(async () => {
-    if (!formData.name.trim()) { showToast('කරුණාකර නම ඇතුළත් කරන්න', 'error'); return; }
-    if (!user) { showToast('Login වී නෑ', 'error'); return; }
-    setIsSaving(true);
+    setSaving(true);
     try {
-      const { id, ...data } = formData;
-      const allImages = data.images || [];
-      const mainImage = allImages.find(img => img?.startsWith('https://')) || allImages.find(img => img?.startsWith('data:')) || '';
       const payload = {
-        ...data, uid: user.uid, images: allImages, imagePaths: data.imagePaths || [],
-        imageUrl: mainImage.startsWith('https://') ? mainImage : '', photoURL: mainImage, picture: mainImage,
-        uom: data.uomName,
-        buyingPrice: Number(data.buyingPrice) || 0,
-        sellingPriceRetail: Number(data.sellingPriceRetail) || 0, retailDiscount: Number(data.retailDiscount) || 0, retailYourPrice: Number(data.retailYourPrice) || 0,
-        sellingPriceWholesale: Number(data.sellingPriceWholesale) || 0, wholesaleDiscount: Number(data.wholesaleDiscount) || 0, wholesaleYourPrice: Number(data.wholesaleYourPrice) || 0,
-        sellingPriceLoose: Number(data.sellingPriceLoose) || 0, looseDiscount: Number(data.looseDiscount) || 0, looseYourPrice: Number(data.looseYourPrice) || 0,
-        sellingPrice: Number(data.sellingPriceRetail) || 0,
-        minStockLevel: Number(data.minStockLevel) || 0, maxStockLevel: Number(data.maxStockLevel) || 0,
-        warrantyType: data.warrantyType || '', warrantyPeriod: data.warrantyPeriod || '', warrantyTerms: data.warrantyTerms || '', warrantyNotes: data.warrantyNotes || '',
-        isHidden: data.isHidden || false, isPurchaseOnly: data.isPurchaseOnly || false,
-        showPrice: data.showPrice ?? true, showDiscount: data.showDiscount ?? true,
-        allowOrderWhenOutOfStock: data.allowOrderWhenOutOfStock || false,
-        catalogPriceType: data.catalogPriceType || 'retail', catalogUom: data.catalogUom || data.uomName || '',
+        ...formData,
+        uid: user.uid,
+        name: formData.name.trim(),
+        sellingPrice: parseFloat(formData.sellingPriceRetail) || 0,
+        costPrice: parseFloat(formData.buyingPrice) || 0,
+        updatedAt: new Date().toISOString(),
       };
-      if (mode === 'add') {
-        await addDoc(collection(db, 'items'), { ...payload, stock: 0, stocks: { Main_Store: 0 }, createdAt: new Date().toISOString() });
-        showToast('සාර්ථකව සුරකින ලදී! ✅');
-      } else if (mode === 'edit' && id) {
-        await updateDoc(doc(db, 'items', id), { ...payload, updatedAt: new Date().toISOString() });
-        showToast('සාර්ථකව යාවත්කාලීන කරන ලදී! ✅');
-      }
-      setTimeout(() => { if (onSuccess) onSuccess(); else router.back(); }, 1500);
-    } catch (e) { showToast('Error: ' + e.message, 'error'); console.error(e); }
-    finally { setIsSaving(false); }
-  }, [formData, user, mode, onSuccess, showToast, router]);
+      delete payload.id;
 
-  if (isLoading) {
+      if (mode === 'edit' && itemId) {
+        // ── UPDATE ──
+        if (isOnline() && !itemId.startsWith('local_')) {
+          await updateDoc(doc(db, 'items', itemId), payload);
+          showToast('✅ භාණ්ඩය යාවත්කාලීන කරන ලදී');
+        } else {
+          await saveItemLocal(user.uid, { ...payload, id: itemId });
+          await addToSyncQueue(user.uid, 'update', 'items', payload, itemId);
+          showToast('💾 Offline update — sync pending');
+        }
+      } else {
+        // ── ADD NEW ──
+        if (isOnline()) {
+          payload.createdAt = new Date().toISOString();
+          const docRef = await addDoc(collection(db, 'items'), payload);
+          showToast('✅ නව භාණ්ඩය එක් කරන ලදී');
+          if (onSuccess) onSuccess(docRef.id);
+        } else {
+          const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          payload.createdAt = new Date().toISOString();
+          await saveItemLocal(user.uid, { ...payload, id: localId });
+          await addToSyncQueue(user.uid, 'add', 'items', payload, localId);
+          showToast('💾 Offline save — Internet ලැබුණු විට sync වේ');
+          if (onSuccess) onSuccess(localId);
+        }
+      }
+
+      // Reset form if add mode
+      if (mode === 'add') {
+        setFormData(INITIAL_FORM);
+      }
+
+      // Navigate back
+      setTimeout(() => {
+        if (onCancel) onCancel();
+        else router.push('/items');
+      }, 1000);
+
+    } catch (e) {
+      console.error('Save error:', e);
+      // Fallback: save locally even on error
+      try {
+        const localId = itemId || `local_${Date.now()}`;
+        await saveItemLocal(user.uid, { ...formData, id: localId, uid: user.uid });
+        await addToSyncQueue(user.uid, mode === 'edit' ? 'update' : 'add', 'items', formData, localId);
+        showToast('💾 Offline save — Error වුණත් දත්ත සුරැකිණි', 'success');
+      } catch (e2) {
+        showToast('❌ Save error: ' + e.message, 'error');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ══════════════════════════════════════════
+  //  DELETE HANDLER
+  // ══════════════════════════════════════════
+  const handleDelete = async () => {
+    if (!itemId || !user?.uid) return;
+    if (!confirm(`"${formData.name}" මකා දැමීමට අවශ්‍යද?`)) return;
+
+    setSaving(true);
+    try {
+      if (isOnline() && !itemId.startsWith('local_')) {
+        await deleteDoc(doc(db, 'items', itemId));
+        showToast('🗑️ භාණ්ඩය මකා දමන ලදී');
+      } else {
+        await addToSyncQueue(user.uid, 'delete', 'items', {}, itemId);
+        showToast('💾 Offline delete — sync pending');
+      }
+      setTimeout(() => {
+        if (onCancel) onCancel();
+        else router.push('/items');
+      }, 800);
+    } catch (e) {
+      showToast('❌ Delete error: ' + e.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ══════════════════════════════════════════
+  //  LOADING STATE
+  // ══════════════════════════════════════════
+  if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100">
-        <div className="w-10 h-10 border-4 border-gray-200 border-t-blue-600 rounded-full animate-spin" />
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-gray-600 font-medium">Loading...</p>
+        </div>
       </div>
     );
   }
 
+  // ══════════════════════════════════════════
+  //  RENDER
+  // ══════════════════════════════════════════
   return (
-    <div className="min-h-screen bg-gray-100 pb-28">
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+    <div className="min-h-screen bg-gray-50 pb-24">
 
-      {/* Header */}
-      <div className="bg-white p-4 sticky top-0 z-10 shadow-sm flex items-center gap-3 border-b">
-        <button onClick={onCancel} className="text-xl border-2 rounded-lg px-3 py-1 hover:bg-gray-100">←</button>
-        <h1 className="font-bold text-lg">
-          {mode === 'add' ? '➕ නව භාණ්ඩයක් එක් කරන්න' : '✏️ භාණ්ඩය සංස්කරණය'}
-        </h1>
-      </div>
-
-      <div className="p-4 space-y-4">
-
-        {/* VISIBILITY */}
-        <div className="bg-purple-50 p-4 rounded-xl border border-purple-200">
-          <h3 className="font-bold text-purple-800 mb-3 text-base">👁️ පාරිභෝගික දර්ශන සැකසුම්</h3>
-          <div className="bg-white p-4 rounded-xl border border-purple-100 divide-y divide-dashed divide-gray-200">
-            <ToggleRow label="🚫 සඟවන්න (Hidden)" desc="Catalog එකේ නොපෙනේ"
-              checked={formData.isHidden} onChange={(v) => handleChange('isHidden', v)} color="peer-checked:bg-red-600" />
-            <ToggleRow label="🚚 මිලදී ගැනීම් පමණි"
-              checked={formData.isPurchaseOnly} onChange={(v) => handleChange('isPurchaseOnly', v)} color="peer-checked:bg-orange-500" />
-            {!formData.isHidden && !formData.isPurchaseOnly && (
-              <>
-                <ToggleRow label="💲 මිල පෙන්වන්න" checked={formData.showPrice}
-                  onChange={(v) => handleChange('showPrice', v)} color="peer-checked:bg-green-600" />
-                <ToggleRow label="🏷️ වට්ටම් පෙන්වන්න" checked={formData.showDiscount}
-                  onChange={(v) => handleChange('showDiscount', v)} color="peer-checked:bg-indigo-600" />
-                <ToggleRow label="📦 තොග නැතිවිට ඇනවුම් ඉඩ දෙන්න" desc="ON නම් Pre-Order කළ හැක"
-                  checked={formData.allowOrderWhenOutOfStock} onChange={(v) => handleChange('allowOrderWhenOutOfStock', v)} color="peer-checked:bg-teal-600" />
-              </>
-            )}
-          </div>
+      {/* ── Offline Banner ── */}
+      {!online && (
+        <div className="sticky top-0 z-40 bg-gradient-to-r from-orange-500 to-red-500 text-white text-center py-2 font-bold text-sm shadow-md">
+          ⚠️ Offline — දත්ත Hard Disk එකට සුරැකේ. Internet ලැබුණු විට auto-sync වේ.
+          {pendingCount > 0 && <span className="ml-2 bg-white/20 px-2 py-0.5 rounded-full">{pendingCount} pending</span>}
         </div>
+      )}
 
-        {/* IMAGE UPLOAD */}
-        <ImageUploadSection formData={formData} uid={user?.uid} itemId={itemId} onImagesChange={handleImagesChange} />
-
-        {/* BASIC INFO */}
-        <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
-          <h3 className="font-bold border-b pb-2">📋 මූලික තොරතුරු</h3>
-          <div>
-            <label className="font-bold text-sm block mb-1">🏷️ භාණ්ඩ කේතය</label>
-            <input className="w-full border-2 p-3 rounded-xl bg-gray-100 text-gray-500" value={formData.itemCode} disabled />
-          </div>
-          <div>
-            <label className="font-bold text-sm block mb-1">📊 බාර්කෝඩ්</label>
-            <div className="flex gap-2">
-              <input className="flex-1 border-2 p-3 rounded-xl" value={formData.barcode}
-                onChange={(e) => handleChange('barcode', e.target.value)} placeholder="Barcode..." />
-              <button type="button" onClick={generateBarcode}
-                className="bg-gray-200 px-4 rounded-xl font-bold hover:bg-gray-300">⚙️</button>
-            </div>
-          </div>
-          <div>
-            <label className="font-bold text-sm block mb-1">📝 නම (English) *</label>
-            <input className="w-full border-2 p-3 rounded-xl" value={formData.name}
-              onChange={(e) => handleChange('name', e.target.value)} placeholder="Item name..." />
-          </div>
-          <div>
-            <label className="font-bold text-sm block mb-1">🇱🇰 සිංහල නම</label>
-            <input className="w-full border-2 p-3 rounded-xl" value={formData.sinhalaName}
-              onChange={(e) => handleChange('sinhalaName', e.target.value)} placeholder="සිංහල නම..." />
-          </div>
-          <div>
-            <label className="font-bold text-sm block mb-1">🔑 Model / Key Code</label>
-            <input className="w-full border-2 p-3 rounded-xl" value={formData.modelKeyCode || ''}
-              onChange={(e) => handleChange('modelKeyCode', e.target.value)} />
-          </div>
-        </div>
-
-        {/* CLASSIFICATION */}
-        <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
-          <h3 className="font-bold border-b pb-2">📁 වර්ගීකරණය සහ සැකසුම්</h3>
-
-          <SmartSelectWithManage label="සන්නාමය (Brand)" icon="🏷️"
-            value={formData.brandId} displayValue={formData.brandName} options={brands}
-            onSelect={(id, name) => setFormData(prev => ({ ...prev, brandId: id, brandName: name }))}
-            collectionName="brands" uid={user?.uid} showToast={showToast} />
-
-          <SmartSelectWithManage label="වර්ගය (Category)" icon="📁"
-            value={formData.categoryId} displayValue={formData.categoryName} options={categories}
-            onSelect={(id, name) => setFormData(prev => ({ ...prev, categoryId: id, categoryName: name, subCategoryId: '', subCategoryName: '' }))}
-            collectionName="categories" uid={user?.uid} showToast={showToast} />
-
-          <SmartSelectWithManage label="උප වර්ගය (Sub Category)" icon="📂"
-            value={formData.subCategoryId} displayValue={formData.subCategoryName} options={subCategories}
-            onSelect={(id, name) => setFormData(prev => ({ ...prev, subCategoryId: id, subCategoryName: name }))}
-            collectionName="subCategories" uid={user?.uid} showToast={showToast}
-            parentFilter={{ field: 'categoryId', value: formData.categoryId }}
-            parentRequired={true} parentLabel="වර්ගය (Category)" />
-
-          {/* ★ UOM WITH CREATE BUTTON ★ */}
-          <UomSmartSelect
-            value={formData.uomId} displayValue={formData.uomName} uoms={uoms}
-            onSelect={(id, name, conversions) => setFormData(prev => ({
-              ...prev, uomId: id, uomName: name, availableUnits: conversions || [], catalogUom: name || ''
-            }))}
-            uid={user?.uid} showToast={showToast} />
-
-          <SmartSelectWithManage label="වර්ණය (Color)" icon="🎨"
-            value={formData.colorId} displayValue={formData.colorName} options={colors}
-            onSelect={(id, name) => setFormData(prev => ({ ...prev, colorId: id, colorName: name }))}
-            collectionName="colors" uid={user?.uid} showToast={showToast} colorPicker={true} />
-
-          <SmartSelectWithManage label="රාක්කය (Rack)" icon="🏗️"
-            value={formData.rackId} displayValue={formData.rackName} options={racks}
-            onSelect={(id, name) => setFormData(prev => ({ ...prev, rackId: id, rackName: name }))}
-            collectionName="racks" uid={user?.uid} showToast={showToast}
-            extraFields={[{ key: 'code', label: 'රාක්ක කේතය', icon: '🔢' }, { key: 'location', label: 'ස්ථානය', icon: '📍' }]} />
-
-          <SmartSelectWithManage label="සැපයුම්කරු (Supplier)" icon="🚚"
-            value={formData.supplierId} displayValue={formData.supplierName} options={suppliers}
-            onSelect={(id, name) => setFormData(prev => ({ ...prev, supplierId: id, supplierName: name }))}
-            collectionName="suppliers" uid={user?.uid} showToast={showToast}
-            extraFields={[{ key: 'phone', label: 'දුරකථන', icon: '📞' }, { key: 'address', label: 'ලිපිනය', icon: '🏠' }]} />
-        </div>
-
-        {/* PRICING */}
-        <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
-          <h3 className="font-bold border-b pb-2">💰 මිල ගණන්</h3>
-          <div>
-            <label className="font-bold text-sm block mb-1">💵 ගැනුම් මිල</label>
-            <input type="number" min="0" step="0.01"
-              className="w-full border-2 p-3 rounded-xl bg-yellow-50 font-bold text-lg"
-              value={formData.buyingPrice} onChange={(e) => handleChange('buyingPrice', e.target.value)} placeholder="0.00" />
-          </div>
-          {[
-            { key:'retail', label:'සිල්ලර', icon:'🏪', priceF:'sellingPriceRetail', discF:'retailDiscount', netF:'retailYourPrice', bg:'bg-blue-50', border:'border-blue-200' },
-            { key:'wholesale', label:'තොග', icon:'🏭', priceF:'sellingPriceWholesale', discF:'wholesaleDiscount', netF:'wholesaleYourPrice', bg:'bg-purple-50', border:'border-purple-200' },
-            { key:'loose', label:'ලූස්', icon:'📦', priceF:'sellingPriceLoose', discF:'looseDiscount', netF:'looseYourPrice', bg:'bg-orange-50', border:'border-orange-200' },
-          ].map(pt => (
-            <div key={pt.key} className={`p-4 rounded-xl border ${pt.bg} ${pt.border}`}>
-              <div className="font-bold mb-3">{pt.icon} {pt.label.toUpperCase()}</div>
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="text-xs text-gray-600 block mb-1">මිල</label>
-                  <input type="number" min="0" className="w-full border-2 p-2 rounded-lg text-center font-bold"
-                    value={formData[pt.priceF]} onChange={(e) => handleChange(pt.priceF, e.target.value)} placeholder="0.00" />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-600 block mb-1">වට්ටම %</label>
-                  <input type="number" min="0" max="100" className="w-full border-2 p-2 rounded-lg text-center"
-                    value={formData[pt.discF]} onChange={(e) => handleChange(pt.discF, e.target.value)} placeholder="0" />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-600 block mb-1">ඔබේ මිල</label>
-                  <input type="text" className="w-full border-2 p-2 rounded-lg text-center bg-green-100 font-bold text-green-700"
-                    value={formData[pt.netF]} readOnly />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* STOCK */}
-        <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
-          <h3 className="font-bold border-b pb-2">📊 තොග මට්ටම්</h3>
-          <div className="grid grid-cols-2 gap-4">
+      {/* ── Header ── */}
+      <div className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white p-4 shadow-lg">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => { if (onCancel) onCancel(); else router.back(); }}
+              className="bg-white/20 hover:bg-white/30 rounded-full w-10 h-10 flex items-center justify-center font-bold text-xl"
+            >←</button>
             <div>
-              <label className="text-sm font-bold block mb-1">අවම</label>
-              <input type="number" min="0" className="w-full border-2 p-3 rounded-xl"
-                value={formData.minStockLevel} onChange={(e) => handleChange('minStockLevel', e.target.value)} />
-            </div>
-            <div>
-              <label className="text-sm font-bold block mb-1">උපරිම</label>
-              <input type="number" min="0" className="w-full border-2 p-3 rounded-xl"
-                value={formData.maxStockLevel} onChange={(e) => handleChange('maxStockLevel', e.target.value)} />
-            </div>
-          </div>
-          <ToggleRow label="💰 VAT අදාළ වේ" desc="මෙම භාණ්ඩයට VAT එකතු කෙරේ"
-            checked={formData.vatEnabled} onChange={(v) => handleChange('vatEnabled', v)} color="peer-checked:bg-emerald-600" />
-          <textarea className="w-full border-2 p-3 rounded-xl" rows="2" placeholder="විස්තරය..."
-            value={formData.description} onChange={(e) => handleChange('description', e.target.value)} />
-        </div>
-
-        {/* WARRANTY */}
-        <div className="bg-amber-50 p-4 rounded-xl border border-amber-200">
-          <h3 className="font-bold text-amber-800 mb-4 text-base">🛡️ වගකීම් තොරතුරු</h3>
-          <div className="mb-4">
-            <label className="block text-sm font-bold text-gray-800 mb-2">📋 වගකීම් වර්ගය</label>
-            <div className="grid grid-cols-2 gap-2">
-              {WARRANTY_TYPES.map(wt => (
-                <button key={wt.value} type="button" onClick={() => {
-                  handleChange('warrantyType', wt.value);
-                  if (!wt.value) { handleChange('warrantyPeriod', ''); handleChange('warrantyTerms', ''); handleChange('warrantyNotes', ''); }
-                }} className={`p-3 rounded-xl text-left font-bold text-sm border-2 flex items-center gap-2 transition-all
-                  ${formData.warrantyType === wt.value ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700 border-gray-200 hover:border-amber-300'}`}>
-                  <span>{wt.icon}</span><span className="text-xs">{wt.label}</span>
-                </button>
-              ))}
+              <h1 className="font-bold text-lg">
+                {mode === 'edit' ? '✏️ Item Edit' : '➕ New Item'}
+              </h1>
+              <div className="text-xs opacity-80 flex items-center gap-2">
+                <span>{online ? '🟢 Online' : '🔴 Offline'}</span>
+                {syncing && <span>🔄 Syncing...</span>}
+              </div>
             </div>
           </div>
-
-          {formData.warrantyType && (
-            <>
-              <div className="mb-4">
-                <label className="block text-sm font-bold text-gray-800 mb-2">⏰ වගකීම් කාලය</label>
-                <div className="flex gap-2 flex-wrap mb-2">
-                  {WARRANTY_PERIODS.map(wp => (
-                    <button key={wp.value} type="button" onClick={() => handleChange('warrantyPeriod', wp.value)}
-                      className={`flex flex-col items-center px-3 py-2 rounded-xl border-2 font-bold text-xs transition-all
-                        ${formData.warrantyPeriod === wp.value ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-amber-700 border-amber-200'}`}>
-                      <span className="font-black">{wp.label}</span>
-                      <span className="text-[9px] opacity-80">{wp.desc}</span>
-                    </button>
-                  ))}
-                </div>
-                <input className="w-full border-2 border-amber-200 bg-white p-3 rounded-xl text-sm font-bold text-amber-800 placeholder-amber-300 outline-none focus:border-amber-500"
-                  value={formData.warrantyPeriod || ''} onChange={(e) => handleChange('warrantyPeriod', e.target.value)}
-                  placeholder="හෝ අතින් ඇතුළු කරන්න: 6 months / 1 year" />
-                {formData.warrantyPeriod && (
-                  <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-xl text-center">
-                    <div className="text-[10px] text-green-600 font-bold mb-1">✅ කල් ඉකුත් වන දිනය (අදින්)</div>
-                    <div className="text-base font-black text-green-800">{calcWarrantyExpiry(formData.warrantyPeriod) || '—'}</div>
-                  </div>
-                )}
-              </div>
-              <div className="mb-4">
-                <label className="block text-sm font-bold text-gray-800 mb-2">📜 වගකීම් කොන්දේසි</label>
-                <textarea value={formData.warrantyTerms || ''} onChange={(e) => handleChange('warrantyTerms', e.target.value)}
-                  rows={3} className="w-full border-2 border-amber-100 bg-white p-3 rounded-xl text-sm outline-none focus:border-amber-300 resize-y" />
-              </div>
-              <div>
-                <label className="block text-sm font-bold text-gray-800 mb-2">📝 අමතර සටහන්</label>
-                <textarea value={formData.warrantyNotes || ''} onChange={(e) => handleChange('warrantyNotes', e.target.value)}
-                  rows={2} className="w-full border-2 border-amber-100 bg-white p-3 rounded-xl text-sm outline-none focus:border-amber-300 resize-y" />
-              </div>
-            </>
+          {mode === 'edit' && (
+            <button
+              onClick={handleDelete}
+              disabled={saving}
+              className="bg-red-500/80 hover:bg-red-600 px-3 py-2 rounded-xl font-bold text-sm disabled:opacity-50"
+            >🗑️ Delete</button>
           )}
         </div>
       </div>
 
-      {/* SAVE BUTTONS */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white p-4 border-t flex gap-3 z-20 shadow-lg">
-        <button onClick={onCancel} className="flex-1 bg-gray-200 py-4 rounded-xl font-bold hover:bg-gray-300">❌ අවලංගු</button>
-        <button onClick={saveItem} disabled={isSaving}
-          className={`flex-[2] py-4 rounded-xl font-bold text-white disabled:opacity-50
-            ${mode === 'edit' ? 'bg-green-600 hover:bg-green-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
-          {isSaving ? '⏳ සුරකිමින්...' : mode === 'edit' ? '✅ යාවත්කාලීන කරන්න' : '💾 සුරකින්න'}
+      {/* ── Tabs ── */}
+      <div className="bg-white border-b sticky top-0 z-30 shadow-sm">
+        <div className="flex overflow-x-auto">
+          {[
+            { key: 'basic',    label: '📝 මූලික',    },
+            { key: 'pricing',  label: '💰 මිල',      },
+            { key: 'stock',    label: '📦 Stock',    },
+            { key: 'warranty', label: '🛡️ වගකීම',  },
+            { key: 'images',   label: '📷 රූප',     },
+            { key: 'advanced', label: '⚙️ උසස්',    },
+          ].map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`shrink-0 px-4 py-3 text-sm font-bold border-b-2 transition-all whitespace-nowrap
+                ${activeTab === tab.key ? 'border-blue-600 text-blue-600 bg-blue-50' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Form Content ── */}
+      <div className="p-4 max-w-3xl mx-auto space-y-4">
+
+        {/* ═══ BASIC TAB ═══ */}
+        {activeTab === 'basic' && (
+          <>
+            <div className="bg-white p-4 rounded-xl shadow-sm border space-y-3">
+              <div>
+                <label className="block text-sm font-bold text-gray-800 mb-1">📦 භාණ්ඩයේ නම *</label>
+                <input
+                  className="w-full border-2 border-gray-200 p-3 rounded-xl font-medium outline-none focus:border-blue-400"
+                  value={formData.name}
+                  onChange={(e) => updateField('name', e.target.value)}
+                  placeholder="උදා: Dialog recharge card"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-800 mb-1">🇱🇰 සිංහල නම</label>
+                <input
+                  className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
+                  value={formData.sinhalaName}
+                  onChange={(e) => updateField('sinhalaName', e.target.value)}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-bold text-gray-800 mb-1">🔖 Item Code</label>
+                  <input
+                    className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
+                    value={formData.itemCode}
+                    onChange={(e) => updateField('itemCode', e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-800 mb-1">📊 Barcode</label>
+                  <input
+                    className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
+                    value={formData.barcode}
+                    onChange={(e) => updateField('barcode', e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
+              <SmartSelectWithManage
+                label="වෙළඳ නාමය" icon="🏷️"
+                value={formData.brandId} displayValue={formData.brandName}
+                options={brands}
+                onSelect={(id, name) => updateFields({ brandId: id, brandName: name })}
+                collectionName="brands" uid={user?.uid} showToast={showToast}
+              />
+              <SmartSelectWithManage
+                label="වර්ගය" icon="📂"
+                value={formData.categoryId} displayValue={formData.categoryName}
+                options={categories}
+                onSelect={(id, name) => updateFields({ categoryId: id, categoryName: name, subCategoryId: '', subCategoryName: '' })}
+                collectionName="categories" uid={user?.uid} showToast={showToast}
+              />
+              <SmartSelectWithManage
+                label="උප වර්ගය" icon="📁"
+                value={formData.subCategoryId} displayValue={formData.subCategoryName}
+                options={subCategories}
+                onSelect={(id, name) => updateFields({ subCategoryId: id, subCategoryName: name })}
+                collectionName="subCategories" uid={user?.uid} showToast={showToast}
+                parentFilter={{ field: 'categoryId', value: formData.categoryId }}
+                parentRequired={true} parentLabel="වර්ගය"
+              />
+              <UomSmartSelect
+                value={formData.uomId} displayValue={formData.uomName}
+                uoms={uoms}
+                onSelect={(id, name, conversions) => updateFields({ uomId: id, uomName: name, availableUnits: conversions || [] })}
+                uid={user?.uid} showToast={showToast}
+              />
+              <SmartSelectWithManage
+                label="වර්ණය" icon="🎨"
+                value={formData.colorId} displayValue={formData.colorName}
+                options={colors}
+                onSelect={(id, name) => updateFields({ colorId: id, colorName: name })}
+                collectionName="colors" uid={user?.uid} showToast={showToast}
+                colorPicker={true}
+              />
+            </div>
+          </>
+        )}
+
+        {/* ═══ PRICING TAB ═══ */}
+        {activeTab === 'pricing' && (
+          <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
+            <div>
+              <label className="block text-sm font-bold text-gray-800 mb-1">💵 මිලදී ගත් මිල</label>
+              <input
+                type="number" step="any"
+                className="w-full border-2 border-gray-200 p-3 rounded-xl font-bold outline-none focus:border-blue-400"
+                value={formData.buyingPrice}
+                onChange={(e) => updateField('buyingPrice', e.target.value)}
+              />
+            </div>
+
+            {['Retail', 'Wholesale', 'Loose'].map(type => {
+              const key = type.toLowerCase();
+              const priceField = `sellingPrice${type}`;
+              const discField  = `${key}Discount`;
+              const netField   = `${key}YourPrice`;
+              return (
+                <div key={type} className="bg-gray-50 p-3 rounded-xl border">
+                  <div className="font-bold text-sm text-gray-700 mb-2">💰 {type} Price</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-xs text-gray-600">මිල</label>
+                      <input
+                        type="number" step="any"
+                        className="w-full border p-2 rounded-lg text-sm outline-none"
+                        value={formData[priceField]}
+                        onChange={(e) => {
+                          const price = e.target.value;
+                          updateFields({
+                            [priceField]: price,
+                            [netField]: calcNet(price, formData[discField]),
+                          });
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-600">වට්ටම %</label>
+                      <input
+                        type="number" step="any"
+                        className="w-full border p-2 rounded-lg text-sm outline-none"
+                        value={formData[discField]}
+                        onChange={(e) => {
+                          const disc = e.target.value;
+                          updateFields({
+                            [discField]: disc,
+                            [netField]: calcNet(formData[priceField], disc),
+                          });
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-600">ශුද්ධ මිල</label>
+                      <input
+                        readOnly
+                        className="w-full border p-2 rounded-lg text-sm bg-green-50 font-bold text-green-700"
+                        value={formData[netField]}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ═══ STOCK TAB ═══ */}
+        {activeTab === 'stock' && (
+          <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-bold text-gray-800 mb-1">📉 අවම මට්ටම</label>
+                <input
+                  type="number"
+                  className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
+                  value={formData.minStockLevel}
+                  onChange={(e) => updateField('minStockLevel', e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-800 mb-1">📈 උපරිම මට්ටම</label>
+                <input
+                  type="number"
+                  className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
+                  value={formData.maxStockLevel}
+                  onChange={(e) => updateField('maxStockLevel', e.target.value)}
+                />
+              </div>
+            </div>
+            <SmartSelectWithManage
+              label="රාක්කය" icon="🗄️"
+              value={formData.rackId} displayValue={formData.rackName}
+              options={racks}
+              onSelect={(id, name) => updateFields({ rackId: id, rackName: name })}
+              collectionName="racks" uid={user?.uid} showToast={showToast}
+            />
+            <SmartSelectWithManage
+              label="සැපයුම්කරු" icon="🚚"
+              value={formData.supplierId} displayValue={formData.supplierName}
+              options={suppliers}
+              onSelect={(id, name) => updateFields({ supplierId: id, supplierName: name })}
+              collectionName="suppliers" uid={user?.uid} showToast={showToast}
+            />
+            <ToggleRow
+              label="Stock නැති විට Order කිරීමට ඉඩ දෙන්න"
+              desc="Stock = 0 වුණත් විකිණීමට ඉඩ දේ"
+              checked={formData.allowOrderWhenOutOfStock}
+              onChange={(v) => updateField('allowOrderWhenOutOfStock', v)}
+            />
+          </div>
+        )}
+
+        {/* ═══ WARRANTY TAB ═══ */}
+        {activeTab === 'warranty' && (
+          <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
+            <div>
+              <label className="block text-sm font-bold text-gray-800 mb-2">🛡️ වගකීම් වර්ගය</label>
+              <div className="grid grid-cols-2 gap-2">
+                {WARRANTY_TYPES.map(wt => (
+                  <button
+                    key={wt.value}
+                    type="button"
+                    onClick={() => updateField('warrantyType', wt.value)}
+                    className={`p-3 rounded-xl border-2 text-sm font-bold transition-all text-left
+                      ${formData.warrantyType === wt.value ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-700'}`}
+                  >
+                    {wt.icon} {wt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {formData.warrantyType && (
+              <>
+                <div>
+                  <label className="block text-sm font-bold text-gray-800 mb-2">⏱️ කාලය</label>
+                  <div className="flex flex-wrap gap-2">
+                    {WARRANTY_PERIODS.map(wp => (
+                      <button
+                        key={wp.value}
+                        type="button"
+                        onClick={() => updateField('warrantyPeriod', wp.value)}
+                        className={`px-3 py-2 rounded-xl border-2 text-xs font-bold
+                          ${formData.warrantyPeriod === wp.value ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-600'}`}
+                      >
+                        {wp.label} <span className="opacity-60">({wp.desc})</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {formData.warrantyPeriod && (
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-xl text-sm">
+                    <b>📅 කල් ඉකුත් වීම:</b> {calcWarrantyExpiry(formData.warrantyPeriod)}
+                  </div>
+                )}
+                <div>
+                  <label className="block text-sm font-bold text-gray-800 mb-1">📝 වගකීම් නියමයන්</label>
+                  <textarea
+                    rows={3}
+                    className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
+                    value={formData.warrantyTerms}
+                    onChange={(e) => updateField('warrantyTerms', e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ═══ IMAGES TAB ═══ */}
+        {activeTab === 'images' && (
+          <ImageUploadSection
+            formData={formData}
+            uid={user?.uid}
+            itemId={itemId}
+            onImagesChange={(imgs) => updateFields(imgs)}
+            isOnline={online}
+          />
+        )}
+
+        {/* ═══ ADVANCED TAB ═══ */}
+        {activeTab === 'advanced' && (
+          <div className="bg-white p-4 rounded-xl shadow-sm border divide-y">
+            <ToggleRow label="හංගන්න (Hidden)" desc="මෙම භාණ්ඩය POS එකේ නොපෙන්වයි" checked={formData.isHidden} onChange={(v) => updateField('isHidden', v)} />
+            <ToggleRow label="මිලදී ගැනීම පමණයි" desc="මෙය විකිණීමට නොවේ" checked={formData.isPurchaseOnly} onChange={(v) => updateField('isPurchaseOnly', v)} />
+            <ToggleRow label="මිල පෙන්වන්න" checked={formData.showPrice} onChange={(v) => updateField('showPrice', v)} />
+            <ToggleRow label="වට්ටම පෙන්වන්න" checked={formData.showDiscount} onChange={(v) => updateField('showDiscount', v)} />
+            <ToggleRow label="VAT සක්‍රීය" checked={formData.vatEnabled} onChange={(v) => updateField('vatEnabled', v)} />
+            <ToggleRow label="KOT (Kitchen Order Ticket)" checked={formData.kot} onChange={(v) => updateField('kot', v)} />
+            <div className="py-3">
+              <label className="block text-sm font-bold text-gray-800 mb-1">📝 විස්තරය</label>
+              <textarea
+                rows={3}
+                className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
+                value={formData.description}
+                onChange={(e) => updateField('description', e.target.value)}
+              />
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* ── Sticky Save Bar ── */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t shadow-2xl p-3 flex gap-2 z-40">
+        <button
+          onClick={() => { if (onCancel) onCancel(); else router.back(); }}
+          className="flex-1 bg-gray-200 hover:bg-gray-300 py-3 rounded-xl font-bold text-sm"
+        >❌ අවලංගු</button>
+        <button
+          onClick={handleSave}
+          disabled={saving || !formData.name?.trim()}
+          className={`flex-[2] py-3 rounded-xl font-bold text-sm text-white
+            ${online ? 'bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700' : 'bg-gradient-to-r from-orange-500 to-red-500'}
+            disabled:opacity-50`}
+        >
+          {saving ? '⏳ Saving...' : online ? '💾 සුරකින්න' : '💾 Offline Save'}
         </button>
       </div>
+
+      {/* ── Toast ── */}
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
     </div>
   );
 }

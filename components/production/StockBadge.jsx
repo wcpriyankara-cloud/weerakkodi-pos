@@ -30,7 +30,7 @@ export default function StockBadge({ stock, uom }) {
       }}
     >
       {isZero ? '🔴' : isLow ? '🟡' : '🟢'}
-      {s % 1 === 0 ? s : s.toFixed(2)}
+      {s % 1 === 0 ? s : (Number(s) || 0).toFixed(2)}
       {uom && uom !== 'unit' ? ` ${uom}` : ''}
     </span>
   );

@@ -1,18 +1,7 @@
 'use client';
 
-// components/CashManagement.jsx v63-updated
-// 🚀 FINAL PRO BULLETPROOF RECONCILIATION & MULTI-SOURCE SYNC WITH LOANS & CHITS
-// - Fixed sessionTotalOut ReferenceError
-// - Directly listens to `cashTransactions`, root-level `customerTransactions` AND `productionEntries`
-// - Real-time bypass logic automatically tracks custom businesses ("custom_xxxx") with zero delay
-// - Bulletproof duplication filter matches entryId and batchNumber to avoid double counting
-// - Syncs all Bank Loan repayments & Chit/Group Savings transactions from BankLoanManagement
-// - Sinhala live "ආරම්භක + ලැබීම් - වියදම් = අපේක්ශිත මුදල" dynamic equation widget
-// - New Bank Account insertion modal inside Banks tab
-// - CLOSING BALANCE RECONCILIATION: Live expected amount & discrepancy difference calculator in Closing Modal
-
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { db } from '@/shared/firebase-config';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { db } from "../firebaseConfig";
 import { useUserAuth } from '@/context/UserContext';
 import {
   collection, onSnapshot, query, doc,
@@ -23,7 +12,7 @@ import {
 /* ═══════════════════════════════════════ HELPERS ═══════════════════════════════════════ */
 const toNum = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 const fmtC = v => toNum(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const fmtQ = v => { const n = Math.round(toNum(v) * 100) / 100; return n % 1 === 0 ? String(n) : n.toFixed(2); };
+const fmtQ = v => { const n = Math.round(toNum(v) * 100) / 100; return n % 1 === 0 ? String(n) : (Number(n) || 0).toFixed(2); };
 
 const toMs = src => {
   if (!src) return 0;
@@ -382,7 +371,7 @@ const BalanceEntryModal = ({ isOpen, onClose, type, user, bankAccounts, expected
     if (!isOpen) return;
     setDenominations(initDenom());
     const prefill = {};
-    bankAccounts.forEach(acc => { const live = toNum(acc.liveBalance ?? acc.currentBalance ?? 0); prefill[acc.id] = live > 0 ? live.toFixed(2) : ''; });
+    bankAccounts.forEach(acc => { const live = toNum(acc.liveBalance ?? acc.currentBalance ?? 0); prefill[acc.id] = live > 0 ? (Number(live) || 0).toFixed(2) : ''; });
     setBankBalances(prefill); setNotes('');
   }, [isOpen, bankAccounts]);
 
@@ -636,8 +625,22 @@ const VehicleExpenseTab = ({ user, bankAccounts }) => {
   const [form, setForm] = useState(VEH_INIT);
   useEffect(() => {
     if (!user?.uid) return;
-    const u1 = onSnapshot(collection(db, `users/${user.uid}/vehicles`), s => setVehicles(s.docs.map(d => ({ id: d.id, ...d.data() }))));
-    const u2 = onSnapshot(collection(db, `users/${user.uid}/vehicleExpenses`), s => setVehicleExpenses(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const u1 = onSnapshot(collection(db, `users/${user.uid}/vehicles`), s => setVehicles(s.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
+    const u2 = onSnapshot(collection(db, `users/${user.uid}/vehicleExpenses`), s => setVehicleExpenses(s.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     return () => { u1(); u2(); };
   }, [user]);
   const rows = useMemo(() => [...vehicleExpenses].sort((a, b) => toMs(b.timestamp || b.createdAt) - toMs(a.timestamp || a.createdAt)), [vehicleExpenses]);
@@ -971,19 +974,47 @@ export default function CashManagement() {
 
     const unsubCust = onSnapshot(query(collection(db, 'customerTransactions'), where('uid', '==', user.uid)), (snap) => {
       setCustomerTxs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     const unsubBanks = onSnapshot(query(collection(db, `users/${user.uid}/bankAccounts`)), (snap) => {
       setBankAccounts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     const unsubPurch = onSnapshot(query(collection(db, `users/${user.uid}/purchases`)), (snap) => {
       setPurchases(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     const unsubProd = onSnapshot(query(collection(db, 'productionEntries'), where('uid', '==', user.uid)), (snap) => {
       setProductionEntries(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    },
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
 
     return () => { unsubCash(); unsubCust(); unsubBanks(); unsubPurch(); unsubProd(); };
   }, [user]);

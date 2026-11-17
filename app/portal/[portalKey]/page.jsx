@@ -1,19 +1,19 @@
-'use client';
+import CustomerPortal from '@/components/CustomerPortal';
 
-import dynamic from 'next/dynamic';
+// ✅ Static export compilation එක සාර්ථක වීමට dynamic parameters අර්ථ දක්වයි
+export async function generateStaticParams() {
+  return [
+    { portalKey: 'default' },
+    { portalKey: 'detail' }
+  ];
+}
 
-const CustomerPortal = dynamic(
-  () => import('@/components/CustomerPortal'),
-  {
-    ssr: false,
-    loading: () => (
-      <div style={{ padding: 40, textAlign: 'center', color: '#64748b', fontSize: 16 }}>
-        ⏳ Loading portal...
-      </div>
-    ),
-  }
-);
+export const metadata = {
+  title: 'Customer Portal | Weerakkodi POS',
+  description: 'View invoices and payment history',
+};
 
-export default function PortalPage() {
-  return <CustomerPortal />;
+export default function PortalPage({ params }) {
+  const { portalKey } = params;
+  return <CustomerPortal portalKey={portalKey} />;
 }

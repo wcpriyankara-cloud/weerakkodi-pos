@@ -1,2378 +1,153 @@
 'use client';
 
-// components/PurchaseCommonForm.jsx
-
-import React, {
-  useState, useEffect, useRef, useCallback, useMemo
-} from 'react';
-
-import { db, storage } from '@/firebaseConfig';
-import {
-  ref as storageRef, uploadBytes, getDownloadURL
-} from 'firebase/storage';
-import {
-  collection, addDoc, getDocs, serverTimestamp,
-  query, where, doc, updateDoc, increment, deleteDoc,
-  onSnapshot, Timestamp
-} from 'firebase/firestore';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { localDb } from '../lib/localDb';
 import { useUserAuth } from '@/context/UserContext';
-import { Html5Qrcode } from 'html5-qrcode';
-// ═══════════════════════════════════════════════════════════
-// CONSTANTS — component outside (stable references)
-// ═══════════════════════════════════════════════════════════
-const INIT_LINE_ITEM = Object.freeze({
-  itemId: '', name: '', qty: 1,
-  buyingPrice: 0, discountPercent: 0, buyingNetPrice: 0,
-  retailPrice: 0, retailDiscount: 0, retailYourPrice: 0,
-  wholesalePrice: 0, wholesaleDiscount: 0, wholesaleYourPrice: 0,
-  loosePrice: 0, looseDiscount: 0, looseYourPrice: 0,
-  barcode: '', warranty: '',
-  expiryDate: '',
-  batchNo: '',
-});
+import { db } from '@/shared/firebase-config';
+import {
+  collection, addDoc, doc, updateDoc, deleteDoc, getDocs,
+  query, where, onSnapshot, serverTimestamp, writeBatch,
+  increment, Timestamp
+} from 'firebase/firestore';
 
-const PRICE_FIELDS = Object.freeze({
-  buying:    { p: 'buyingPrice',    d: 'discountPercent',   y: 'buyingNetPrice'     },
-  retail:    { p: 'retailPrice',    d: 'retailDiscount',    y: 'retailYourPrice'    },
-  wholesale: { p: 'wholesalePrice', d: 'wholesaleDiscount', y: 'wholesaleYourPrice' },
-  loose:     { p: 'loosePrice',     d: 'looseDiscount',     y: 'looseYourPrice'     },
-});
+// ═══════════════════════════════════════════════════════════
+// SAFE FIREBASE IMPORTS (offline crash prevention)
+// ═══════════════════════════════════════════════════════════
+import { cn, normalizeDate, formatCurrency } from '../lib/utils';
 
+// ═══════════════════════════════════════════════════════════
+// CONSTANTS & HELPERS
+// ═══════════════════════════════════════════════════════════
 const PAYMENT_METHODS = [
-  { v: 'cash',   l: '💵 Cash',   c: '#16a34a' },
-  { v: 'bank',   l: '🏦 Bank',   c: '#2563eb' },
-  { v: 'cheque', l: '📝 Cheque', c: '#7c3aed' },
-  { v: 'online', l: '📱 Online', c: '#0891b2' },
+  { v: 'cash', l: '💵 Cash', c: '#10b981' },
+  { v: 'bank', l: '🏦 Bank', c: '#3b82f6' }
 ];
 
-// ═══════════════════════════════════════════════════════════
-// UTILITY FUNCTIONS
-// ═══════════════════════════════════════════════════════════
-const toNum = (val) => {
-  if (typeof val === 'number') return Math.round(val * 100) / 100;
-  if (!val) return 0;
-  const n = parseFloat(String(val).replace(/,/g, '').trim());
-  return isNaN(n) ? 0 : Math.round(n * 100) / 100;
+const PRICE_FIELDS = {
+  buying:    { p: 'buyingPrice',       d: 'discountPercent',  y: 'buyingNetPrice' },
+  retail:    { p: 'retailPrice',       d: 'retailDiscount',   y: 'retailYourPrice' },
+  wholesale: { p: 'wholesalePrice',    d: 'wholesaleDiscount',y: 'wholesaleYourPrice' },
+  loose:     { p: 'loosePrice',        d: 'looseDiscount',    y: 'looseYourPrice' }
 };
 
-const calcNetPrice = (p, d) =>
-  Math.round((toNum(p) - (toNum(p) * toNum(d) / 100)) * 100) / 100;
+const INIT_LINE_ITEM = {
+  itemId: '',
+  name: '',
+  qty: 1,
+  buyingPrice: '',
+  discountPercent: '',
+  buyingNetPrice: '',
+  retailPrice: '',
+  retailDiscount: '',
+  retailYourPrice: '',
+  wholesalePrice: '',
+  wholesaleDiscount: '',
+  wholesaleYourPrice: '',
+  loosePrice: '',
+  looseDiscount: '',
+  looseYourPrice: '',
+  barcode: '',
+  warranty: '',
+  expiryDate: '',
+  batchNo: '',
+};
 
-const formatCurrency = (v) =>
-  toNum(v).toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+const R2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 
-const formatBankBalance = (amount, currency = 'LKR') =>
-  (parseFloat(amount) || 0).toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }) + ' ' + currency;
+const toSortKey = (v) => {
+  if (!v) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number') return String(v).padStart(15, '0');
+  if (v.seconds) return String(v.seconds).padStart(15, '0');
+  if (typeof v.toDate === 'function') return v.toDate().toISOString();
+  return String(v);
+};
+
+export const calcNetPrice = (price, discountPercent) => {
+  const p = Number(price) || 0;
+  const d = Number(discountPercent) || 0;
+  return R2(p * (1 - d / 100));
+};
+
+export const getExpiryStatus = (expiryStr, referenceDate = new Date()) => {
+  if (!expiryStr) return null;
+  const exp = new Date(expiryStr);
+  const ref = new Date(referenceDate);
+  const diffTime = exp - ref;
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  if (diffDays < 0) {
+    return { status: 'expired', label: 'කල් ඉකුත් වී ඇත', bg: '#fee2e2', border: '#fca5a5', color: '#b91c1c', icon: '🔴' };
+  } else if (diffDays === 0) {
+    return { status: 'today', label: 'අද දින කල් ඉකුත් වේ', bg: '#fef3c7', border: '#fcd34d', color: '#b45309', icon: '🟡' };
+  } else if (diffDays <= 30) {
+    return { status: 'soon', label: `දින ${diffDays} කින් කල් ඉකුත් වේ`, bg: '#ffedd5', border: '#fed7aa', color: '#c2410c', icon: '🟠' };
+  } else if (diffDays <= 90) {
+    return { status: 'warning', label: `මාස 3ක් ඇතුළත කල් ඉකුත් වේ`, bg: '#fffbeb', border: '#fde047', color: '#854d0e', icon: '🟡' };
+  }
+  return { status: 'good', label: `සුරක්ෂිතයි (තව දින ${diffDays})`, bg: '#ecfdf5', border: '#a7f3d0', color: '#047857', icon: '🟢' };
+};
+
+const localISODate = (d = new Date()) => {
+  const tzoffset = d.getTimezoneOffset() * 60000;
+  return (new Date(d.getTime() - tzoffset)).toISOString().slice(0, 10);
+};
+
+const nowHHMM = () => {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+const toNum = (v) => Number(v) || 0;
 
 const formatDate = (val) => {
-  if (!val) return 'N/A';
-  if (val?.toDate) {
-    const d = val.toDate();
-    return (
-      d.toLocaleDateString('en-GB', {
-        day: '2-digit', month: 'short', year: 'numeric',
-      }) +
-      ' ' +
-      d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-    );
-  }
-  if (typeof val === 'string') {
-    try {
-      return new Date(val).toLocaleDateString('en-GB', {
-        day: '2-digit', month: 'short', year: 'numeric',
-      });
-    } catch { return val; }
-  }
-  return String(val);
+  if (!val) return '-';
+  const d = normalizeDate(val);
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 };
 
-const getBuyingPrice = (item) =>
-  item
-    ? toNum(
-        item.buyingPrice ||
-        item.costPrice ||
-        item.purchasePrice ||
-        item.price ||
-        0
-      )
-    : 0;
-
-const getBuyingDiscount = (item) =>
-  item
-    ? toNum(
-        item.buyingDiscount ||
-        item.costDiscount ||
-        item.discountPercent ||
-        0
-      )
-    : 0;
-
-const localISODate = (d = new Date()) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-    d.getDate()
-  ).padStart(2, '0')}`;
-
-const nowHHMM = () => new Date().toTimeString().slice(0, 5);
-
-const getSupplierBalance = (supplier) => {
-  if (!supplier) return 0;
-  const b = parseFloat(supplier.balance);
-  if (!isNaN(b) && b !== 0) return b;
-  const c = parseFloat(supplier.currentBalance);
-  if (!isNaN(c)) return c;
-  return parseFloat(supplier.openingBalance) || 0;
+const formatExpiryDate = (val) => {
+  if (!val) return '-';
+  const d = new Date(val);
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit' });
 };
 
-// ─── Expiry helpers ───
-const getExpiryStatus = (expiryDate, todayRef = null) => {
-  if (!expiryDate) return null;
-  const today = todayRef ? new Date(todayRef) : new Date();
-  today.setHours(0, 0, 0, 0);
-  const expiry = new Date(expiryDate);
-  expiry.setHours(0, 0, 0, 0);
-  const diffDays = Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
-  if (diffDays < 0)
-    return {
-      status: 'expired',
-      label: `කල් ඉකුත්ව ${Math.abs(diffDays)} දින`,
-      color: '#dc2626', bg: '#fef2f2',
-      border: '#fca5a5', icon: '🔴',
-    };
-  if (diffDays === 0)
-    return {
-      status: 'today',
-      label: 'අද කල් ඉකුත් වේ!',
-      color: '#dc2626', bg: '#fef2f2',
-      border: '#fca5a5', icon: '⚠️',
-    };
-  if (diffDays <= 30)
-    return {
-      status: 'soon',
-      label: `${diffDays} දිනකින් කල් ඉකුත්`,
-      color: '#ea580c', bg: '#fff7ed',
-      border: '#fdba74', icon: '🟠',
-    };
-  if (diffDays <= 90)
-    return {
-      status: 'warning',
-      label: `${diffDays} දිනකින් කල් ඉකුත්`,
-      color: '#d97706', bg: '#fffbeb',
-      border: '#fcd34d', icon: '🟡',
-    };
-  return {
-    status: 'ok',
-    label: `${diffDays} දින ඉතිරිය`,
-    color: '#16a34a', bg: '#f0fdf4',
-    border: '#86efac', icon: '🟢',
-  };
+export const getInvStatus = (inv) => {
+  const b = toNum(inv.balance);
+  const p = toNum(inv.paidAmount);
+  return b <= 0.01 ? 'paid' : p > 0 ? 'partial' : 'credit';
 };
 
-const formatExpiryDate = (dateStr) => {
-  if (!dateStr) return '';
+const getBuyingPrice = (item) => toNum(item.buyingPrice || item.costPrice || 0);
+const getBuyingDiscount = (item) => toNum(item.buyingDiscount || 0);
+const getSupplierBalance = (sup) => toNum(sup.currentBalance || 0);
+
+const uploadOneImage = async (file) => {
   try {
-    return new Date(dateStr).toLocaleDateString('en-GB', {
-      day: '2-digit', month: 'short', year: 'numeric',
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch('https://telegra.ph/upload', {
+      method: 'POST',
+      body: formData,
     });
-  } catch { return dateStr; }
-};
-
-// ─── Image compression — single reusable function ───
-const compressImage = (file, maxWidth = 600, quality = 0.5) =>
-  new Promise((resolve) => {
+    const result = await response.json();
+    if (result && result[0] && result[0].src) {
+      return { url: `https://telegra.ph${result[0].src}` };
+    }
+  } catch (err) {
+    console.error("Telegraph upload error, falling back to local base64 preview:", err);
+  }
+  return new Promise((resolve) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let w = img.width;
-        let h = img.height;
-        if (w > maxWidth) {
-          h = Math.round((h * maxWidth) / w);
-          w = maxWidth;
-        }
-        canvas.width = w;
-        canvas.height = h;
-        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-        canvas.toBlob(
-          (blob) =>
-            resolve(
-              blob
-                ? new File([blob], file.name || 'image.jpg', {
-                    type: 'image/jpeg',
-                  })
-                : file
-            ),
-          'image/jpeg',
-          quality
-        );
-      };
-      img.onerror = () => resolve(file);
-      img.src = e.target.result;
-    };
-    reader.onerror = () => resolve(file);
     reader.readAsDataURL(file);
+    reader.onloadend = () => resolve({ url: reader.result });
   });
-
-// Specific presets using shared function
-const compressSupplierPhoto = (file) => compressImage(file, 400, 0.6);
-const compressReceiptImage  = (file) => compressImage(file, 600, 0.5);
-
-const uploadOneImage = async (file, path) => {
-  if (!storage) return { url: null };
-  try {
-    const ref = storageRef(storage, path);
-    await uploadBytes(ref, file);
-    return { url: await getDownloadURL(ref) };
-  } catch (e) {
-    console.warn('Storage upload:', e.code);
-    return { url: null };
-  }
 };
 
 // ═══════════════════════════════════════════════════════════
-// SUPPLIER BALANCE UPDATE
+// SUB COMPONENTS
 // ═══════════════════════════════════════════════════════════
-const updateSupplierBalanceFields = async (
-  supplierId,
-  amount,
-  mode = 'add'
-) => {
-  if (!supplierId) {
-    console.warn('updateSupplierBalanceFields: Missing supplierId');
-    return;
-  }
-  const amt = Math.round((parseFloat(amount) || 0) * 100) / 100;
-  if (amt <= 0) {
-    console.warn('updateSupplierBalanceFields: Invalid amount', amount);
-    return;
-  }
-  try {
-    const change = mode === 'add' ? amt : -amt;
-    await updateDoc(doc(db, 'suppliers', supplierId), {
-      balance: increment(change),
-      currentBalance: increment(change),
-      updatedAt: serverTimestamp(), // ✅ server timestamp
-    });
-  } catch (err) {
-    console.error('updateSupplierBalanceFields:', err);
-  }
-};
 
-// ═══════════════════════════════════════════════════════════
-// CASH TRANSACTION SAVE
-// ═══════════════════════════════════════════════════════════
-const savePurchaseCashTransaction = async ({
-  user, amount, supplierId, supplierName,
-  invoiceId, invoiceNo, paymentMethod = 'cash',
-  bankAccountId = null, bankAccountName = '',
-  bankName = '', notes = '', items = [],
-  date, time,
-}) => {
-  const roundedAmt = Math.round((parseFloat(amount) || 0) * 100) / 100;
-  if (!user?.uid || roundedAmt <= 0) return null;
-
-  const sanitizedItems = Array.isArray(items)
-    ? items
-        .filter(Boolean)
-        .map((i) => ({
-          itemId: String(i.itemId || ''),
-          name: String(i.name || i.itemName || ''),
-          qty: toNum(i.qty ?? i.quantity ?? 0),
-          buyingPrice: toNum(i.buyingPrice ?? i.price ?? 0),
-          totalCost: toNum(i.totalCost ?? i.total ?? i.lineTotal ?? 0),
-        }))
-    : [];
-
-  try {
-    const docRef = await addDoc(
-      collection(db, `users/${user.uid}/cashTransactions`),
-      {
-        type: 'out',
-        category: 'supplierPayment',
-        source: 'purchase',
-        amount: roundedAmt,
-        supplierId: supplierId || '',
-        supplier_id: supplierId || '',
-        supplierName: supplierName || '',
-        invoiceId: invoiceId || '',
-        invoiceNo: invoiceNo || '',
-        paymentMethod: paymentMethod || 'cash',
-        bankAccountId:
-          paymentMethod === 'bank' ? bankAccountId || null : null,
-        bankAccountName:
-          paymentMethod === 'bank' ? bankAccountName || '' : '',
-        bankName: paymentMethod === 'bank' ? bankName || '' : '',
-        description: `📦 ${supplierName || 'Supplier'} — Rs.${roundedAmt.toFixed(2)}`,
-        notes: notes || '',
-        items: sanitizedItems,
-        date: date || localISODate(),
-        time: time || nowHHMM(),
-        timestamp: Timestamp.now(),
-        createdAt: serverTimestamp(),
-        createdBy: user?.email || '',
-        isAutomatic: true,
-        uid: user.uid,
-      }
-    );
-    return docRef.id;
-  } catch (err) {
-    console.error('cashTransaction FAILED:', err);
-    return null;
-  }
-};
-
-// ═══════════════════════════════════════════════════════════
-// TAB WARNING MODAL
-// ═══════════════════════════════════════════════════════════
-const TabWarningModal = ({ isOpen, cartCount, onConfirm, onCancel }) => {
-  if (!isOpen) return null;
-  return (
-    <div
-      style={{
-        position: 'fixed', inset: 0,
-        background: 'rgba(0,0,0,0.6)',
-        zIndex: 9999,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: 20,
-      }}
-    >
-      <div
-        style={{
-          background: 'white', borderRadius: 16,
-          padding: 28, maxWidth: 380, width: '100%',
-          textAlign: 'center',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-        }}
-      >
-        <div style={{ fontSize: 48, marginBottom: 12 }}>⚠️</div>
-        <h3 style={{ margin: '0 0 10px', color: '#1e293b' }}>
-          Cart Items ඇත
-        </h3>
-        <p style={{ color: '#64748b', fontSize: 14, margin: '0 0 20px' }}>
-          Cart එකේ <b>{cartCount}</b> item(s) ඇත. Tab change කළොත් cart clear වේ.
-          Continue කරන්නද?
-        </p>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button
-            onClick={onCancel}
-            style={{
-              flex: 1, padding: '12px 0', borderRadius: 10,
-              border: '2px solid #e2e8f0',
-              background: 'white', color: '#64748b',
-              fontWeight: 700, fontSize: 14, cursor: 'pointer',
-            }}
-          >
-            ❌ Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            style={{
-              flex: 1, padding: '12px 0', borderRadius: 10,
-              border: 'none',
-              background: 'linear-gradient(135deg, #ef4444, #dc2626)',
-              color: 'white', fontWeight: 700,
-              fontSize: 14, cursor: 'pointer',
-            }}
-          >
-            ✅ Continue
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════
-// CONTACTS PICKER MODAL
-// ═══════════════════════════════════════════════════════════
-const ContactsPickerModal = ({ isOpen, onClose, onSelectContact }) => {
-  const [contacts, setContacts]   = useState([]);
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState('');
-  const [search, setSearch]       = useState('');
-  const fileRef                   = useRef(null);
-
-  const isContactsAPISupported = () =>
-    'contacts' in navigator && 'ContactsManager' in window;
-
-  // Reset on close
-  useEffect(() => {
-    if (!isOpen) { setContacts([]); setSearch(''); setError(''); }
-  }, [isOpen]);
-
-  // Revoke blob URLs on contacts change
-  useEffect(() => {
-    return () => {
-      contacts.forEach((c) => {
-        if (c.photoUrl?.startsWith('blob:')) URL.revokeObjectURL(c.photoUrl);
-      });
-    };
-  }, [contacts]);
-
-  const loadContactsViaAPI = async () => {
-    setLoading(true); setError('');
-    try {
-      const props = ['name', 'tel', 'email', 'address', 'icon'];
-      const supported = await navigator.contacts.getProperties();
-      const reqProps = props.filter((p) => supported.includes(p));
-      const selected = await navigator.contacts.select(reqProps, {
-        multiple: true,
-      });
-      if (!selected?.length) { setLoading(false); return; }
-
-      const parsed = await Promise.all(
-        selected.map(async (contact, idx) => {
-          let photoUrl = null, photoBlob = null;
-          if (contact.icon?.length > 0) {
-            try {
-              const blob = contact.icon[0];
-              photoUrl = URL.createObjectURL(blob);
-              photoBlob = blob;
-            } catch (e) { console.warn('Photo error:', e); }
-          }
-          return {
-            id: `contact_${idx}_${Date.now()}`,
-            name: contact.name?.[0] || '',
-            phone: contact.tel?.[0] || '',
-            phones: contact.tel || [],
-            email: contact.email?.[0] || '',
-            emails: contact.email || [],
-            address:
-              contact.address?.[0]?.street ||
-              contact.address?.[0]?.formattedAddress ||
-              '',
-            photoUrl, photoBlob, raw: contact,
-          };
-        })
-      );
-      setContacts(parsed);
-    } catch (e) {
-      if (e.name === 'TypeError') {
-        setError('📱 Contacts API support නැත. vCard import කරන්න.');
-      } else if (e.name !== 'InvalidStateError') {
-        setError(`❌ Error: ${e.message}`);
-      }
-    } finally { setLoading(false); }
-  };
-
-  const handleVCardImport = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const vcards = text.split('BEGIN:VCARD').filter(Boolean);
-      const parsed = vcards
-        .map((vcard, idx) => {
-          const fn  = vcard.match(/FN[;:](.+)/i);
-          const n   = vcard.match(/N[;:]([^;]+);([^;]+)/i);
-          const name = fn
-            ? fn[1].trim()
-            : n ? `${n[2]} ${n[1]}`.trim() : '';
-          const tel = vcard.match(/TEL[;:][^:]*:(.+)/i);
-          const em  = vcard.match(/EMAIL[;:][^:]*:(.+)/i);
-          const adr = vcard.match(/ADR[;:][^:]*:(.+)/i);
-          return {
-            id: `vcard_${idx}_${Date.now()}`,
-            name,
-            phone: tel ? tel[1].trim() : '',
-            phones: tel ? [tel[1].trim()] : [],
-            email: em ? em[1].trim() : '',
-            emails: em ? [em[1].trim()] : [],
-            address: adr ? adr[1].replace(/;/g, ', ').trim() : '',
-            photoUrl: null, photoBlob: null,
-          };
-        })
-        .filter((c) => c.name || c.phone);
-      setContacts(parsed);
-    } catch (err) {
-      setError('❌ vCard read error: ' + err.message);
-    }
-    e.target.value = '';
-  };
-
-  const filtered = useMemo(() => {
-    if (!search.trim()) return contacts;
-    const s = search.toLowerCase();
-    return contacts.filter(
-      (c) =>
-        (c.name || '').toLowerCase().includes(s) ||
-        (c.phone || '').includes(s) ||
-        (c.email || '').toLowerCase().includes(s)
-    );
-  }, [contacts, search]);
-
-  if (!isOpen) return null;
-
-  return (
-    <div
-      style={{
-        position: 'fixed', inset: 0,
-        background: 'rgba(0,0,0,0.75)',
-        zIndex: 10001,
-        display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
-      }}
-    >
-      <div
-        style={{
-          background: 'white',
-          borderRadius: '20px 20px 0 0',
-          width: '100%', maxWidth: 520,
-          maxHeight: '88vh',
-          display: 'flex', flexDirection: 'column',
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            padding: '20px 20px 16px',
-            borderBottom: '1px solid #e2e8f0',
-            display: 'flex', justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <div>
-            <h3 style={{ margin: 0, fontSize: 18, color: '#1e293b' }}>
-              📱 Contacts
-            </h3>
-            <p style={{ margin: '4px 0 0', fontSize: 12, color: '#64748b' }}>
-              Phone contact list එකෙන් import කරන්න
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: '#f1f5f9', border: 'none',
-              borderRadius: '50%', width: 36, height: 36,
-              fontSize: 16, cursor: 'pointer', color: '#64748b',
-            }}
-          >
-            ✕
-          </button>
-        </div>
-
-        {contacts.length === 0 && (
-          <div style={{ padding: 20 }}>
-            {isContactsAPISupported() && (
-              <button
-                onClick={loadContactsViaAPI}
-                disabled={loading}
-                style={{
-                  width: '100%', padding: 16, borderRadius: 12,
-                  border: 'none',
-                  background: loading
-                    ? '#94a3b8'
-                    : 'linear-gradient(135deg, #3b82f6, #1e40af)',
-                  color: 'white', fontSize: 16, fontWeight: 700,
-                  cursor: loading ? 'wait' : 'pointer',
-                  marginBottom: 10,
-                  display: 'flex', alignItems: 'center',
-                  justifyContent: 'center', gap: 10,
-                }}
-              >
-                {loading ? '⏳ Loading...' : '📱 Phone Contacts Open කරන්න'}
-              </button>
-            )}
-            <input
-              ref={fileRef} type="file" accept=".vcf,.vcard"
-              onChange={handleVCardImport}
-              style={{ display: 'none' }}
-            />
-            <button
-              onClick={() => fileRef.current?.click()}
-              style={{
-                width: '100%', padding: 14, borderRadius: 12,
-                border: '2px dashed #cbd5e1', background: '#f8fafc',
-                color: '#475569', fontSize: 14, fontWeight: 600,
-                cursor: 'pointer',
-                display: 'flex', alignItems: 'center',
-                justifyContent: 'center', gap: 8,
-              }}
-            >
-              📂 vCard File Import (.vcf)
-            </button>
-            {!isContactsAPISupported() && (
-              <div
-                style={{
-                  marginTop: 12, padding: 12, background: '#fef3c7',
-                  borderRadius: 10, border: '1px solid #fcd34d',
-                  fontSize: 13, color: '#92400e', textAlign: 'center',
-                }}
-              >
-                ⚠️ Chrome Android 80+ හෝ vCard import භාවිතා කරන්න
-              </div>
-            )}
-            {error && (
-              <div
-                style={{
-                  marginTop: 10, padding: 12, background: '#fef2f2',
-                  borderRadius: 10, border: '1px solid #fca5a5',
-                  fontSize: 13, color: '#991b1b', textAlign: 'center',
-                }}
-              >
-                {error}
-              </div>
-            )}
-          </div>
-        )}
-
-        {contacts.length > 0 && (
-          <>
-            <div
-              style={{
-                padding: '10px 16px',
-                borderBottom: '1px solid #e2e8f0',
-              }}
-            >
-              <input
-                placeholder="🔍 Contact සොයන්න..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                style={{
-                  width: '100%', padding: 12, borderRadius: 10,
-                  border: '1px solid #e2e8f0', outline: 'none',
-                  fontSize: 14, boxSizing: 'border-box',
-                }}
-              />
-              <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>
-                {filtered.length} contacts found
-              </div>
-            </div>
-            <div style={{ flex: 1, overflowY: 'auto', padding: '8px 16px' }}>
-              {filtered.map((contact) => (
-                <div
-                  key={contact.id}
-                  onClick={() => { onSelectContact(contact); onClose(); }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 12,
-                    padding: 12, marginBottom: 6, borderRadius: 12,
-                    cursor: 'pointer', border: '1px solid #e2e8f0',
-                    background: 'white', transition: 'background 0.15s',
-                  }}
-                  onMouseEnter={(e) =>
-                    (e.currentTarget.style.background = '#f8fafc')
-                  }
-                  onMouseLeave={(e) =>
-                    (e.currentTarget.style.background = 'white')
-                  }
-                >
-                  <div
-                    style={{
-                      width: 48, height: 48, borderRadius: '50%',
-                      overflow: 'hidden', flexShrink: 0,
-                      border: '2px solid #e2e8f0', background: '#f1f5f9',
-                      display: 'flex', alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    {contact.photoUrl ? (
-                      <img
-                        src={contact.photoUrl} alt={contact.name}
-                        style={{
-                          width: '100%', height: '100%',
-                          objectFit: 'cover',
-                        }}
-                      />
-                    ) : (
-                      <div
-                        style={{
-                          width: '100%', height: '100%',
-                          display: 'flex', alignItems: 'center',
-                          justifyContent: 'center',
-                          background: `hsl(${
-                            (contact.name || '').charCodeAt(0) * 37 % 360
-                          }, 55%, 80%)`,
-                          color: `hsl(${
-                            (contact.name || '').charCodeAt(0) * 37 % 360
-                          }, 55%, 30%)`,
-                          fontWeight: 800, fontSize: 20,
-                        }}
-                      >
-                        {(contact.name || '?')[0]?.toUpperCase()}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontWeight: 700, fontSize: 15, color: '#1e293b',
-                        whiteSpace: 'nowrap', overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {contact.name || 'Unknown'}
-                    </div>
-                    {contact.phone && (
-                      <div style={{ fontSize: 13, color: '#3b82f6', marginTop: 2 }}>
-                        📞 {contact.phone}
-                      </div>
-                    )}
-                    {contact.email && (
-                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 1 }}>
-                        ✉️ {contact.email}
-                      </div>
-                    )}
-                  </div>
-                  <span style={{ color: '#94a3b8', fontSize: 18 }}>›</span>
-                </div>
-              ))}
-              {filtered.length === 0 && (
-                <div
-                  style={{ textAlign: 'center', padding: 30, color: '#94a3b8' }}
-                >
-                  🔍 "{search}" හමු නොවීය
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════
-// NEW SUPPLIER MODAL
-// ═══════════════════════════════════════════════════════════
-const NewSupplierModal = ({
-  isOpen, onClose, onSaved, initialData = {}, user,
-}) => {
-  const [form, setForm] = useState({
-    name: '', phone: '', email: '', address: '',
-    company: '', notes: '', photoFile: null, photoPreview: null,
-  });
-  const [saving, setSaving]           = useState(false);
-  const [showContacts, setShowContacts] = useState(false);
-  const photoRef = useRef(null);
-  const camRef   = useRef(null);
-
-  // Cleanup blob URL on photoPreview change
-  useEffect(() => {
-    return () => {
-      if (form.photoPreview?.startsWith('blob:')) {
-        URL.revokeObjectURL(form.photoPreview);
-      }
-    };
-  }, [form.photoPreview]);
-
-  // Use ref to avoid JSON.stringify in deps
-  const initialDataRef = useRef(initialData);
-  useEffect(() => {
-    if (!isOpen) return;
-    const d = initialDataRef.current;
-    setForm({
-      name: d.name || '',
-      phone: d.phone || '',
-      email: d.email || '',
-      address: d.address || '',
-      company: d.company || '',
-      notes: '',
-      photoFile: d.photoFile || null,
-      photoPreview: d.photoPreview || d.photoUrl || null,
-    });
-  }, [isOpen]);
-
-  // Sync initialData changes via ref
-  useEffect(() => {
-    initialDataRef.current = initialData;
-  }, [initialData]);
-
-  const handleContactSelected = async (contact) => {
-    let photoFile = null;
-    let photoPreview = contact.photoUrl || null;
-    if (contact.photoBlob) {
-      try {
-        const f = new File(
-          [contact.photoBlob],
-          `contact_${Date.now()}.jpg`,
-          { type: contact.photoBlob.type || 'image/jpeg' }
-        );
-        photoFile = await compressSupplierPhoto(f);
-        photoPreview = URL.createObjectURL(photoFile);
-      } catch (e) { console.warn('Photo error:', e); }
-    } else if (contact.photoUrl?.startsWith('blob:')) {
-      try {
-        const res  = await fetch(contact.photoUrl);
-        const blob = await res.blob();
-        const f    = new File(
-          [blob], `contact_${Date.now()}.jpg`,
-          { type: blob.type || 'image/jpeg' }
-        );
-        photoFile    = await compressSupplierPhoto(f);
-        photoPreview = URL.createObjectURL(photoFile);
-      } catch (e) { console.warn('Blob error:', e); }
-    }
-    setForm((prev) => ({
-      ...prev,
-      name:         contact.name    || prev.name,
-      phone:        contact.phone   || prev.phone,
-      email:        contact.email   || prev.email,
-      address:      contact.address || prev.address,
-      photoFile:    photoFile    || prev.photoFile,
-      photoPreview: photoPreview || prev.photoPreview,
-    }));
-    setShowContacts(false);
-  };
-
-  const handlePhotoPick = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file || !file.type.startsWith('image/')) return;
-    try {
-      const compressed = await compressSupplierPhoto(file);
-      setForm((p) => ({
-        ...p,
-        photoFile: compressed,
-        photoPreview: URL.createObjectURL(compressed),
-      }));
-    } catch {
-      setForm((p) => ({
-        ...p,
-        photoFile: file,
-        photoPreview: URL.createObjectURL(file),
-      }));
-    }
-    e.target.value = '';
-  };
-
-  const removePhoto = () => {
-    setForm((p) => ({ ...p, photoFile: null, photoPreview: null }));
-  };
-
-  const handleSave = async () => {
-    if (!form.name.trim()) return alert('❌ නම ඇතුළත් කරන්න');
-    if (saving) return;
-    setSaving(true);
-    try {
-      let imageUrl = '';
-      if (form.photoFile && storage) {
-        try {
-          const path = `suppliers/${user.uid}/${Date.now()}_${
-            form.photoFile.name || 'photo.jpg'
-          }`;
-          const ref = storageRef(storage, path);
-          await uploadBytes(ref, form.photoFile);
-          imageUrl = await getDownloadURL(ref);
-        } catch (e) { console.warn('Photo upload error:', e); }
-      }
-      const docRef = await addDoc(collection(db, 'suppliers'), {
-        name:     form.name.trim(),
-        phone:    form.phone.trim(),
-        email:    form.email.trim(),
-        address:  form.address.trim(),
-        company:  form.company.trim(),
-        notes:    form.notes.trim(),
-        imageUrl, photoUrl: imageUrl,
-        balance: 0, currentBalance: 0, openingBalance: 0,
-        uid: user.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        source: 'purchase_form',
-      });
-      const newSupplier = {
-        id:       docRef.id,
-        name:     form.name.trim(),
-        phone:    form.phone.trim(),
-        email:    form.email.trim(),
-        address:  form.address.trim(),
-        company:  form.company.trim(),
-        imageUrl, photoUrl: imageUrl,
-        balance: 0, currentBalance: 0, openingBalance: 0,
-        uid: user.uid,
-      };
-      onSaved(newSupplier);
-      onClose();
-    } catch (e) {
-      alert('❌ Save error: ' + e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (!isOpen) return null;
-
-  const inp = {
-    width: '100%', padding: 12, borderRadius: 10,
-    border: '1px solid #cbd5e1', outline: 'none',
-    fontSize: 14, boxSizing: 'border-box',
-  };
-  const lbl = {
-    display: 'block', marginBottom: 6,
-    fontSize: 12, fontWeight: 700, color: '#475569',
-  };
-
-  return (
-    <div
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
-        zIndex: 10000,
-        display: 'flex', alignItems: 'center',
-        justifyContent: 'center', padding: 16,
-      }}
-    >
-      <div
-        style={{
-          background: 'white', borderRadius: 16, width: '100%',
-          maxWidth: 480, maxHeight: '92vh', overflowY: 'auto',
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            background: 'linear-gradient(135deg, #059669, #10b981)',
-            padding: 20, borderRadius: '16px 16px 0 0',
-            color: 'white',
-            display: 'flex', justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <div>
-            <h3 style={{ margin: 0 }}>🏪 නව සැපයුම්කරු</h3>
-            <p style={{ margin: '4px 0 0', fontSize: 13, opacity: 0.9 }}>
-              නව සැපයුම්කරු register කරන්න
-            </p>
-          </div>
-          <button
-            onClick={onClose} disabled={saving}
-            style={{
-              background: 'rgba(255,255,255,0.2)', border: 'none',
-              color: 'white', borderRadius: '50%',
-              width: 36, height: 36, fontSize: 16, cursor: 'pointer',
-            }}
-          >
-            ✕
-          </button>
-        </div>
-
-        <div style={{ padding: 20 }}>
-          {/* Contacts autofill */}
-          <button
-            onClick={() => setShowContacts(true)} disabled={saving}
-            style={{
-              width: '100%', padding: 14, borderRadius: 12,
-              border: '2px dashed #3b82f6', background: '#eff6ff',
-              color: '#1e40af', fontSize: 15, fontWeight: 700,
-              cursor: 'pointer', marginBottom: 20,
-              display: 'flex', alignItems: 'center',
-              justifyContent: 'center', gap: 10,
-            }}
-          >
-            📱 Contacts වලින් Auto-fill කරන්න
-          </button>
-
-          {/* Photo picker */}
-          <div
-            style={{
-              display: 'flex', justifyContent: 'center', marginBottom: 20,
-            }}
-          >
-            <div style={{ position: 'relative' }}>
-              <input
-                ref={photoRef} type="file" accept="image/*"
-                onChange={handlePhotoPick}
-                style={{ display: 'none' }}
-              />
-              <input
-                ref={camRef} type="file" accept="image/*"
-                capture="environment" onChange={handlePhotoPick}
-                style={{ display: 'none' }}
-              />
-              <div
-                style={{
-                  width: 90, height: 90, borderRadius: '50%',
-                  overflow: 'hidden', border: '3px solid #e2e8f0',
-                  background: '#f1f5f9',
-                  display: 'flex', alignItems: 'center',
-                  justifyContent: 'center', cursor: 'pointer',
-                }}
-                onClick={() => photoRef.current?.click()}
-              >
-                {form.photoPreview ? (
-                  <img
-                    src={form.photoPreview} alt="Supplier"
-                    style={{
-                      width: '100%', height: '100%', objectFit: 'cover',
-                    }}
-                  />
-                ) : (
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 28 }}>📸</div>
-                    <div
-                      style={{
-                        fontSize: 9, color: '#94a3b8', marginTop: 2,
-                      }}
-                    >
-                      Photo
-                    </div>
-                  </div>
-                )}
-              </div>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  camRef.current?.click();
-                }}
-                style={{
-                  position: 'absolute', bottom: -4, right: -4,
-                  width: 28, height: 28, borderRadius: '50%',
-                  background: '#3b82f6', border: '2px solid white',
-                  color: 'white', fontSize: 13, cursor: 'pointer',
-                  display: 'flex', alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                📷
-              </button>
-              {form.photoPreview && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); removePhoto(); }}
-                  style={{
-                    position: 'absolute', top: -4, left: -4,
-                    width: 24, height: 24, borderRadius: '50%',
-                    background: '#ef4444', border: '2px solid white',
-                    color: 'white', fontSize: 11, cursor: 'pointer',
-                    display: 'flex', alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Fields */}
-          <div style={{ display: 'grid', gap: 14 }}>
-            <div>
-              <label style={lbl}>👤 නම *</label>
-              <input
-                value={form.name}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, name: e.target.value }))
-                }
-                placeholder="සැපයුම්කරුගේ නම"
-                style={{
-                  ...inp,
-                  border: '2px solid #10b981',
-                  fontSize: 16, fontWeight: 600,
-                }}
-                autoFocus
-              />
-            </div>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr', gap: 12,
-              }}
-            >
-              <div>
-                <label style={lbl}>📞 දුරකථන</label>
-                <input
-                  value={form.phone}
-                  onChange={(e) =>
-                    setForm((p) => ({ ...p, phone: e.target.value }))
-                  }
-                  placeholder="07X XXXX XXX"
-                  type="tel" style={inp}
-                />
-              </div>
-              <div>
-                <label style={lbl}>✉️ Email</label>
-                <input
-                  value={form.email}
-                  onChange={(e) =>
-                    setForm((p) => ({ ...p, email: e.target.value }))
-                  }
-                  placeholder="email@example.com"
-                  type="email" style={inp}
-                />
-              </div>
-            </div>
-            <div>
-              <label style={lbl}>🏢 සමාගම</label>
-              <input
-                value={form.company}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, company: e.target.value }))
-                }
-                placeholder="සමාගම් නම" style={inp}
-              />
-            </div>
-            <div>
-              <label style={lbl}>📍 ලිපිනය</label>
-              <textarea
-                value={form.address}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, address: e.target.value }))
-                }
-                placeholder="ලිපිනය" rows={2}
-                style={{ ...inp, resize: 'vertical' }}
-              />
-            </div>
-            <div>
-              <label style={lbl}>📝 සටහන්</label>
-              <input
-                value={form.notes}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, notes: e.target.value }))
-                }
-                placeholder="අමතර සටහන්" style={inp}
-              />
-            </div>
-          </div>
-
-          <button
-            onClick={handleSave}
-            disabled={saving || !form.name.trim()}
-            style={{
-              width: '100%', padding: 16, borderRadius: 12,
-              border: 'none', fontSize: 16, fontWeight: 700,
-              color: 'white', cursor: 'pointer', marginTop: 20,
-              background:
-                saving || !form.name.trim()
-                  ? '#94a3b8'
-                  : 'linear-gradient(135deg, #059669, #10b981)',
-            }}
-          >
-            {saving
-              ? '⏳ Saving...'
-              : `✅ "${form.name || 'Supplier'}" Save කරන්න`}
-          </button>
-        </div>
-      </div>
-      <ContactsPickerModal
-        isOpen={showContacts}
-        onClose={() => setShowContacts(false)}
-        onSelectContact={handleContactSelected}
-      />
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════
-// SUPPLIER SEARCHABLE SELECT
-// ═══════════════════════════════════════════════════════════
-const SupplierSearchableSelect = ({
-  options, value, onChange, onSupplierCreated,
-  placeholder = 'සැපයුම්කරු තෝරන්න', user,
-}) => {
-  const [isOpen, setIsOpen]               = useState(false);
-  const [search, setSearch]               = useState('');
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [showContactsPicker, setShowContactsPicker] = useState(false);
-  const [createInitialData, setCreateInitialData]   = useState({});
-  const ref = useRef(null);
-
-  useEffect(() => {
-    const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) {
-        setIsOpen(false); setSearch('');
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  const selected = useMemo(
-    () => (options || []).find((o) => o.id === value),
-    [options, value]
-  );
-
-  const filtered = useMemo(() => {
-    if (!search.trim()) return options || [];
-    const s = search.toLowerCase().trim();
-    return (options || []).filter((o) =>
-      [o?.name, o?.company, o?.phone, o?.email, o?.sinhalaName].some(
-        (f) => f && String(f).toLowerCase().includes(s)
-      )
-    );
-  }, [options, search]);
-
-  const noMatch = search.trim().length > 0 && filtered.length === 0;
-  const getImg  = (s) => s?.imageUrl || s?.photoUrl || s?.image || null;
-
-  const handleSupplierCreated = (newSupplier) => {
-    onSupplierCreated?.(newSupplier);
-    onChange(newSupplier.id);
-    setIsOpen(false); setSearch('');
-    setShowCreateModal(false); setCreateInitialData({});
-  };
-
-  const handleContactForCreate = (contact) => {
-    setShowContactsPicker(false);
-    setCreateInitialData({
-      name: contact.name || '', phone: contact.phone || '',
-      email: contact.email || '', address: contact.address || '',
-      photoUrl: contact.photoUrl || null,
-      photoPreview: contact.photoUrl || null,
-      photoBlob: contact.photoBlob || null,
-    });
-    setTimeout(() => setShowCreateModal(true), 250);
-  };
-
-  return (
-    <div ref={ref} style={{ position: 'relative', width: '100%' }}>
-      {/* Trigger */}
-      <div
-        onClick={() => setIsOpen(!isOpen)}
-        style={{
-          padding: '12px 14px',
-          border: selected ? '2px solid #10b981' : '1px solid #cbd5e1',
-          borderRadius: 12,
-          background: selected ? '#f0fdf4' : 'white',
-          cursor: 'pointer',
-          display: 'flex', alignItems: 'center',
-          gap: 12, minHeight: 54, transition: 'all 0.2s',
-        }}
-      >
-        {selected && (
-          <div
-            style={{
-              width: 38, height: 38, borderRadius: '50%',
-              overflow: 'hidden', flexShrink: 0,
-              border: '2px solid #d1fae5', background: '#ecfdf5',
-              display: 'flex', alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            {getImg(selected) ? (
-              <img
-                src={getImg(selected)} alt={selected.name}
-                style={{
-                  width: '100%', height: '100%', objectFit: 'cover',
-                }}
-                onError={(e) => { e.target.style.display = 'none'; }}
-              />
-            ) : (
-              <span
-                style={{ fontSize: 17, fontWeight: 800, color: '#059669' }}
-              >
-                {(selected.name || '?')[0]?.toUpperCase()}
-              </span>
-            )}
-          </div>
-        )}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <span
-            style={{
-              color: selected ? '#1e293b' : '#94a3b8',
-              fontWeight: selected ? 600 : 400, fontSize: 15,
-            }}
-          >
-            {selected ? selected.name : placeholder}
-          </span>
-          {selected?.phone && (
-            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-              📞 {selected.phone}
-            </div>
-          )}
-          {selected?.company && (
-            <div style={{ fontSize: 12, color: '#7c3aed', marginTop: 1 }}>
-              🏢 {selected.company}
-            </div>
-          )}
-        </div>
-        <span style={{ color: '#94a3b8', fontSize: 12, flexShrink: 0 }}>
-          {isOpen ? '▲' : '▼'}
-        </span>
-      </div>
-
-      {/* Dropdown */}
-      {isOpen && (
-        <div
-          style={{
-            position: 'absolute', top: '100%', width: '100%',
-            background: 'white', border: '1px solid #cbd5e1',
-            borderRadius: 12, marginTop: 6, zIndex: 1000,
-            maxHeight: 500, overflowY: 'auto',
-            boxShadow: '0 10px 40px rgba(0,0,0,0.15)',
-          }}
-        >
-          {/* Search */}
-          <div
-            style={{
-              position: 'sticky', top: 0, background: 'white',
-              zIndex: 1, borderBottom: '2px solid #e2e8f0',
-            }}
-          >
-            <input
-              autoFocus
-              placeholder="🔍 නම, දුරකථනය, email..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              style={{
-                width: '100%', padding: 14, border: 'none',
-                outline: 'none', boxSizing: 'border-box', fontSize: 15,
-              }}
-            />
-          </div>
-
-          {/* Actions */}
-          <div
-            style={{
-              padding: '8px 10px',
-              display: 'flex', gap: 8,
-              borderBottom: '1px solid #f1f5f9',
-              background: '#f8fafc',
-            }}
-          >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setCreateInitialData({ name: search.trim() });
-                setShowCreateModal(true); setIsOpen(false);
-              }}
-              style={{
-                flex: 1, padding: '10px 8px', borderRadius: 10,
-                border: '2px dashed #10b981', background: '#f0fdf4',
-                color: '#059669', fontWeight: 700, fontSize: 13,
-                cursor: 'pointer',
-                display: 'flex', alignItems: 'center',
-                justifyContent: 'center', gap: 6,
-              }}
-            >
-              ➕ නව සැපයුම්කරු
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowContactsPicker(true); setIsOpen(false);
-              }}
-              style={{
-                flex: 1, padding: '10px 8px', borderRadius: 10,
-                border: '2px dashed #3b82f6', background: '#eff6ff',
-                color: '#1e40af', fontWeight: 700, fontSize: 13,
-                cursor: 'pointer',
-                display: 'flex', alignItems: 'center',
-                justifyContent: 'center', gap: 6,
-              }}
-            >
-              📱 Contacts
-            </button>
-          </div>
-
-          {/* List */}
-          <div style={{ maxHeight: 360, overflowY: 'auto' }}>
-            {filtered.map((o) => {
-              const img   = getImg(o);
-              const isSel = value === o.id;
-              const bal   = parseFloat(o.balance || o.currentBalance || 0);
-              return (
-                <div
-                  key={o.id}
-                  onClick={() => { onChange(o.id); setIsOpen(false); setSearch(''); }}
-                  style={{
-                    padding: '12px 14px', cursor: 'pointer',
-                    background: isSel ? '#f0fdf4' : 'white',
-                    borderBottom: '1px solid #f1f5f9',
-                    display: 'flex', alignItems: 'center', gap: 12,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 44, height: 44, borderRadius: '50%',
-                      overflow: 'hidden', flexShrink: 0,
-                      border: isSel
-                        ? '2px solid #10b981'
-                        : '2px solid #e2e8f0',
-                      background: '#f1f5f9',
-                      display: 'flex', alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    {img ? (
-                      <img
-                        src={img} alt={o.name}
-                        style={{
-                          width: '100%', height: '100%',
-                          objectFit: 'cover',
-                        }}
-                        onError={(e) => {
-                          e.target.style.display = 'none';
-                        }}
-                      />
-                    ) : (
-                      <span
-                        style={{
-                          fontSize: 18, fontWeight: 800,
-                          color: '#94a3b8',
-                        }}
-                      >
-                        {(o.name || '?')[0]?.toUpperCase()}
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontWeight: 600, fontSize: 15, color: '#1e293b',
-                        display: 'flex', alignItems: 'center', gap: 6,
-                      }}
-                    >
-                      {isSel && (
-                        <span style={{ color: '#10b981' }}>✓</span>
-                      )}
-                      {o.name}
-                    </div>
-                    <div
-                      style={{
-                        display: 'flex', gap: 6,
-                        flexWrap: 'wrap', marginTop: 3,
-                      }}
-                    >
-                      {o.phone && (
-                        <span
-                          style={{
-                            fontSize: 11, color: '#3b82f6',
-                            background: '#eff6ff',
-                            padding: '1px 6px', borderRadius: 4,
-                          }}
-                        >
-                          📞 {o.phone}
-                        </span>
-                      )}
-                      {o.company && (
-                        <span
-                          style={{
-                            fontSize: 11, color: '#7c3aed',
-                            background: '#f5f3ff',
-                            padding: '1px 6px', borderRadius: 4,
-                          }}
-                        >
-                          🏢 {o.company}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  {bal !== 0 && (
-                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                      <div style={{ fontSize: 10, color: '#94a3b8' }}>
-                        ශේෂය
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 13, fontWeight: 800,
-                          color: bal > 0 ? '#dc2626' : '#16a34a',
-                        }}
-                      >
-                        {Math.abs(bal).toLocaleString('en-US', {
-                          minimumFractionDigits: 2,
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            {noMatch && (
-              <div style={{ padding: 28, textAlign: 'center' }}>
-                <div style={{ fontSize: 44, marginBottom: 8 }}>🔍</div>
-                <div
-                  style={{
-                    fontSize: 16, fontWeight: 700,
-                    color: '#1e293b', marginBottom: 6,
-                  }}
-                >
-                  "{search}" හමු නොවීය
-                </div>
-                <p
-                  style={{
-                    fontSize: 13, color: '#64748b', marginBottom: 16,
-                  }}
-                >
-                  නව සැපයුම්කරුවකු ලෙස එකතු කරන්න
-                </p>
-                <div
-                  style={{
-                    display: 'flex', gap: 8,
-                    justifyContent: 'center',
-                  }}
-                >
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setCreateInitialData({ name: search.trim() });
-                      setShowCreateModal(true); setIsOpen(false);
-                    }}
-                    style={{
-                      padding: '11px 20px', borderRadius: 10,
-                      border: 'none',
-                      background: 'linear-gradient(135deg, #059669, #10b981)',
-                      color: 'white', fontWeight: 700,
-                      fontSize: 14, cursor: 'pointer',
-                    }}
-                  >
-                    ➕ "{search}" Add
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowContactsPicker(true); setIsOpen(false);
-                    }}
-                    style={{
-                      padding: '11px 20px', borderRadius: 10,
-                      border: '2px solid #3b82f6',
-                      background: '#eff6ff', color: '#1e40af',
-                      fontWeight: 700, fontSize: 14, cursor: 'pointer',
-                    }}
-                  >
-                    📱 Contacts
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {!search.trim() && filtered.length === 0 && (
-              <div
-                style={{
-                  padding: 30, textAlign: 'center', color: '#64748b',
-                }}
-              >
-                <div style={{ fontSize: 44, marginBottom: 10 }}>🏪</div>
-                <div
-                  style={{
-                    fontSize: 15, fontWeight: 700, marginBottom: 14,
-                  }}
-                >
-                  සැපයුම්කරුවන් නැත
-                </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setCreateInitialData({});
-                    setShowCreateModal(true); setIsOpen(false);
-                  }}
-                  style={{
-                    padding: '12px 28px', borderRadius: 10, border: 'none',
-                    background: '#10b981', color: 'white',
-                    fontWeight: 700, cursor: 'pointer',
-                  }}
-                >
-                  ➕ පළමු සැපයුම්කරු
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      <NewSupplierModal
-        isOpen={showCreateModal}
-        onClose={() => {
-          setShowCreateModal(false);
-          setCreateInitialData({});
-        }}
-        onSaved={handleSupplierCreated}
-        initialData={createInitialData}
-        user={user}
-      />
-      <ContactsPickerModal
-        isOpen={showContactsPicker}
-        onClose={() => setShowContactsPicker(false)}
-        onSelectContact={handleContactForCreate}
-      />
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════
-// BANK ACCOUNT SELECTOR
-// ═══════════════════════════════════════════════════════════
-function BankAccountSelector({
-  value, onChange, bankAccounts, loading,
-  disabled = false,
-  label = '🏦 බැංකු ගිණුම *',
-  showDeductInfo = false,
-  deductAmount = 0,
-}) {
-  const selected = useMemo(
-    () => bankAccounts.find((b) => b.id === value),
-    [bankAccounts, value]
-  );
-
-  if (loading)
-    return (
-      <div
-        style={{
-          padding: 16, background: '#f8fafc', borderRadius: 12,
-          border: '2px dashed #cbd5e1',
-          textAlign: 'center', color: '#64748b',
-        }}
-      >
-        ⏳
-      </div>
-    );
-
-  if (!bankAccounts.length)
-    return (
-      <div
-        style={{
-          padding: 16, background: '#fef3c7', borderRadius: 12,
-          border: '2px solid #fcd34d',
-          textAlign: 'center', color: '#92400e',
-        }}
-      >
-        🏦 බැංකු ගිණුම් නැත
-      </div>
-    );
-
-  return (
-    <div>
-      {label && (
-        <label
-          style={{
-            display: 'block', marginBottom: 8,
-            fontSize: 13, fontWeight: 700, color: '#1e40af',
-          }}
-        >
-          {label}
-        </label>
-      )}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-          gap: 8,
-        }}
-      >
-        {bankAccounts.map((acc) => {
-          const isSel = value === acc.id;
-          const bal   = parseFloat(acc.currentBalance || 0);
-          return (
-            <div
-              key={acc.id}
-              onClick={() => { if (!disabled) onChange(isSel ? '' : acc.id); }}
-              style={{
-                padding: '12px 16px', borderRadius: 12,
-                border: isSel
-                  ? '2px solid #3b82f6'
-                  : '2px solid #e2e8f0',
-                background: isSel
-                  ? 'linear-gradient(135deg,#eff6ff,#dbeafe)'
-                  : 'white',
-                cursor: disabled ? 'not-allowed' : 'pointer',
-                opacity: disabled ? 0.6 : 1,
-                display: 'flex', justifyContent: 'space-between',
-                alignItems: 'center', gap: 12,
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div
-                  style={{
-                    display: 'flex', alignItems: 'center',
-                    gap: 8, marginBottom: 4,
-                  }}
-                >
-                  {isSel && (
-                    <span
-                      style={{
-                        width: 20, height: 20, borderRadius: '50%',
-                        background: '#3b82f6', color: 'white',
-                        display: 'flex', alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: 12, fontWeight: 700,
-                      }}
-                    >
-                      ✓
-                    </span>
-                  )}
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>
-                    🏦 {acc.bankName}
-                  </div>
-                </div>
-                <div style={{ fontSize: 12, color: '#64748b' }}>
-                  {acc.accountName}
-                </div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: 11, color: '#94a3b8' }}>ශේෂය</div>
-                <div
-                  style={{
-                    fontSize: 16, fontWeight: 800,
-                    color: bal >= 0 ? '#16a34a' : '#dc2626',
-                  }}
-                >
-                  {formatBankBalance(bal, acc.currency)}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      {selected && showDeductInfo && toNum(deductAmount) > 0 && (
-        <div
-          style={{
-            marginTop: 10, padding: '10px 14px',
-            background: '#fef2f2', borderRadius: 10,
-            border: '1px solid #fca5a5',
-            fontSize: 13, color: '#991b1b',
-            display: 'flex', alignItems: 'center', gap: 8,
-          }}
-        >
-          <span>⚠️</span>
-          <span>
-            <b>{selected.bankName}</b> ගිණුමෙන්{' '}
-            <b style={{ color: '#dc2626' }}>
-              -{formatCurrency(deductAmount)}
-            </b>
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════
-// SCANNER MODAL
-// ═══════════════════════════════════════════════════════════
-const ScannerModal = ({ isOpen, onClose, onScan }) => {
-  const qrRef     = useRef(null);
-  // Stable refs for callbacks — avoid stale closures
-  const onScanRef  = useRef(onScan);
-  const onCloseRef = useRef(onClose);
-
-  useEffect(() => { onScanRef.current  = onScan;  }, [onScan]);
-  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    let t;
-    t = setTimeout(async () => {
-      const el = document.getElementById('qr-reader');
-      if (!el) return;
-      try {
-        qrRef.current = new Html5Qrcode('qr-reader');
-        await qrRef.current.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 250, height: 250 } },
-          async (txt) => {
-            onScanRef.current(txt);
-            try {
-              if (qrRef.current?.isScanning) {
-                await qrRef.current.stop();
-                qrRef.current.clear();
-              }
-            } catch {}
-            onCloseRef.current();
-          },
-          () => {}
-        );
-      } catch {
-        alert('Camera Error');
-        onCloseRef.current();
-      }
-    }, 300);
-
-    return () => {
-      clearTimeout(t);
-      if (qrRef.current) {
-        try {
-          if (qrRef.current.isScanning) {
-            qrRef.current
-              .stop()
-              .then(() => qrRef.current?.clear())
-              .catch(() => {});
-          } else {
-            qrRef.current.clear();
-          }
-        } catch {}
-        qrRef.current = null;
-      }
-    };
-  }, [isOpen]); // ✅ only isOpen — callbacks via refs
-
-  if (!isOpen) return null;
-  return (
-    <div
-      style={{
-        position: 'fixed', inset: 0,
-        background: 'rgba(0,0,0,0.9)',
-        zIndex: 9999,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}
-    >
-      <div
-        style={{
-          background: 'white', padding: 20, borderRadius: 12,
-          width: '90%', maxWidth: 400,
-        }}
-      >
-        <h3 style={{ marginTop: 0, textAlign: 'center' }}>📷 Scan</h3>
-        <div
-          id="qr-reader"
-          style={{ width: '100%', minHeight: 250, background: '#000' }}
-        />
-        <button
-          onClick={onClose}
-          style={{
-            marginTop: 15, padding: 12, background: '#ef4444',
-            color: 'white', border: 'none', borderRadius: 8,
-            width: '100%', fontWeight: 'bold',
-          }}
-        >
-          ✕ Close
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════
-// IMAGE PREVIEW MODAL
-// ═══════════════════════════════════════════════════════════
-const ImagePreviewModal = ({
-  isOpen, onClose, images, initialIndex = 0,
-}) => {
-  const [idx, setIdx] = useState(initialIndex);
-  useEffect(() => { if (isOpen) setIdx(initialIndex); }, [initialIndex, isOpen]);
-  if (!isOpen || !images?.length) return null;
-  return (
-    <div
-      style={{
-        position: 'fixed', inset: 0,
-        background: 'rgba(0,0,0,0.95)',
-        zIndex: 10000,
-        display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-      }}
-      onClick={onClose}
-    >
-      <button
-        onClick={onClose}
-        style={{
-          position: 'absolute', top: 15, right: 15,
-          background: 'rgba(255,255,255,0.2)', border: 'none',
-          color: 'white', borderRadius: '50%',
-          width: 40, height: 40, fontSize: 20,
-        }}
-      >
-        ✕
-      </button>
-      {images.length > 1 && (
-        <>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setIdx((i) => (i - 1 + images.length) % images.length);
-            }}
-            style={{
-              position: 'absolute', left: 10, top: '50%',
-              transform: 'translateY(-50%)',
-              background: 'rgba(255,255,255,0.2)', border: 'none',
-              color: 'white', borderRadius: '50%',
-              width: 50, height: 50, fontSize: 24,
-            }}
-          >
-            ‹
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setIdx((i) => (i + 1) % images.length);
-            }}
-            style={{
-              position: 'absolute', right: 10, top: '50%',
-              transform: 'translateY(-50%)',
-              background: 'rgba(255,255,255,0.2)', border: 'none',
-              color: 'white', borderRadius: '50%',
-              width: 50, height: 50, fontSize: 24,
-            }}
-          >
-            ›
-          </button>
-        </>
-      )}
-      <img
-        src={images[idx]} alt=""
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          maxWidth: '90%', maxHeight: '80vh',
-          objectFit: 'contain', borderRadius: 8,
-        }}
-      />
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════
-// RECEIPT UPLOADER + VIEWER
-// ═══════════════════════════════════════════════════════════
-const ReceiptUploader = ({ receipts, setReceipts, disabled }) => {
-  const fileRef = useRef(null);
-  const camRef  = useRef(null);
-  const [preview, setPreview] = useState({ open: false, index: 0 });
-
-  const process = async (files) => {
-    if (!files?.length) return;
-    for (const f of files) {
-      if (!f.type.startsWith('image/')) continue;
-      try {
-        const c = await compressReceiptImage(f);
-        setReceipts((p) => [
-          ...p,
-          {
-            file: c,
-            preview: URL.createObjectURL(c),
-            name: f.name,
-            size: c.size,
-          },
-        ]);
-      } catch {
-        setReceipts((p) => [
-          ...p,
-          {
-            file: f,
-            preview: URL.createObjectURL(f),
-            name: f.name,
-            size: f.size,
-          },
-        ]);
-      }
-    }
-  };
-
-  return (
-    <div>
-      <input
-        ref={fileRef} type="file" accept="image/*" multiple
-        onChange={(e) => { process(Array.from(e.target.files)); e.target.value = ''; }}
-        style={{ display: 'none' }}
-      />
-      <input
-        ref={camRef} type="file" accept="image/*" capture="environment"
-        onChange={(e) => { process(Array.from(e.target.files)); e.target.value = ''; }}
-        style={{ display: 'none' }}
-      />
-      <div
-        style={{
-          border: '2px dashed #cbd5e1', borderRadius: 12,
-          padding: receipts.length > 0 ? 15 : 30,
-          textAlign: 'center', background: '#f8fafc',
-          opacity: disabled ? 0.6 : 1,
-        }}
-      >
-        {receipts.length === 0 && (
-          <div style={{ fontSize: 40, marginBottom: 10 }}>🧾</div>
-        )}
-        <div
-          style={{
-            display: 'flex', gap: 10,
-            justifyContent: 'center', marginTop: 10,
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => camRef.current?.click()}
-            disabled={disabled}
-            style={{
-              padding: '10px 20px', borderRadius: 10,
-              border: '1px solid #3b82f6', background: '#eff6ff',
-              color: '#1e40af', fontWeight: 'bold', fontSize: 18,
-            }}
-          >
-            📸
-          </button>
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            disabled={disabled}
-            style={{
-              padding: '10px 20px', borderRadius: 10,
-              border: '1px solid #8b5cf6', background: '#f5f3ff',
-              color: '#6d28d9', fontWeight: 'bold', fontSize: 18,
-            }}
-          >
-            🖼️
-          </button>
-        </div>
-        {receipts.length > 0 && (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill,minmax(80px,1fr))',
-              gap: 8, marginTop: 12,
-            }}
-          >
-            {receipts.map((r, i) => (
-              <div
-                key={i}
-                style={{
-                  position: 'relative', borderRadius: 8,
-                  overflow: 'hidden', border: '2px solid #e2e8f0',
-                }}
-              >
-                <img
-                  src={r.preview} alt=""
-                  onClick={() => setPreview({ open: true, index: i })}
-                  style={{
-                    width: '100%', height: 80, objectFit: 'cover',
-                    cursor: 'pointer', display: 'block',
-                  }}
-                />
-                {!disabled && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setReceipts((p) => {
-                        const u = [...p];
-                        if (u[i]?.preview?.startsWith('blob:'))
-                          URL.revokeObjectURL(u[i].preview);
-                        u.splice(i, 1);
-                        return u;
-                      });
-                    }}
-                    style={{
-                      position: 'absolute', top: 2, right: 2,
-                      background: 'rgba(239,68,68,0.9)',
-                      border: 'none', color: 'white',
-                      borderRadius: '50%', width: 20, height: 20,
-                      fontSize: 12, cursor: 'pointer',
-                    }}
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-      <ImagePreviewModal
-        isOpen={preview.open}
-        onClose={() => setPreview({ open: false, index: 0 })}
-        images={receipts.map((r) => r.preview)}
-        initialIndex={preview.index}
-      />
-    </div>
-  );
-};
-
-const ReceiptViewer = ({ images }) => {
-  const [preview, setPreview] = useState({ open: false, index: 0 });
-  if (!images?.length) return null;
-  return (
-    <div>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-        {images.map((u, i) => (
-          <img
-            key={i} src={u} alt=""
-            onClick={() => setPreview({ open: true, index: i })}
-            style={{
-              width: 50, height: 50, objectFit: 'cover',
-              borderRadius: 6, border: '2px solid #e2e8f0',
-              cursor: 'pointer',
-            }}
-          />
-        ))}
-      </div>
-      <ImagePreviewModal
-        isOpen={preview.open}
-        onClose={() => setPreview({ open: false, index: 0 })}
-        images={images}
-        initialIndex={preview.index}
-      />
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════
-// ITEM SEARCHABLE SELECT
-// ═══════════════════════════════════════════════════════════
-const SearchableSelect = ({
-  options, value, onChange, placeholder, showImages = false,
-}) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [search, setSearch] = useState('');
-  const ref = useRef(null);
-
-  useEffect(() => {
-    const h = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) {
-        setIsOpen(false); setSearch('');
-      }
-    };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, []);
-
-  const sel = useMemo(
-    () => (options || []).find((o) => o.id === value),
-    [options, value]
-  );
-
-  const filtered = useMemo(() => {
-    if (!search) return options || [];
-    const s = search.toLowerCase().trim();
-    return (options || []).filter((o) =>
-      [o?.name, o?.sinhalaName, o?.itemCode, o?.barcode,
-       o?.brand, o?.category].some(
-        (f) => f && String(f).toLowerCase().includes(s)
-      )
-    );
-  }, [options, search]);
-
-  const getImg = (it) =>
-    it?.imageUrl || it?.image || (it?.images && it.images[0]) || null;
-
-  return (
-    <div ref={ref} style={{ position: 'relative', width: '100%' }}>
-      <div
-        onClick={() => setIsOpen(!isOpen)}
-        style={{
-          padding: 14, border: '1px solid #cbd5e1', borderRadius: 10,
-          background: 'white', cursor: 'pointer',
-          display: 'flex', justifyContent: 'space-between',
-          alignItems: 'center', fontSize: 16, minHeight: 48,
-        }}
-      >
-        <span
-          style={{
-            color: sel ? '#1e293b' : '#94a3b8',
-            fontWeight: sel ? '600' : 'normal',
-          }}
-        >
-          {sel ? sel.name : placeholder}
-        </span>
-        <span style={{ color: '#94a3b8' }}>{isOpen ? '▲' : '▼'}</span>
-      </div>
-
-      {isOpen && (
-        <div
-          style={{
-            position: 'absolute', top: '100%', width: '100%',
-            background: 'white', border: '1px solid #cbd5e1',
-            borderRadius: 10, marginTop: 5, zIndex: 1000,
-            maxHeight: 450, overflowY: 'auto',
-            boxShadow: '0 10px 30px rgba(0,0,0,0.15)',
-          }}
-        >
-          <div
-            style={{
-              position: 'sticky', top: 0, background: 'white',
-              zIndex: 1, borderBottom: '2px solid #e2e8f0',
-            }}
-          >
-            <input
-              autoFocus
-              placeholder="🔍 සොයන්න..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              style={{
-                width: '100%', padding: 14, border: 'none',
-                outline: 'none', boxSizing: 'border-box', fontSize: 16,
-              }}
-            />
-          </div>
-          <div style={{ maxHeight: 380, overflowY: 'auto' }}>
-            {filtered.map((o) => {
-              const img   = getImg(o);
-              const isSel = value === o.id;
-              return (
-                <div
-                  key={o.id}
-                  onClick={() => { onChange(o.id); setIsOpen(false); setSearch(''); }}
-                  style={{
-                    padding: 12, cursor: 'pointer',
-                    background: isSel ? '#eff6ff' : 'white',
-                    borderBottom: '1px solid #f1f5f9',
-                    display: 'flex', alignItems: 'center', gap: 12,
-                  }}
-                >
-                  {showImages && (
-                    <div
-                      style={{
-                        width: 60, height: 60, flexShrink: 0,
-                        borderRadius: 8, overflow: 'hidden',
-                        border: '2px solid #e2e8f0', background: '#f1f5f9',
-                        display: 'flex', alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      {img ? (
-                        <img
-                          src={img} alt={o.name}
-                          style={{
-                            width: '100%', height: '100%',
-                            objectFit: 'cover',
-                          }}
-                          onError={(e) => {
-                            e.target.style.display = 'none';
-                          }}
-                        />
-                      ) : (
-                        <div style={{ fontSize: 28, color: '#94a3b8' }}>
-                          📦
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <div style={{ flex: 1 }}>
-                    <div
-                      style={{
-                        fontWeight: '600', fontSize: 15,
-                        color: '#1e293b', marginBottom: 4,
-                      }}
-                    >
-                      {isSel && '✓ '}{o.name}
-                    </div>
-                    <div
-                      style={{
-                        display: 'flex', gap: 8,
-                        flexWrap: 'wrap', fontSize: 11,
-                      }}
-                    >
-                      {o.barcode && (
-                        <span
-                          style={{
-                            color: '#0369a1', background: '#f0f9ff',
-                            padding: '2px 6px', borderRadius: 4,
-                          }}
-                        >
-                          📊 {o.barcode}
-                        </span>
-                      )}
-                      {o.itemCode && (
-                        <span
-                          style={{
-                            color: '#16a34a', background: '#f0fdf4',
-                            padding: '2px 6px', borderRadius: 4,
-                          }}
-                        >
-                          🔖 {o.itemCode}
-                        </span>
-                      )}
-                    </div>
-                    {o.stock !== undefined && (
-                      <div
-                        style={{
-                          marginTop: 4, fontSize: 11, fontWeight: '600',
-                          color: o.stock > 0 ? '#16a34a' : '#dc2626',
-                        }}
-                      >
-                        📦 {o.stock}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {filtered.length === 0 && (
-              <div
-                style={{
-                  padding: 40, textAlign: 'center', color: '#64748b',
-                }}
-              >
-                🔍 හමු නොවීය
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════
-// PRICE BOX
-// ═══════════════════════════════════════════════════════════
-const PriceBox = ({
-  title, icon, bgColor, borderColor, textColor, accentBg,
-  price, disc, yourPrice,
-  onPriceChange, onDiscChange, onYourPriceChange,
-  priceLabel = 'Price', yourPriceLabel = 'Your Price',
-}) => {
-  const inp = {
-    width: '100%', padding: 10, borderRadius: 8,
-    border: '1px solid #cbd5e1', outline: 'none',
-    fontSize: 14, textAlign: 'center', boxSizing: 'border-box',
-  };
-  return (
-    <div
-      style={{
-        background: bgColor, padding: 15, borderRadius: 10,
-        border: `1px solid ${borderColor}`,
-      }}
-    >
-      <div
-        style={{
-          fontWeight: 'bold', color: textColor,
-          marginBottom: 10,
-          borderBottom: `1px solid ${borderColor}`, paddingBottom: 5,
-        }}
-      >
-        {icon} {title}
-      </div>
-      <div style={{ display: 'flex', gap: 10 }}>
-        <div style={{ flex: 1 }}>
-          <label
-            style={{
-              display: 'block', marginBottom: 5,
-              fontSize: 12, fontWeight: 'bold', color: '#475569',
-            }}
-          >
-            {priceLabel}
-          </label>
-          <input
-            type="number" value={price}
-            onChange={(e) => onPriceChange(e.target.value)}
-            onFocus={(e) => e.target.select()}
-            style={inp}
-          />
-        </div>
-        <div style={{ flex: 1 }}>
-          <label
-            style={{
-              display: 'block', marginBottom: 5,
-              fontSize: 12, fontWeight: 'bold', color: '#d97706',
-            }}
-          >
-            Disc%
-          </label>
-          <input
-            type="number" value={disc}
-            onChange={(e) => onDiscChange(e.target.value)}
-            onFocus={(e) => e.target.select()}
-            style={{
-              ...inp,
-              border: '2px solid #f59e0b', background: '#fffbeb',
-            }}
-          />
-        </div>
-        <div style={{ flex: 1 }}>
-          <label
-            style={{
-              display: 'block', marginBottom: 5,
-              fontSize: 12, fontWeight: 'bold', color: textColor,
-            }}
-          >
-            {yourPriceLabel} ✏️
-          </label>
-          <input
-            type="number" value={yourPrice}
-            onChange={(e) => onYourPriceChange(e.target.value)}
-            onFocus={(e) => e.target.select()}
-            style={{
-              ...inp,
-              border: `2px solid ${textColor}`,
-              background: accentBg, color: textColor, fontWeight: 'bold',
-            }}
-          />
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════
-// EXPIRY DATE BADGE
-// ═══════════════════════════════════════════════════════════
-const ExpiryBadge = ({ expiryDate, size = 'normal' }) => {
+export const ExpiryBadge = ({ expiryDate, size = 'normal' }) => {
   const info = getExpiryStatus(expiryDate);
   if (!info) return null;
   const isSmall = size === 'small';
@@ -2393,13 +168,709 @@ const ExpiryBadge = ({ expiryDate, size = 'normal' }) => {
   );
 };
 
-// ═══════════════════════════════════════════════════════════
-// INVOICE STATUS HELPER
-// ═══════════════════════════════════════════════════════════
-const getInvStatus = (inv) => {
-  const b = toNum(inv.balance);
-  const p = toNum(inv.paidAmount);
-  return b <= 0.01 ? 'paid' : p > 0 ? 'partial' : 'credit';
+const ReceiptUploader = ({ receipts, setReceipts, disabled }) => {
+  const handleFileChange = async (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    const newReceipts = [...receipts];
+    for (const f of files) {
+      newReceipts.push({
+        id: Math.random().toString(),
+        name: f.name,
+        file: f,
+        preview: URL.createObjectURL(f),
+      });
+    }
+    setReceipts(newReceipts);
+  };
+
+  const removeReceipt = (id) => {
+    setReceipts(receipts.filter((r) => r.id !== id));
+  };
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <input
+        type="file"
+        multiple
+        accept="image/*"
+        disabled={disabled}
+        id="receipt-uploader"
+        style={{ display: 'none' }}
+        onChange={handleFileChange}
+      />
+      <label
+        htmlFor="receipt-uploader"
+        style={{
+          display: 'inline-block',
+          padding: '8px 16px',
+          background: '#475569',
+          color: 'white',
+          borderRadius: 8,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          fontSize: 13,
+          fontWeight: 'bold',
+        }}
+      >
+        📸 රිසිට්පත් එක් කරන්න
+      </label>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+        {receipts.map((r) => (
+          <div
+            key={r.id}
+            style={{
+              position: 'relative',
+              width: 60,
+              height: 60,
+              borderRadius: 8,
+              border: '1px solid #cbd5e1',
+              overflow: 'hidden',
+            }}
+          >
+            <img src={r.preview} alt="preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            <button
+              type="button"
+              onClick={() => removeReceipt(r.id)}
+              style={{
+                position: 'absolute',
+                top: 2,
+                right: 2,
+                background: 'rgba(0,0,0,0.6)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '50%',
+                width: 18,
+                height: 18,
+                fontSize: 10,
+                cursor: 'pointer',
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const ReceiptViewer = ({ images }) => {
+  const [active, setActive] = useState(null);
+  if (!images?.length) return null;
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {images.map((img, i) => (
+          <img
+            key={i}
+            src={img}
+            alt="receipt"
+            onClick={() => setActive(img)}
+            style={{
+              width: 50,
+              height: 50,
+              borderRadius: 6,
+              objectFit: 'cover',
+              cursor: 'pointer',
+              border: '1px solid #cbd5e1',
+            }}
+          />
+        ))}
+      </div>
+      {active && (
+        <div
+          onClick={() => setActive(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.85)',
+            zIndex: 99999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20,
+          }}
+        >
+          <img src={active} alt="Enlarged" style={{ maxWidth: '95%', maxHeight: '95%', borderRadius: 12 }} />
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const PriceBox = ({
+  title, icon, bgColor, borderColor, textColor, accentBg,
+  price, disc, yourPrice,
+  onPriceChange, onDiscChange, onYourPriceChange,
+  priceLabel = 'Price', yourPriceLabel = 'Your Price',
+}) => {
+  const inp = {
+    width: '100%', padding: 10, borderRadius: 8,
+    border: '1px solid #cbd5e1', outline: 'none',
+    fontSize: 14, textAlign: 'center', boxSizing: 'border-box',
+  };
+  return (
+    <div style={{ background: bgColor, padding: 15, borderRadius: 10, border: `1px solid ${borderColor}` }}>
+      <div style={{ fontWeight: 'bold', color: textColor, marginBottom: 10, borderBottom: `1px solid ${borderColor}`, paddingBottom: 5 }}>
+        {icon} {title}
+      </div>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <label style={{ display: 'block', marginBottom: 5, fontSize: 12, fontWeight: 'bold', color: '#475569' }}>{priceLabel}</label>
+          <input type="number" value={price} onChange={(e) => onPriceChange(e.target.value)} onFocus={(e) => e.target.select()} style={inp} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={{ display: 'block', marginBottom: 5, fontSize: 12, fontWeight: 'bold', color: '#d97706' }}>Disc%</label>
+          <input type="number" value={disc} onChange={(e) => onDiscChange(e.target.value)} onFocus={(e) => e.target.select()} style={{ ...inp, border: '2px solid #f59e0b', background: '#fffbeb' }} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={{ display: 'block', marginBottom: 5, fontSize: 12, fontWeight: 'bold', color: textColor }}>{yourPriceLabel} ✏️</label>
+          <input type="number" value={yourPrice} onChange={(e) => onYourPriceChange(e.target.value)} onFocus={(e) => e.target.select()} style={{ ...inp, border: `2px solid ${textColor}`, background: accentBg, color: textColor, fontWeight: 'bold' }} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const SearchableSelect = ({ options, value, onChange, placeholder, showImages }) => {
+  const [search, setSearch] = useState('');
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const term = search.toLowerCase();
+    return options.filter(
+      (opt) =>
+        (opt.name || '').toLowerCase().includes(term) ||
+        (opt.barcode || '').toLowerCase().includes(term)
+    );
+  }, [options, search]);
+
+  const selected = options.find((o) => o.id === value);
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', width: '100%' }}>
+      <div
+        onClick={() => setOpen(!open)}
+        style={{
+          padding: '12px 16px',
+          borderRadius: 8,
+          border: '1px solid #cbd5e1',
+          background: 'white',
+          cursor: 'pointer',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
+        <span style={{ fontWeight: selected ? '600' : '400', color: selected ? '#1e293b' : '#94a3b8' }}>
+          {selected ? `${selected.name} (${formatCurrency(selected.buyingPrice || selected.costPrice || 0)})` : placeholder}
+        </span>
+        <span>▼</span>
+      </div>
+
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
+            zIndex: 1000,
+            background: 'white',
+            border: '1px solid #cbd5e1',
+            borderRadius: 8,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+            marginTop: 4,
+            maxHeight: 280,
+            overflowY: 'auto',
+          }}
+        >
+          <input
+            placeholder="සෙවීමට ඇතුලත් කරන්න..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{
+              width: '100%',
+              padding: 10,
+              border: 'none',
+              borderBottom: '1px solid #cbd5e1',
+              boxSizing: 'border-box',
+              outline: 'none',
+              position: 'sticky',
+              top: 0,
+              background: '#f8fafc',
+            }}
+          />
+          {filtered.length === 0 ? (
+            <div style={{ padding: 12, color: '#94a3b8', textAlign: 'center' }}>නොමැත.</div>
+          ) : (
+            filtered.map((opt) => (
+              <div
+                key={opt.id}
+                onClick={() => {
+                  onChange(opt.id);
+                  setOpen(false);
+                  setSearch('');
+                }}
+                style={{
+                  padding: '10px 14px',
+                  cursor: 'pointer',
+                  borderBottom: '1px solid #f1f5f9',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  background: value === opt.id ? '#eff6ff' : 'white',
+                }}
+              >
+                {showImages && opt.imageUrl && (
+                  <img
+                    src={opt.imageUrl}
+                    alt={opt.name}
+                    style={{ width: 30, height: 30, borderRadius: 4, objectFit: 'cover' }}
+                  />
+                )}
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 'bold', fontSize: 13 }}>{opt.name}</div>
+                  <div style={{ fontSize: 11, color: '#64748b' }}>
+                    Code: {opt.barcode || opt.itemCode || '-'} | Stock: {opt.quantity || opt.stock || 0}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const SupplierSearchableSelect = ({ options, value, onChange, onSupplierCreated, placeholder, user }) => {
+  const [search, setSearch] = useState('');
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newSupName, setNewSupName] = useState('');
+  const [newSupPhone, setNewSupPhone] = useState('');
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setOpen(false);
+        setCreating(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const term = search.toLowerCase();
+    return options.filter((opt) => (opt.name || '').toLowerCase().includes(term));
+  }, [options, search]);
+
+  const selected = options.find((o) => o.id === value);
+
+  const handleCreateSupplier = async () => {
+    if (!newSupName.trim()) return alert('❌ සැපයුම්කරුගේ නම ඇතුලත් කරන්න.');
+    if (!user?.uid) return alert('❌ පරිශීලක සත්‍යාපනය අවශ්‍යයි.');
+    try {
+      const supData = {
+        id: 'sup_' + Date.now(),
+        name: newSupName.trim(),
+        phone: newSupPhone.trim(),
+        currentBalance: 0,
+        synced: false,
+        uid: user.uid,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await localDb.suppliers.add(supData);
+
+      if (window.electronAPI?.saveLocalData) {
+        const mySuppliers = await localDb.suppliers.where('uid').equals(user.uid).toArray();
+        await window.electronAPI.saveLocalData(`suppliers_${user.uid}.json`, mySuppliers);
+      }
+
+      onSupplierCreated?.(supData);
+      onChange(supData.id);
+      setNewSupName('');
+      setNewSupPhone('');
+      setCreating(false);
+      setOpen(false);
+
+      if (navigator.onLine && db && collection && addDoc && serverTimestamp) {
+        try {
+          await addDoc(collection(db, 'suppliers'), {
+            ...supData,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          await localDb.suppliers.update(supData.id, { synced: true });
+          if (window.electronAPI?.saveLocalData) {
+            const mySuppliers = await localDb.suppliers.where('uid').equals(user.uid).toArray();
+            await window.electronAPI.saveLocalData(`suppliers_${user.uid}.json`, mySuppliers);
+          }
+        } catch (err) {
+          console.log('Firestore bg sync deferred:', err);
+        }
+      }
+    } catch (err) {
+      alert('Error creating supplier: ' + err.message);
+    }
+  };
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', width: '100%' }}>
+      <div
+        onClick={() => setOpen(!open)}
+        style={{
+          padding: '12px 16px',
+          borderRadius: 8,
+          border: '1px solid #cbd5e1',
+          background: 'white',
+          cursor: 'pointer',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
+        <span style={{ fontWeight: selected ? '600' : '400', color: selected ? '#1e293b' : '#94a3b8' }}>
+          {selected ? `${selected.name} (${formatCurrency(selected.currentBalance || 0)})` : placeholder}
+        </span>
+        <span>▼</span>
+      </div>
+
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
+            zIndex: 1000,
+            background: 'white',
+            border: '1px solid #cbd5e1',
+            borderRadius: 8,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+            marginTop: 4,
+            maxHeight: 320,
+            overflowY: 'auto',
+          }}
+        >
+          {!creating ? (
+            <>
+              <input
+                placeholder="සැපයුම්කරු සොයන්න..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: 10,
+                  border: 'none',
+                  borderBottom: '1px solid #cbd5e1',
+                  boxSizing: 'border-box',
+                  outline: 'none',
+                  position: 'sticky',
+                  top: 0,
+                  background: '#f8fafc',
+                }}
+              />
+              <div
+                onClick={() => setCreating(true)}
+                style={{
+                  padding: '10px 14px',
+                  background: '#eff6ff',
+                  color: '#2563eb',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  textAlign: 'center',
+                  fontSize: 13,
+                }}
+              >
+                ➕ අලුත් සැපයුම්කරුවෙකු ඇතුලත් කරන්න
+              </div>
+              {filtered.length === 0 ? (
+                <div style={{ padding: 12, color: '#94a3b8', textAlign: 'center' }}>සැපයුම්කරුවන් නැත</div>
+              ) : (
+                filtered.map((opt) => (
+                  <div
+                    key={opt.id}
+                    onClick={() => {
+                      onChange(opt.id);
+                      setOpen(false);
+                      setSearch('');
+                    }}
+                    style={{
+                      padding: '10px 14px',
+                      cursor: 'pointer',
+                      borderBottom: '1px solid #f1f5f9',
+                      background: value === opt.id ? '#eff6ff' : 'white',
+                      fontSize: 13,
+                    }}
+                  >
+                    <b>{opt.name}</b>
+                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                      ශේෂය: {formatCurrency(opt.currentBalance || 0)} {opt.phone ? `| 📞 ${opt.phone}` : ''}
+                    </div>
+                  </div>
+                ))
+              )}
+            </>
+          ) : (
+            <div style={{ padding: 14 }}>
+              <div style={{ fontWeight: 'bold', marginBottom: 10, fontSize: 13, color: '#1e40af' }}>
+                නව සැපයුම්කරු නිර්මාණය
+              </div>
+              <input
+                placeholder="නම (Name) *"
+                value={newSupName}
+                onChange={(e) => setNewSupName(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: 10,
+                  borderRadius: 8,
+                  border: '1px solid #cbd5e1',
+                  marginBottom: 8,
+                  boxSizing: 'border-box',
+                }}
+              />
+              <input
+                placeholder="දුරකථනය (Phone)"
+                value={newSupPhone}
+                onChange={(e) => setNewSupPhone(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: 10,
+                  borderRadius: 8,
+                  border: '1px solid #cbd5e1',
+                  marginBottom: 12,
+                  boxSizing: 'border-box',
+                }}
+              />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={handleCreateSupplier}
+                  style={{
+                    flex: 1,
+                    padding: 8,
+                    background: '#16a34a',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: 6,
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                  }}
+                >
+                  නිර්මාණය
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCreating(false)}
+                  style={{
+                    padding: 8,
+                    background: '#94a3b8',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const BankAccountSelector = ({ value, onChange, bankAccounts, loading, disabled, showDeductInfo, deductAmount }) => {
+  if (loading) return <div style={{ fontSize: 13, color: '#64748b' }}>🏦 බැංකු ගිණුම් පූරණය වෙමින් පවතී...</div>;
+  if (!bankAccounts.length) {
+    return <div style={{ fontSize: 13, color: '#ef4444' }}>⚠️ සක්‍රීය බැංකු ගිණුම් කිසිවක් සොයාගත නොහැක.</div>;
+  }
+  return (
+    <div>
+      <label style={{ display: 'block', marginBottom: 6, fontSize: 12, fontWeight: 'bold', color: '#1e40af' }}>
+        🏦 බැංකු ගිණුම තෝරන්න *
+      </label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        style={{
+          width: '100%',
+          padding: 12,
+          borderRadius: 8,
+          border: '2px solid #bfdbfe',
+          background: 'white',
+          fontWeight: '600',
+          outline: 'none',
+        }}
+      >
+        <option value="">-- ගිණුම තෝරන්න --</option>
+        {bankAccounts.map((acc) => (
+          <option key={acc.id} value={acc.id}>
+            {acc.bankName} - {acc.accountName} ({acc.accountNumber})
+          </option>
+        ))}
+      </select>
+      {showDeductInfo && deductAmount > 0 && value && (
+        <div style={{ marginTop: 6, fontSize: 12, color: '#2563eb', fontWeight: 'bold' }}>
+          ℹ️ මෙම ගිණුමෙන් {formatCurrency(deductAmount)} ක මුදලක් අඩු කරනු ලැබේ.
+        </div>
+      )}
+    </div>
+  );
+};
+
+const TabWarningModal = ({ isOpen, cartCount, onConfirm, onCancel }) => {
+  if (!isOpen) return null;
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.6)',
+        zIndex: 99999,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 20,
+      }}
+    >
+      <div style={{ background: 'white', padding: 24, borderRadius: 16, maxWidth: 400, width: '100%' }}>
+        <h3 style={{ margin: '0 0 10px', color: '#dc2626' }}>⚠️ අවවාදයයි!</h3>
+        <p style={{ margin: '0 0 20px', color: '#475569', fontSize: 14, lineHeight: 1.5 }}>
+          ඔබගේ Cart එක තුළ භාණ්ඩ <b>{cartCount}</b> ක් පවතී. වෙනත් පිටුවකට යාමෙන් මෙම දත්ත නැතිවී යා හැක. ඉදිරියට යාමට අවශ්‍යද?
+        </p>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            onClick={onConfirm}
+            style={{
+              flex: 1,
+              padding: 12,
+              background: '#dc2626',
+              color: 'white',
+              border: 'none',
+              borderRadius: 8,
+              fontWeight: 'bold',
+              cursor: 'pointer',
+            }}
+          >
+            ඔව්, ඉවත් වන්න
+          </button>
+          <button
+            onClick={onCancel}
+            style={{
+              flex: 1,
+              padding: 12,
+              background: '#cbd5e1',
+              color: '#475569',
+              border: 'none',
+              borderRadius: 8,
+              fontWeight: 'bold',
+              cursor: 'pointer',
+            }}
+          >
+            නැත
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ScannerModal = ({ isOpen, onClose, onScan }) => {
+  const [input, setInput] = useState('');
+  if (!isOpen) return null;
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (input.trim()) {
+      onScan(input.trim());
+      setInput('');
+      onClose();
+    }
+  };
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.6)',
+        zIndex: 99999,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 20,
+      }}
+    >
+      <div style={{ background: 'white', padding: 24, borderRadius: 16, maxWidth: 360, width: '100%' }}>
+        <h3 style={{ margin: '0 0 10px' }}>📷 Barcode Reader</h3>
+        <form onSubmit={handleSubmit}>
+          <input
+            autoFocus
+            placeholder="Scan Barcode / Code"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            style={{
+              width: '100%',
+              padding: 14,
+              borderRadius: 10,
+              border: '2px solid #3b82f6',
+              fontSize: 16,
+              boxSizing: 'border-box',
+              marginBottom: 15,
+              textAlign: 'center',
+            }}
+          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="submit"
+              style={{
+                flex: 1,
+                padding: 10,
+                background: '#3b82f6',
+                color: 'white',
+                border: 'none',
+                borderRadius: 8,
+                fontWeight: 'bold',
+              }}
+            >
+              Enter
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              style={{
+                padding: 10,
+                background: '#cbd5e1',
+                border: 'none',
+                borderRadius: 8,
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -2419,7 +890,7 @@ const PaymentModal = ({
   useEffect(() => {
     if (isOpen && invoice) {
       const bal = toNum(invoice.balance);
-      setPayAmount(bal > 0 ? bal.toFixed(2) : '');
+      setPayAmount(bal > 0 ? (Number(bal) || 0).toFixed(2) : '');
       setPayMethod('cash'); setBankId(''); setPayReceipts([]);
       savingRef.current = false;
     }
@@ -2431,6 +902,7 @@ const PaymentModal = ({
 
   const handlePay = async () => {
     if (savingRef.current || saving) return;
+    if (!user?.uid) return alert('❌ පරිශීලක සත්‍යාපනය අවශ්‍යයි.');
     const amount  = parseFloat(payAmount) || 0;
     const balance = toNum(invoice.balance);
     if (amount <= 0) return alert('❌ මුදල ඇතුළත් කරන්න');
@@ -2445,14 +917,13 @@ const PaymentModal = ({
       let urls = [];
       for (const r of payReceipts) {
         if (!r.file) continue;
-        const res = await uploadOneImage(
-          r.file,
-          `payments/${user.uid}/${Date.now()}_${r.name}`
-        );
+        const res = await uploadOneImage(r.file);
         if (res.url) urls.push(res.url);
       }
       const selBank = bankAccounts.find((b) => b.id === bankId);
-      await addDoc(collection(db, 'payments'), {
+
+      const paymentPayload = {
+        id: 'pay_' + Date.now(),
         invoiceId:       invoice.id,
         supplierId:      invoice.supplierId || '',
         supplierName:    invoice.supplierName || '',
@@ -2463,72 +934,102 @@ const PaymentModal = ({
         bankName:        payMethod === 'bank' ? selBank?.bankName || '' : '',
         uid:             user.uid,
         type:            invoice.type || 'purchase',
-        receiptImages:   urls, receiptUrl: urls[0] || '',
-        date:            localISODate(), time: nowHHMM(),
-        createdAt:       serverTimestamp(),
+        receiptImages:   urls,
+        receiptUrl:      urls[0] || '',
+        date:            localISODate(),
+        time:            nowHHMM(),
+        createdAt:       new Date().toISOString(),
+      };
+
+      await localDb.cashTransactions.add({
+        id: paymentPayload.id,
+        uid: user.uid,
+        type: 'expense',
+        category: 'Supplier Payment',
+        amount: roundedAmount,
+        synced: false,
+        createdAt: new Date().toISOString(),
       });
 
-      const newPaid = Math.round(
-        (toNum(invoice.paidAmount) + roundedAmount) * 100
-      ) / 100;
+      const newPaid = Math.round((toNum(invoice.paidAmount) + roundedAmount) * 100) / 100;
       const gt      = toNum(invoice.grandTotal);
       let newBal    = Math.round((gt - newPaid) * 100) / 100;
       if (newBal < 0.01) newBal = 0;
 
-      await updateDoc(doc(db, collectionName, invoice.id), {
+      await localDb.purchases.update(invoice.id, {
         paidAmount:      newPaid,
         balance:         newBal,
         paymentStatus:   newBal <= 0.01 ? 'paid' : 'partial',
-        lastPaymentDate: serverTimestamp(),
-        updatedAt:       serverTimestamp(),
+        lastPaymentDate: new Date().toISOString(),
+        updatedAt:       new Date().toISOString(),
+        synced:          false
       });
 
-      if (payMethod === 'bank' && bankId) {
-        try {
-          await addDoc(
-            collection(db, `users/${user.uid}/bankTransactions`),
-            {
-              type:        'withdrawal',
-              accountId:   bankId,
-              amount:      roundedAmount,
-              date:        Timestamp.now(),
-              description: `Purchase Payment — ${invoice.supplierName}`,
-              reference:   invoice.refNo || invoice.id,
-              source:      'purchase',
-              invoiceId:   invoice.id,
-              createdAt:   serverTimestamp(),
-              updatedAt:   serverTimestamp(),
-            }
-          );
-        } catch {}
+      if (invoice.supplierId) {
+        const targetSup = await localDb.suppliers.get(invoice.supplierId);
+        if (targetSup) {
+          const updatedBal = Math.max(0, Math.round((getSupplierBalance(targetSup) - roundedAmount) * 100) / 100);
+          await localDb.suppliers.update(invoice.supplierId, {
+            currentBalance: updatedBal,
+            synced: false,
+            updatedAt: new Date().toISOString()
+          });
+        }
       }
 
-      await savePurchaseCashTransaction({
-        user, amount: roundedAmount,
-        supplierId:      invoice.supplierId,
-        supplierName:    invoice.supplierName,
-        invoiceId:       invoice.id,
-        invoiceNo:       invoice.refNo || invoice.id,
-        paymentMethod:   payMethod,
-        bankAccountId:   payMethod === 'bank' ? bankId : null,
-        bankAccountName: payMethod === 'bank' ? selBank?.accountName || '' : '',
-        bankName:        payMethod === 'bank' ? selBank?.bankName || '' : '',
-        notes:           'Purchase payment',
-        items:           invoice.items || [],
-        date:            localISODate(), time: nowHHMM(),
-      });
-
-      if (invoice.supplierId)
-        await updateSupplierBalanceFields(
-          invoice.supplierId, roundedAmount, 'subtract'
-        );
+      if (window.electronAPI?.saveLocalData) {
+        const myInvoices = await localDb.purchases.where('uid').equals(user.uid).toArray();
+        const mySuppliers = await localDb.suppliers.where('uid').equals(user.uid).toArray();
+        const myTx = await localDb.cashTransactions.where('uid').equals(user.uid).toArray();
+        await window.electronAPI.saveLocalData(`purchases_${user.uid}.json`, myInvoices);
+        await window.electronAPI.saveLocalData(`suppliers_${user.uid}.json`, mySuppliers);
+        await window.electronAPI.saveLocalData(`cashTransactions_${user.uid}.json`, myTx);
+      }
 
       alert(`✅ සාර්ථකයි! ඉතිරිය: ${formatCurrency(newBal)}`);
-      onPaymentSaved?.(); onClose();
+      onPaymentSaved?.();
+      onClose();
+
+      if (navigator.onLine && db && writeBatch && doc && collection && serverTimestamp && increment) {
+        try {
+          const batch = writeBatch(db);
+          const invRef = doc(db, collectionName, invoice.id);
+          batch.update(invRef, {
+            paidAmount:      newPaid,
+            balance:         newBal,
+            paymentStatus:   newBal <= 0.01 ? 'paid' : 'partial',
+            lastPaymentDate: serverTimestamp(),
+            updatedAt:       serverTimestamp(),
+          });
+
+          const payRef = doc(collection(db, 'payments'));
+          batch.set(payRef, {
+            ...paymentPayload,
+            createdAt: serverTimestamp()
+          });
+
+          if (invoice.supplierId) {
+            const supRef = doc(db, 'suppliers', invoice.supplierId);
+            batch.update(supRef, {
+              currentBalance: increment(-roundedAmount),
+              updatedAt: serverTimestamp()
+            });
+          }
+
+          await batch.commit();
+          await localDb.purchases.update(invoice.id, { synced: true });
+          if (invoice.supplierId) {
+            await localDb.suppliers.update(invoice.supplierId, { synced: true });
+          }
+        } catch (err) {
+          console.log('Firestore payment update deferred:', err);
+        }
+      }
     } catch (e) {
       alert('❌ ' + e.message);
     } finally {
-      setSaving(false); savingRef.current = false;
+      setSaving(false);
+      savingRef.current = false;
     }
   };
 
@@ -2553,7 +1054,6 @@ const PaymentModal = ({
           maxWidth: 520, maxHeight: '90vh', overflowY: 'auto',
         }}
       >
-        {/* Header */}
         <div
           style={{
             background: '#1e40af', padding: 20,
@@ -2579,7 +1079,6 @@ const PaymentModal = ({
         </div>
 
         <div style={{ padding: 20 }}>
-          {/* Balance summary */}
           <div
             style={{
               background: '#fef3c7', padding: 15,
@@ -2621,7 +1120,6 @@ const PaymentModal = ({
             </div>
           </div>
 
-          {/* Amount input */}
           <input
             type="number" value={payAmount}
             onChange={(e) => setPayAmount(e.target.value)}
@@ -2647,7 +1145,7 @@ const PaymentModal = ({
             </button>
             <button
               type="button"
-              onClick={() => setPayAmount(balance.toFixed(2))}
+              onClick={() => setPayAmount((Number(balance) || 0).toFixed(2))}
               disabled={saving}
               style={{
                 flex: 1, padding: 8, borderRadius: 8,
@@ -2659,7 +1157,6 @@ const PaymentModal = ({
             </button>
           </div>
 
-          {/* Payment method */}
           <div style={{ marginBottom: 15 }}>
             <label style={{ display: 'block', marginBottom: 8, fontWeight: 700 }}>
               ගෙවීම් ක්‍රමය
@@ -2744,7 +1241,7 @@ const PaymentModal = ({
 // INVOICE CARD
 // ═══════════════════════════════════════════════════════════
 const InvoiceCard = ({
-  inv, collectionName, onPayClick, onUpdate, onDeleteInvoice, S,
+  inv, collectionName, onPayClick, onUpdate, onDeleteInvoice, S, user,
 }) => {
   const [expanded, setExpanded]   = useState(false);
   const [payments, setPayments]   = useState([]);
@@ -2762,8 +1259,7 @@ const InvoiceCard = ({
   const balance    = toNum(inv.balance);
   const paidAmount = toNum(inv.paidAmount);
   const grandTotal = toNum(inv.grandTotal || inv.totalAmount || inv.total);
-  const status     =
-    balance <= 0.01 ? 'paid' : paidAmount > 0 ? 'partial' : 'credit';
+  const status     = balance <= 0.01 ? 'paid' : paidAmount > 0 ? 'partial' : 'credit';
 
   const badgeStyle = S?.badge
     ? S.badge(status)
@@ -2784,7 +1280,6 @@ const InvoiceCard = ({
             : '#dc2626',
       };
 
-  // Earliest expiry among items
   const soonestExpiry = useMemo(() => {
     const withExpiry = items.filter((item) => item.expiryDate);
     if (!withExpiry.length) return null;
@@ -2796,50 +1291,96 @@ const InvoiceCard = ({
     }, null);
   }, [items]);
 
-  const loadPayments = async (force = false) => {
-    if (!inv.id || (payments.length > 0 && !force) || loadingPay) return;
+  const loadPayments = async () => {
+    if (!inv.id || loadingPay) return;
     setLoadingPay(true);
     try {
-      const snap = await getDocs(
-        query(
-          collection(db, 'payments'),
-          where('invoiceId', '==', inv.id)
-        )
-      );
-      setPayments(
-        snap.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .sort(
-            (a, b) =>
-              (b.createdAt?.toDate?.()?.getTime() || 0) -
-              (a.createdAt?.toDate?.()?.getTime() || 0)
-          )
-      );
-    } catch {}
+      const locPayments = await localDb.cashTransactions
+        .where('invoiceId')
+        .equals(inv.id)
+        .toArray();
+      setPayments(locPayments);
+
+      if (navigator.onLine && db && collection && query && where && getDocs) {
+        try {
+          const snap = await getDocs(
+            query(collection(db, 'payments'), where('invoiceId', '==', inv.id))
+          );
+          const serverPayments = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setPayments(serverPayments);
+        } catch (err) {
+          console.log('Firestore payments load deferred:', err);
+        }
+      }
+    } catch (err) {
+      console.log('loadPayments error:', err);
+    }
     setLoadingPay(false);
   };
 
   const handleDelete = async () => {
-    if (!window.confirm(`"${inv.supplierName}" මකන්නද?`)) return;
+    if (!window.confirm(`"${inv.supplierName || 'මෙම බිල්පත'}" මකා දැමීමට අවශ්‍ය බව ස්ථිරද?`)) return;
     setDeleting(true);
     try {
       if (items.length > 0) {
         await Promise.allSettled(
-          items.map((item) => {
+          items.map(async (item) => {
             const qty = toNum(item.qty || item.quantity);
-            if (!item.itemId || qty <= 0) return Promise.resolve();
-            return updateDoc(doc(db, 'items', item.itemId), {
-              stock:              increment(-qty),
-              currentStock:       increment(-qty),
-              'stocks.Main_Store': increment(-qty), // ✅ consistent
-            }).catch(() => {});
+            if (!item.itemId || qty <= 0) return;
+
+            const tItem = await localDb.items.get(item.itemId);
+            if (tItem) {
+              const updatedStock = Math.max(0, toNum(tItem.stock || tItem.quantity) - qty);
+              await localDb.items.update(item.itemId, {
+                stock: updatedStock,
+                quantity: updatedStock,
+                currentStock: updatedStock,
+                synced: false
+              });
+            }
           })
         );
       }
-      await deleteDoc(doc(db, collectionName, inv.id));
-      if (onDeleteInvoice && inv.supplierId && balance > 0)
-        await onDeleteInvoice(inv.supplierId, balance);
-      alert('✅ මකා දමන ලදී!'); onUpdate?.();
+
+      await localDb.purchases.delete(inv.id);
+
+      if (window.electronAPI?.saveLocalData && user?.uid) {
+        const myInvoices = await localDb.purchases.where('uid').equals(user.uid).toArray();
+        const myItems = await localDb.items.where('uid').equals(user.uid).toArray();
+        await window.electronAPI.saveLocalData(`purchases_${user.uid}.json`, myInvoices);
+        await window.electronAPI.saveLocalData(`items_${user.uid}.json`, myItems);
+      }
+
+      if (inv.supplierId && balance > 0) {
+        const targetSup = await localDb.suppliers.get(inv.supplierId);
+        if (targetSup) {
+          const updatedBal = Math.max(0, Math.round((getSupplierBalance(targetSup) - balance) * 100) / 100);
+          await localDb.suppliers.update(inv.supplierId, {
+            currentBalance: updatedBal,
+            synced: false
+          });
+          if (window.electronAPI?.saveLocalData && user?.uid) {
+            const mySuppliers = await localDb.suppliers.where('uid').equals(user.uid).toArray();
+            await window.electronAPI.saveLocalData(`suppliers_${user.uid}.json`, mySuppliers);
+          }
+        }
+      }
+
+      alert('✅ සාර්ථකව මකා දමන ලදී!');
+      onUpdate?.();
+
+      if (navigator.onLine && db && deleteDoc && doc && updateDoc && increment) {
+        try {
+          await deleteDoc(doc(db, collectionName, inv.id));
+          if (inv.supplierId && balance > 0) {
+            await updateDoc(doc(db, 'suppliers', inv.supplierId), {
+              currentBalance: increment(-balance),
+            });
+          }
+        } catch (err) {
+          console.log('Firestore delete deferred:', err);
+        }
+      }
     } catch (e) {
       alert('❌ ' + e.message);
     }
@@ -2860,7 +1401,6 @@ const InvoiceCard = ({
         overflow: 'hidden',
       }}
     >
-      {/* Card header */}
       <div
         onClick={() => {
           if (!expanded) loadPayments();
@@ -2938,10 +1478,8 @@ const InvoiceCard = ({
         </div>
       </div>
 
-      {/* Expanded content */}
       {expanded && (
         <div style={{ borderTop: '1px solid #e2e8f0' }}>
-          {/* Items */}
           <div style={{ padding: 15 }}>
             <h4
               style={{
@@ -2981,11 +1519,11 @@ const InvoiceCard = ({
                     <div style={{ flex: 1 }}>
                       <b>{item.name || item.itemName}</b>{' '}
                       <span style={{ color: '#64748b' }}>
-                        ({q} × {net.toFixed(2)})
+                        ({q} × {(Number(net) || 0).toFixed(2)})
                       </span>
                     </div>
                     <div style={{ fontWeight: 'bold', flexShrink: 0 }}>
-                      {lt.toFixed(2)}
+                      {(Number(lt) || 0).toFixed(2)}
                     </div>
                   </div>
                   {item.expiryDate && (
@@ -3017,14 +1555,12 @@ const InvoiceCard = ({
             })}
           </div>
 
-          {/* Receipts */}
           {displayReceipts.length > 0 && (
             <div style={{ padding: '0 15px 15px' }}>
               <ReceiptViewer images={displayReceipts} />
             </div>
           )}
 
-          {/* Payments history */}
           <div style={{ padding: '0 15px 15px' }}>
             <h4
               style={{
@@ -3074,7 +1610,6 @@ const InvoiceCard = ({
             )}
           </div>
 
-          {/* Actions */}
           <div
             style={{
               padding: '0 15px 15px',
@@ -3250,7 +1785,6 @@ export default function PurchaseCommonForm({
 }) {
   const { user } = useUserAuth();
 
-  // ─── State ───
   const [bankAccounts, setBankAccounts] = useState([]);
   const [bankLoading, setBankLoading]   = useState(true);
   const [activeTab, setActiveTab]       = useState('new');
@@ -3269,7 +1803,6 @@ export default function PurchaseCommonForm({
   const [historyFilter, setHistoryFilter]     = useState('all');
   const [sortBy, setSortBy]                   = useState('date-desc');
 
-  // Tab change warning modal
   const [tabWarning, setTabWarning]   = useState(false);
   const [pendingTab, setPendingTab]   = useState(null);
 
@@ -3283,73 +1816,94 @@ export default function PurchaseCommonForm({
   });
   const [lineItem, setLineItem] = useState({ ...INIT_LINE_ITEM });
 
-  // ─── Bank accounts (real-time) ───
-  useEffect(() => {
-    if (!user?.uid) { setBankAccounts([]); setBankLoading(false); return; }
-    setBankLoading(true);
-    const unsub = onSnapshot(
-      collection(db, `users/${user.uid}/bankAccounts`),
-      (snap) => {
-        setBankAccounts(
-          snap.docs
-            .map((d) => ({ id: d.id, ...d.data() }))
-            .filter((a) => a.isActive !== false)
-            .sort((a, b) =>
-              (a.bankName || '').localeCompare(b.bankName || '')
-            )
-        );
-        setBankLoading(false);
-      },
-      () => { setBankAccounts([]); setBankLoading(false); }
-    );
-    return () => unsub();
-  }, [user?.uid]);
-
-  // ─── Suppliers + Items (real-time) ───
-  useEffect(() => {
+  const syncLocalUiStates = useCallback(async () => {
     if (!user?.uid) return;
-    const unsubS = onSnapshot(
-      query(collection(db, 'suppliers'), where('uid', '==', user.uid)),
-      (snap) =>
-        setSuppliers(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      (err) => console.error('suppliers:', err)
-    );
-    const unsubI = onSnapshot(
-      query(collection(db, 'items'), where('uid', '==', user.uid)),
-      (snap) =>
-        setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      (err) => console.error('items:', err)
-    );
-    return () => { unsubS(); unsubI(); };
+    try {
+      const locSuppliers = await localDb.suppliers.where('uid').equals(user.uid).toArray();
+      console.log('📊 Dexie suppliers loaded:', locSuppliers.length, 'for uid:', user.uid);
+      const locItems = await localDb.items.where('uid').equals(user.uid).toArray();
+      console.log('📊 Dexie items loaded:', locItems.length, 'for uid:', user.uid);
+      const locInvoices = await localDb.purchases.where('uid').equals(user.uid).toArray();
+
+      setSuppliers(locSuppliers);
+      setItems(locItems);
+      setHistory(locInvoices.sort((a, b) =>
+        toSortKey(b.createdAt).localeCompare(toSortKey(a.createdAt))
+      ));
+    } catch (err) {
+      console.error('Dexie loading error:', err);
+    }
   }, [user?.uid]);
 
-  // ─── History (real-time) ───
   useEffect(() => {
-    if (!user?.uid || activeTab === 'new') return;
-    const q = query(
-      collection(db, storageKey),
-      where('uid', '==', user.uid)
-    );
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const data = snap.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .sort((a, b) => {
-            const dA = a.createdAt?.toDate?.()?.getTime() ??
-              new Date(a.date || 0).getTime();
-            const dB = b.createdAt?.toDate?.()?.getTime() ??
-              new Date(b.date || 0).getTime();
-            return dB - dA;
-          });
-        setHistory(data);
-      },
-      (err) => console.error('history:', err)
-    );
-    return () => unsub();
-  }, [user?.uid, storageKey, activeTab]);
+    syncLocalUiStates();
+  }, [syncLocalUiStates]);
 
-  // ─── Before unload warning ───
+  useEffect(() => {
+    setBankLoading(true);
+    const mockAccounts = [
+      { id: 'b_1', bankName: 'BOC', accountName: 'POS Cash Drawer Account', accountNumber: 'Drawer-01', isActive: true },
+      { id: 'b_2', bankName: 'Peoples Bank', accountName: 'Primary Wholesale Account', accountNumber: 'Wholesale-01', isActive: true },
+    ];
+    setBankAccounts(mockAccounts);
+    setBankLoading(false);
+
+    if (!user?.uid) return;
+    if (!db || !onSnapshot || !collection || !query || !where) return;
+
+    let unsubS = () => {};
+    let unsubI = () => {};
+    let unsubH = () => {};
+
+    try {
+      unsubS = onSnapshot(
+        query(collection(db, 'suppliers'), where('uid', '==', user.uid)),
+        (snap) => {
+          const cloudData = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          if (cloudData.length > 0) {
+            setSuppliers(cloudData);
+            localDb.suppliers.bulkPut(cloudData);
+          }
+        },
+        (err) => console.error('❌ Suppliers cloud load FAILED:', err.message || err)
+      );
+
+      unsubI = onSnapshot(
+        query(collection(db, 'items'), where('uid', '==', user.uid)),
+        (snap) => {
+          const cloudItems = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          if (cloudItems.length > 0) {
+            setItems(cloudItems);
+            localDb.items.bulkPut(cloudItems);
+          }
+        },
+        (err) => console.error('❌ Items cloud load FAILED:', err.message || err)
+      );
+
+      unsubH = onSnapshot(
+        query(collection(db, storageKey), where('uid', '==', user.uid)),
+        (snap) => {
+          const cloudInvoices = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          if (cloudInvoices.length > 0) {
+            setHistory(cloudInvoices.sort((a, b) =>
+              toSortKey(b.createdAt).localeCompare(toSortKey(a.createdAt))
+            ));
+            localDb.purchases.bulkPut(cloudInvoices);
+          }
+        },
+        (err) => console.error('❌ Invoices cloud load FAILED:', err.message || err)
+      );
+    } catch (err) {
+      console.log('Firestore listeners skipped (offline):', err);
+    }
+
+    return () => {
+      try { unsubS(); } catch {}
+      try { unsubI(); } catch {}
+      try { unsubH(); } catch {}
+    };
+  }, [storageKey, user?.uid]);
+
   useEffect(() => {
     const handleBeforeUnload = (e) => {
       if (cart.length > 0) {
@@ -3361,7 +1915,6 @@ export default function PurchaseCommonForm({
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [cart.length]);
 
-  // ─── Tab change (with modal warning) ───
   const handleTabChange = useCallback((tab) => {
     if (tab !== 'new' && cart.length > 0) {
       setPendingTab(tab); setTabWarning(true); return;
@@ -3374,7 +1927,6 @@ export default function PurchaseCommonForm({
     setTabWarning(false); setPendingTab(null);
   }, [pendingTab]);
 
-  // ─── Price handler ───
   const hPrice = useCallback((section, field, value) => {
     const c = PRICE_FIELDS[section];
     if (!c) return;
@@ -3403,7 +1955,6 @@ export default function PurchaseCommonForm({
     });
   }, []);
 
-  // ─── Item select ───
   const handleItemSelect = useCallback(
     (id) => {
       const item = items.find((i) => i.id === id);
@@ -3461,7 +2012,6 @@ export default function PurchaseCommonForm({
     [items]
   );
 
-  // ─── Add to cart ───
   const addToCart = useCallback(() => {
     if (!lineItem.itemId) return alert('❌ Item select කරන්න');
     const qty = toNum(lineItem.qty);
@@ -3496,7 +2046,6 @@ export default function PurchaseCommonForm({
     setLineItem({ ...INIT_LINE_ITEM });
   }, [lineItem]);
 
-  // ─── Cart qty update ───
   const updateCartQty = useCallback((index, newQty) => {
     setCart((p) =>
       p.map((item, i) => {
@@ -3510,9 +2059,8 @@ export default function PurchaseCommonForm({
     );
   }, []);
 
-  // ─── Save invoice ───
   const handleSave = async () => {
-    // ✅ Validation FIRST — before state changes
+    if (!user?.uid) return alert('❌ පරිශීලක සත්‍යාපනය අවශ්‍යයි. කරුණාකර නැවත login කරන්න.');
     if (!formData.supplierId) return alert('❌ සැපයුම්කරු තෝරන්න!');
     if (cart.length === 0) return alert('❌ භාණ්ඩ එකතු කරන්න');
 
@@ -3534,27 +2082,20 @@ export default function PurchaseCommonForm({
     isSavingRef.current = true; setIsSaving(true);
 
     try {
-      const payNow = Math.min(
-        Math.round(rawPayNow * 100) / 100, grandTotal
-      );
+      const payNow = Math.min(Math.round(rawPayNow * 100) / 100, grandTotal);
       let balance  = Math.round((grandTotal - payNow) * 100) / 100;
       if (balance < 0.01) balance = 0;
-      const paymentStatus =
-        balance <= 0.01 ? 'paid' : payNow > 0 ? 'partial' : 'credit';
+      const paymentStatus = balance <= 0.01 ? 'paid' : payNow > 0 ? 'partial' : 'credit';
 
       const supObj = suppliers.find((s) => s.id === formData.supplierId);
       const sn     = supObj?.name || formData.supplierName || '';
-      const sb     = bankAccounts.find(
-        (b) => b.id === paymentData.bankAccountId
-      );
 
       const cleanCart = cart.map((c) => {
         const q  = toNum(c.qty);
         const bp = toNum(c.buyingPrice);
         const dp = toNum(c.discountPercent);
         const np = toNum(c.buyingNetPrice) || calcNetPrice(bp, dp);
-        const tc =
-          toNum(c.totalCost) || Math.round(q * np * 100) / 100;
+        const tc = toNum(c.totalCost) || Math.round(q * np * 100) / 100;
         return {
           itemId: c.itemId, name: c.name, qty: q,
           buyingPrice: bp, discountPercent: dp,
@@ -3571,15 +2112,13 @@ export default function PurchaseCommonForm({
           barcode: c.barcode || '', warranty: c.warranty || '',
           expiryDate: c.expiryDate || '',
           batchNo: c.batchNo || '',
-          // Legacy aliases
           itemName: c.name, quantity: q, price: bp,
           unitPrice: np, netPrice: np, total: tc, lineTotal: tc,
         };
       });
 
-      // Save invoice
-      setSaveStep('💾 Invoice save...');
-      const invRef = await addDoc(collection(db, storageKey), {
+      const invoicePayload = {
+        id: 'inv_' + Date.now(),
         supplierId:    formData.supplierId,
         supplier_id:   formData.supplierId,
         supplierName:  sn,
@@ -3587,170 +2126,134 @@ export default function PurchaseCommonForm({
         refNo:         formData.refNo || '',
         date:          formData.date || localISODate(),
         notes:         formData.notes || '',
-        type, items:   cleanCart,
-        grandTotal, totalAmount: grandTotal, total: grandTotal,
+        type,
+        items:         cleanCart,
+        grandTotal,
+        totalAmount:   grandTotal,
+        total:         grandTotal,
         paidAmount:    payNow,
         balance,
         paymentStatus,
-        receiptImages: [], receiptUrl: '',
-        createdAt:     serverTimestamp(),
-        updatedAt:     serverTimestamp(),
-      });
+        receiptImages: [],
+        receiptUrl:    '',
+        synced:        false,
+        createdAt:     new Date().toISOString(),
+        updatedAt:     new Date().toISOString(),
+      };
 
-      // Upload receipts
       let imageUrls = [];
       if (receiptImages.length > 0) {
         for (let i = 0; i < receiptImages.length; i++) {
-          setSaveStep(`📤 Image ${i + 1}/${receiptImages.length}...`);
+          setSaveStep(`Uploading receipt image ${i + 1}/${receiptImages.length}...`);
           const r = receiptImages[i];
           if (!r.file) continue;
-          const res = await uploadOneImage(
-            r.file,
-            `receipts/${user.uid}/${invRef.id}/${Date.now()}_${r.name}`
-          );
+          const res = await uploadOneImage(r.file);
           if (res.url) imageUrls.push(res.url);
         }
-        if (imageUrls.length > 0) {
-          try {
-            await updateDoc(doc(db, storageKey, invRef.id), {
-              receiptImages: imageUrls,
-              receiptUrl: imageUrls[0],
-            });
-          } catch {}
-        }
+        invoicePayload.receiptImages = imageUrls;
+        invoicePayload.receiptUrl = imageUrls[0] || '';
       }
 
-      // Payment
+      setSaveStep('💾 Direct Dexie DB save...');
+      await localDb.purchases.add(invoicePayload);
+
       if (payNow > 0) {
-        setSaveStep('💳 Payment...');
-        await addDoc(collection(db, 'payments'), {
-          invoiceId:       invRef.id,
-          supplierId:      formData.supplierId,
-          supplier_id:     formData.supplierId,
-          supplierName:    sn,
-          amount:          payNow,
-          method:          paymentData.paymentMethod,
-          note:            paymentData.paymentNote || 'Initial',
-          bankAccountId:
-            paymentData.paymentMethod === 'bank'
-              ? paymentData.bankAccountId || null
-              : null,
-          bankAccountName:
-            paymentData.paymentMethod === 'bank'
-              ? sb?.accountName || ''
-              : '',
-          bankName:
-            paymentData.paymentMethod === 'bank'
-              ? sb?.bankName || ''
-              : '',
-          uid:           user.uid,
-          type:          type || 'purchase',
-          receiptImages: imageUrls,
-          receiptUrl:    imageUrls[0] || '',
-          createdAt:     serverTimestamp(),
-        });
-
-        if (
-          paymentData.paymentMethod === 'bank' &&
-          paymentData.bankAccountId
-        ) {
-          try {
-            await addDoc(
-              collection(db, `users/${user.uid}/bankTransactions`),
-              {
-                type:        'withdrawal',
-                accountId:   paymentData.bankAccountId,
-                amount:      payNow,
-                date:        Timestamp.now(),
-                description: `Purchase — ${sn}`,
-                reference:   formData.refNo || invRef.id,
-                source:      'purchase',
-                invoiceId:   invRef.id,
-                createdAt:   serverTimestamp(),
-                updatedAt:   serverTimestamp(),
-              }
-            );
-          } catch {}
-        }
-
-        await savePurchaseCashTransaction({
-          user, amount: payNow,
-          supplierId:      formData.supplierId,
-          supplierName:    sn,
-          invoiceId:       invRef.id,
-          invoiceNo:       formData.refNo || invRef.id,
-          paymentMethod:   paymentData.paymentMethod,
-          bankAccountId:
-            paymentData.paymentMethod === 'bank'
-              ? paymentData.bankAccountId
-              : null,
-          bankAccountName:
-            paymentData.paymentMethod === 'bank'
-              ? sb?.accountName || ''
-              : '',
-          bankName:
-            paymentData.paymentMethod === 'bank'
-              ? sb?.bankName || ''
-              : '',
-          notes: paymentData.paymentNote || formData.notes || '',
-          items: cleanCart,
-          date:  formData.date || localISODate(),
-          time:  nowHHMM(),
+        await localDb.cashTransactions.add({
+          id: 'pay_' + Date.now(),
+          uid: user.uid,
+          type: 'expense',
+          category: 'Supplier Invoice Payment',
+          amount: payNow,
+          synced: false,
+          createdAt: new Date().toISOString(),
         });
       }
 
-      // Supplier balance (credit only)
       if (balance > 0 && formData.supplierId) {
-        setSaveStep('📊 Balance...');
-        await updateSupplierBalanceFields(
-          formData.supplierId, balance, 'add'
-        );
+        const targetSup = await localDb.suppliers.get(formData.supplierId);
+        if (targetSup) {
+          const updatedBal = Math.round((getSupplierBalance(targetSup) + balance) * 100) / 100;
+          await localDb.suppliers.update(formData.supplierId, {
+            currentBalance: updatedBal,
+            synced: false,
+            updatedAt: new Date().toISOString(),
+          });
+        }
       }
 
-      // Stock + price update
-      setSaveStep('📦 Stock...');
-      await Promise.allSettled(
-        cleanCart.map((item) =>
-          updateDoc(doc(db, 'items', item.itemId), {
-            stock:              increment(item.qty),
-            currentStock:       increment(item.qty),
-            'stocks.Main_Store': increment(item.qty), // ✅ consistent
-            buyingPrice:         item.buyingPrice,
-            buyingDiscount:      item.discountPercent,
-            buyingNetPrice:      item.buyingNetPrice,
-            sellingPriceRetail:  item.retailPrice,
-            retailDiscount:      item.retailDiscount,
-            retailYourPrice:     item.retailYourPrice,
-            sellingPriceWholesale: item.wholesalePrice,
-            wholesaleDiscount:   item.wholesaleDiscount,
-            wholesaleYourPrice:  item.wholesaleYourPrice,
-            sellingPriceLoose:   item.loosePrice,
-            looseDiscount:       item.looseDiscount,
-            looseYourPrice:      item.looseYourPrice,
-            barcode:             item.barcode,
-            warranty:            item.warranty,
-            ...(item.expiryDate
-              ? {
-                  expiryDate:     item.expiryDate,
-                  lastExpiryDate: item.expiryDate,
-                }
-              : {}),
-            ...(item.batchNo
-              ? { batchNo: item.batchNo, lastBatchNo: item.batchNo }
-              : {}),
-            updatedAt: serverTimestamp(),
-          })
-        )
+      await Promise.all(
+        cleanCart.map(async (item) => {
+          const currentItem = await localDb.items.get(item.itemId);
+          if (currentItem) {
+            const currentQty = toNum(currentItem.stock || currentItem.quantity || 0);
+            const finalQty = currentQty + item.qty;
+            await localDb.items.update(item.itemId, {
+              stock: finalQty,
+              quantity: finalQty,
+              currentStock: finalQty,
+              buyingPrice: item.buyingPrice,
+              buyingNetPrice: item.buyingNetPrice,
+              sellingPriceRetail: item.retailPrice,
+              retailYourPrice: item.retailYourPrice,
+              sellingPriceWholesale: item.wholesalePrice,
+              wholesaleYourPrice: item.wholesaleYourPrice,
+              sellingPriceLoose: item.loosePrice,
+              looseYourPrice: item.looseYourPrice,
+              synced: false,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+        })
       );
+
+      if (window.electronAPI?.saveLocalData) {
+        const myInvoices = await localDb.purchases.where('uid').equals(user.uid).toArray();
+        const mySuppliers = await localDb.suppliers.where('uid').equals(user.uid).toArray();
+        const myItems = await localDb.items.where('uid').equals(user.uid).toArray();
+        const myTx = await localDb.cashTransactions.where('uid').equals(user.uid).toArray();
+        await window.electronAPI.saveLocalData(`purchases_${user.uid}.json`, myInvoices);
+        await window.electronAPI.saveLocalData(`suppliers_${user.uid}.json`, mySuppliers);
+        await window.electronAPI.saveLocalData(`items_${user.uid}.json`, myItems);
+        await window.electronAPI.saveLocalData(`cashTransactions_${user.uid}.json`, myTx);
+      }
+
+      if (navigator.onLine && db && writeBatch && doc && collection && serverTimestamp && increment) {
+        try {
+          setSaveStep('☁️ Syncing online database...');
+          const batch = writeBatch(db);
+          const dbInvRef = doc(db, storageKey, invoicePayload.id);
+          batch.set(dbInvRef, {
+            ...invoicePayload,
+            uid: user.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+
+          if (balance > 0 && formData.supplierId) {
+            const dbSupRef = doc(db, 'suppliers', formData.supplierId);
+            batch.update(dbSupRef, {
+              currentBalance: increment(balance),
+              updatedAt: serverTimestamp(),
+            });
+          }
+
+          await batch.commit();
+          await localDb.purchases.update(invoicePayload.id, { synced: true });
+          if (formData.supplierId) {
+            await localDb.suppliers.update(formData.supplierId, { synced: true });
+          }
+        } catch (err) {
+          console.log('Firestore upload deferred:', err);
+        }
+      }
 
       setSaveStep('');
       alert(
         paymentStatus === 'paid'
-          ? `✅ සම්පූර්ණයි! ${cleanCart.length} items`
-          : `✅ Saved! Balance: ${formatCurrency(balance)}`
+          ? `✅ සම්පූර්ණයි! භාණ්ඩ ${cleanCart.length}ක් සාර්ථකව එක් කරන ලදී.`
+          : `✅ සාර්ථකයි! ණය ශේෂය: ${formatCurrency(balance)}`
       );
 
-      // Reset form
       setCart([]);
       setLineItem({ ...INIT_LINE_ITEM });
       setReceiptImages([]);
@@ -3759,8 +2262,10 @@ export default function PurchaseCommonForm({
         paymentNote: '', bankAccountId: '',
       });
       setFormData((prev) => ({ ...prev, refNo: '', notes: '' }));
+      syncLocalUiStates();
     } catch (e) {
-      setSaveStep(''); alert('❌ ' + e.message);
+      setSaveStep('');
+      alert('❌ ' + e.message);
     } finally {
       setIsSaving(false);
       isSavingRef.current = false;
@@ -3768,7 +2273,6 @@ export default function PurchaseCommonForm({
     }
   };
 
-  // ─── Derived values ───
   const cartTotal = useMemo(
     () => toNum(cart.reduce((s, i) => s + (i.totalCost || 0), 0)),
     [cart]
@@ -3818,7 +2322,6 @@ export default function PurchaseCommonForm({
     [history]
   );
 
-  // Expiry stats — hoisted today date ✅
   const expiryStats = useMemo(() => {
     const today = new Date();
     let expired = 0, soon = 0, warning = 0;
@@ -3834,9 +2337,7 @@ export default function PurchaseCommonForm({
     return { expired, soon, warning };
   }, [history]);
 
-  // Filtered + sorted history — pre-calculated expiry ✅
   const filteredHistory = useMemo(() => {
-    const today = new Date();
     const withMeta = history.map((inv) => ({
       ...inv,
       _status: getInvStatus(inv),
@@ -3870,17 +2371,12 @@ export default function PurchaseCommonForm({
           return toNum(b.balance) - toNum(a.balance);
         if (sortBy === 'expiry-asc')
           return a._earliestExpiry - b._earliestExpiry;
-        const dA =
-          a.createdAt?.toDate?.()?.getTime() ??
-          new Date(a.date || 0).getTime();
-        const dB =
-          b.createdAt?.toDate?.()?.getTime() ??
-          new Date(b.date || 0).getTime();
+        const dA = new Date(a.date || a.createdAt || 0).getTime();
+        const dB = new Date(b.date || b.createdAt || 0).getTime();
         return dB - dA;
       });
   }, [history, historyFilter, searchTerm, sortBy]);
 
-  // Outstanding groups — invoice-based balance ✅
   const groupedOutstanding = useMemo(() => {
     const map = new Map();
     const seenInvoices = new Set();
@@ -3926,7 +2422,6 @@ export default function PurchaseCommonForm({
       .sort((a, b) => b.totalBalance - a.totalBalance);
   }, [suppliers, history]);
 
-  // ─── Styles ───
   const S = useMemo(() => ({
     box: {
       padding: 20, maxWidth: 1200, margin: '0 auto',
@@ -3968,12 +2463,18 @@ export default function PurchaseCommonForm({
     }),
   }), []);
 
-  // ════════════════════════════════════════════════════════
-  // RENDER
-  // ════════════════════════════════════════════════════════
+  if (!user) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center' }}>
+        <div style={{ fontSize: 48, marginBottom: 10 }}>🔒</div>
+        <h3 style={{ color: '#dc2626' }}>පරිශීලක සත්‍යාපනය අවශ්‍යයි</h3>
+        <p style={{ color: '#64748b' }}>කරුණාකර නැවත login වන්න.</p>
+      </div>
+    );
+  }
+
   return (
     <div style={S.box}>
-      {/* Tab change warning modal */}
       <TabWarningModal
         isOpen={tabWarning}
         cartCount={cart.length}
@@ -3981,7 +2482,6 @@ export default function PurchaseCommonForm({
         onCancel={() => { setTabWarning(false); setPendingTab(null); }}
       />
 
-      {/* Scanner */}
       <ScannerModal
         isOpen={showScanner}
         onClose={() => setShowScanner(false)}
@@ -3994,14 +2494,11 @@ export default function PurchaseCommonForm({
         }}
       />
 
-      {/* Payment modal */}
       <PaymentModal
         isOpen={paymentModal}
         onClose={() => { setPaymentModal(false); setSelectedInvoice(null); }}
         invoice={selectedInvoice}
-        onPaymentSaved={() => {
-          // history is real-time via onSnapshot — no manual refresh needed
-        }}
+        onPaymentSaved={() => { syncLocalUiStates(); }}
         collectionName={storageKey}
         bankAccounts={bankAccounts}
         bankLoading={bankLoading}
@@ -4016,7 +2513,7 @@ export default function PurchaseCommonForm({
             fontSize: 13, color: '#92400e', textAlign: 'center',
           }}
         >
-          ⏳ Loading...
+          ⏳ Loading bank accounts...
         </div>
       )}
 
@@ -4031,7 +2528,7 @@ export default function PurchaseCommonForm({
           type="button" style={S.tab(activeTab === 'new')}
           onClick={() => handleTabChange('new')}
         >
-          📝 New
+          📝 New Purchase
         </button>
         <button
           type="button" style={S.tab(activeTab === 'history')}
@@ -4043,7 +2540,7 @@ export default function PurchaseCommonForm({
           type="button" style={S.tab(activeTab === 'payments')}
           onClick={() => handleTabChange('payments')}
         >
-          💳 Payments
+          💳 Payments Outstanding
           {totalSupplierDebt > 0 && (
             <span
               style={{
@@ -4321,7 +2818,6 @@ export default function PurchaseCommonForm({
                 </div>
               </div>
 
-              {/* Quick expiry buttons */}
               <div
                 style={{
                   display: 'flex', gap: 6, marginTop: 10,
@@ -4380,7 +2876,6 @@ export default function PurchaseCommonForm({
               </div>
             </div>
 
-            {/* Price Boxes */}
             <div
               style={{
                 marginTop: 20, display: 'grid',
@@ -4449,7 +2944,7 @@ export default function PurchaseCommonForm({
                   : '#94a3b8',
               }}
             >
-              ⬇ Add
+              ⬇ Add to Cart
             </button>
           </div>
 
@@ -4561,7 +3056,6 @@ export default function PurchaseCommonForm({
 
             {cart.length > 0 && (
               <>
-                {/* Totals */}
                 <div
                   style={{
                     padding: 20, background: '#f8fafc', borderRadius: 12,
@@ -4630,7 +3124,6 @@ export default function PurchaseCommonForm({
                   </div>
                 </div>
 
-                {/* Expiry summary */}
                 {cart.some((c) => c.expiryDate) && (
                   <div
                     style={{
@@ -4670,7 +3163,6 @@ export default function PurchaseCommonForm({
                   </div>
                 )}
 
-                {/* Receipts */}
                 <div
                   style={{
                     background: '#fefce8', padding: 20, borderRadius: 12,
@@ -4687,7 +3179,6 @@ export default function PurchaseCommonForm({
                   />
                 </div>
 
-                {/* Payment section */}
                 <div
                   style={{
                     background: '#f0fdf4', padding: 20, borderRadius: 12,
@@ -4695,7 +3186,7 @@ export default function PurchaseCommonForm({
                   }}
                 >
                   <h4 style={{ margin: '0 0 15px', color: '#166534' }}>
-                    💳 ගෙවීම
+                    💳 ගෙවීම් තොරතුරු
                   </h4>
                   <div
                     style={{
@@ -4746,7 +3237,7 @@ export default function PurchaseCommonForm({
                           onClick={() =>
                             setPaymentData((p) => ({
                               ...p,
-                              payNow: cartTotal.toFixed(2),
+                              payNow: (Number(cartTotal) || 0).toFixed(2),
                             }))
                           }
                           style={{
@@ -4862,7 +3353,7 @@ export default function PurchaseCommonForm({
                     ? '🏦 බැංකු ගිණුම තෝරන්න'
                     : !formData.supplierId
                     ? '⚠️ Supplier තෝරන්න'
-                    : `💾 Save — ${formatCurrency(cartTotal)}`}
+                    : `💾 Save Purchase — ${formatCurrency(cartTotal)}`}
                 </button>
               </>
             )}
@@ -4875,7 +3366,6 @@ export default function PurchaseCommonForm({
       ════════════════════════════════════════ */}
       {activeTab === 'history' && (
         <div>
-          {/* Summary cards */}
           <div
             style={{
               display: 'grid',
@@ -4928,7 +3418,6 @@ export default function PurchaseCommonForm({
             ))}
           </div>
 
-          {/* Expiry alert */}
           {(expiryStats.expired > 0 || expiryStats.soon > 0) && (
             <div
               style={{
@@ -4982,7 +3471,6 @@ export default function PurchaseCommonForm({
             </div>
           )}
 
-          {/* Filters */}
           <div style={S.card}>
             <div
               style={{
@@ -4991,7 +3479,7 @@ export default function PurchaseCommonForm({
               }}
             >
               <input
-                placeholder="🔍 Search..." value={searchTerm}
+                placeholder="🔍 Search invoices..." value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 style={{
                   ...S.inp, textAlign: 'left',
@@ -5007,8 +3495,8 @@ export default function PurchaseCommonForm({
                 }}
               >
                 <option value="date-desc">📅 Latest</option>
-                <option value="amount-desc">💰 Highest</option>
-                <option value="balance-desc">🔴 Balance</option>
+                <option value="amount-desc">💰 Highest Amount</option>
+                <option value="balance-desc">🔴 Outstanding Balance</option>
                 <option value="expiry-asc">📅 Expiry Soon</option>
               </select>
             </div>
@@ -5052,25 +3540,31 @@ export default function PurchaseCommonForm({
                 padding: 40, color: '#94a3b8',
               }}
             >
-              Invoices නැත
+              බිල්පත් කිසිවක් සොයාගත නොහැක.
             </div>
           ) : (
             filteredHistory.map((inv) => (
               <InvoiceCard
                 key={inv.id} inv={inv}
                 collectionName={storageKey} S={S}
+                user={user}
                 onPayClick={(invoice) => {
                   setSelectedInvoice(invoice);
                   setPaymentModal(true);
                 }}
-                onUpdate={() => {
-                  // real-time — no manual action needed
-                }}
+                onUpdate={() => { syncLocalUiStates(); }}
                 onDeleteInvoice={async (supplierId, deletedBalance) => {
-                  if (supplierId && deletedBalance > 0)
-                    await updateSupplierBalanceFields(
-                      supplierId, deletedBalance, 'subtract'
-                    );
+                  if (supplierId && deletedBalance > 0) {
+                    const targetSup = await localDb.suppliers.get(supplierId);
+                    if (targetSup) {
+                      const updatedBal = Math.max(0, Math.round((getSupplierBalance(targetSup) - deletedBalance) * 100) / 100);
+                      await localDb.suppliers.update(supplierId, {
+                        currentBalance: updatedBal,
+                        synced: false
+                      });
+                      syncLocalUiStates();
+                    }
+                  }
                 }}
               />
             ))
@@ -5144,7 +3638,7 @@ export default function PurchaseCommonForm({
                 fontSize: 18, color: '#1e293b',
               }}
             >
-              🔴 Supplier-wise Outstanding
+              🔴 Supplier Outstanding Balances
             </div>
 
             {groupedOutstanding.length > 0 ? (
@@ -5165,7 +3659,7 @@ export default function PurchaseCommonForm({
               >
                 <div style={{ fontSize: 60, marginBottom: 10 }}>✅</div>
                 <div style={{ fontSize: 18, fontWeight: 'bold' }}>
-                  සියලු ගෙවීම් සම්පූර්ණ!
+                  සියලු ගෙවීම් සම්පූර්ණයි!
                 </div>
               </div>
             )}

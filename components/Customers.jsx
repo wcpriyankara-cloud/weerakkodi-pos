@@ -1,24 +1,87 @@
-﻿'use client';
+'use client';
 
-// components/Customers.jsx  ·  v4
+// components/Customers.jsx  ·  v5 (Data Isolation + Offline Crash Fix)
+// ✅ UID-filtered local & cloud queries (Data Isolation)
+// ✅ Per-user backup files: customers_<uid>.json
+// ✅ Firebase db null guards (Offline crash prevention)
+// ✅ Auth guard UI (Login prompt when no user)
 // ✅ Integrated with separate Customer Loan Management system
 // ✅ Real InvoiceOutputManager import
-// ✅ Fresh Firestore balance read
 // ✅ Portal payment support + Loan Quick Status Link
-// 🚀 FIXED: Profile picture upload with automatic compression & Telegraph cloud upload
-// 🚀 FIXED: Mobile contacts integration (Contact Picker API) to select directly from Phone contacts
+// 🚀 Profile picture upload with automatic compression & Telegraph cloud upload
+// 🚀 Mobile contacts integration (Contact Picker API)
+// 🚀 OFFLINE-FIRST: Auto Dexie DB sync, disk backup, background cloud migration
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { db } from '@/firebaseConfig';
-import { useUserAuth } from '@/context/UserContext';
-import {
-  collection, query, where,
-  addDoc, updateDoc, doc, getDocs, getDoc,
-  serverTimestamp, increment, onSnapshot,
-  Timestamp,
-} from 'firebase/firestore';
 
-// ✅ REAL InvoiceOutputManager
+// ✅ Safe Firebase import with null fallback
+let db = null;
+let collection, query, where, addDoc, updateDoc, doc, getDocs, getDoc, setDoc;
+let serverTimestamp, increment, onSnapshot, Timestamp, getFirestore;
+try {
+  const firestore = require('firebase/firestore');
+  collection = firestore.collection;
+  query = firestore.query;
+  where = firestore.where;
+  addDoc = firestore.addDoc;
+  updateDoc = firestore.updateDoc;
+  doc = firestore.doc;
+  getDocs = firestore.getDocs;
+  getDoc = firestore.getDoc;
+  setDoc = firestore.setDoc;
+  serverTimestamp = firestore.serverTimestamp;
+  increment = firestore.increment;
+  onSnapshot = firestore.onSnapshot;
+  Timestamp = firestore.Timestamp;
+  getFirestore = firestore.getFirestore;
+
+  // Step 1: Try named export from firebase-config
+  try {
+    const fb = require('@/firebaseConfig');
+    db = fb.db || (fb.default && fb.default.db) || null;
+  } catch {}
+
+  // Step 2: Validate — if db is NOT a Firestore instance, discard it
+  if (db && typeof db._databaseId === 'undefined' && db.type !== 'firestore' && !db.app) {
+    console.warn('[Customers] db is not a Firestore instance, discarding:', typeof db);
+    db = null;
+  }
+
+  // Step 3: Fallback — getFirestore() from the initialized app
+  if (!db && getFirestore) {
+    try {
+      db = getFirestore();
+      console.log('[Customers] ✅ db resolved via getFirestore()');
+    } catch (e) {
+      console.warn('[Customers] getFirestore() failed:', e.message);
+    }
+  }
+
+  if (db) {
+    console.log('[Customers] ✅ Firestore connected');
+  } else {
+    console.warn('[Customers] ⚠️ No Firestore — offline mode');
+  }
+} catch (e) {
+  console.warn('Firebase SDK not reachable. Customers running in offline mode.', e);
+}
+
+
+// Safe db check - handles CJS/ESM interop
+const isValidDb = () => {
+  if (!db) return false;
+  if (db.app) return true;
+  if (typeof db._databaseId !== 'undefined') return true;
+  if (db.type === 'firestore') return true;
+  return false;
+};
+
+// ✅ Safe wrapper — use this instead of raw `db` checks
+const canUseCloud = () => navigator.onLine && isValidDb() && collection && query;
+
+import { useUserAuth } from '@/context/UserContext';
+import { localDb } from '../lib/localDb';
+import { normalizeDate } from '../lib/utils';
 import InvoiceOutputManager from './InvoiceOutputManager';
 
 /* ════════════════════════════════════════
@@ -37,13 +100,11 @@ const fmt = (v) =>
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
-// ★★★ 24-hour format (HH:mm)
 const nowHHMM24 = () => {
   const d = new Date();
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
 
-// ★★★ Local date string (YYYY-MM-DD)
 const localDateStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -55,30 +116,6 @@ const slugify = (s) =>
 
 const makePortalKey = (name) =>
   `${slugify(name)}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-
-/* ════════════════════════════════════════
-   CACHE
-════════════════════════════════════════ */
-const CACHE_TTL = 5 * 60 * 1000;
-
-const saveCache = (uid, list) => {
-  try {
-    sessionStorage.setItem(`customers_${uid}`, JSON.stringify({ data: list, ts: Date.now() }));
-  } catch {}
-};
-
-const loadCache = (uid) => {
-  try {
-    const raw = sessionStorage.getItem(`customers_${uid}`);
-    if (!raw) return null;
-    const { data, ts } = JSON.parse(raw);
-    return Date.now() - ts > CACHE_TTL ? null : data;
-  } catch { return null; }
-};
-
-const clearCache = (uid) => {
-  try { sessionStorage.removeItem(`customers_${uid}`); } catch {}
-};
 
 /* ════════════════════════════════════════
    TRANSLATIONS
@@ -101,7 +138,7 @@ const T = {
     paymentMethod: 'ගෙවීම් ක්‍රමය', receiveNow: 'ලබාගන්න',
     paymentNote: 'ගෙවීම් සටහන (Optional)',
     overpaid: 'අතිරේක ගෙවීම', lastUpdated: 'අවසන් update',
-    offlineMsg: '⚠️ Offline — Cache data', quotaMsg: '⚠️ Quota exceeded',
+    offlineMsg: '⚠️ Offline — දේශීය දත්ත ක්‍රියාත්මකයි', quotaMsg: '⚠️ Quota exceeded',
     addCreditTitle: 'ණය ඇතුළු කිරීම', creditAmount: 'ණය මුදල',
     creditNote: 'ණය විස්තරය (Optional)', addCredit: 'ණය ඇතුළු කරන්න',
     newBalance: 'නව ශේෂය', currentBalance: 'වත්මන් ශේෂය',
@@ -130,7 +167,7 @@ const T = {
     paymentMethod: 'Payment Method', receiveNow: 'Receive Now',
     paymentNote: 'Payment Note (Optional)',
     overpaid: 'Overpaid', lastUpdated: 'Last updated',
-    offlineMsg: '⚠️ Offline — Cache data', quotaMsg: '⚠️ Quota exceeded',
+    offlineMsg: '⚠️ Offline — Using Local Data', quotaMsg: '⚠️ Quota exceeded',
     addCreditTitle: 'Add Credit Entry', creditAmount: 'Credit Amount',
     creditNote: 'Credit Description (Optional)', addCredit: 'Add Credit',
     newBalance: 'New Balance', currentBalance: 'Current Balance',
@@ -160,26 +197,31 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
     (async () => {
       setFetchingBal(true);
       try {
-        const snap = await getDoc(doc(db, 'customers', customer.id));
-        if (!active) return;
-        if (snap.exists()) {
-          const bal = nn(snap.data().currentBalance);
+        const localRecord = await localDb.customers.get(customer.id);
+        if (active && localRecord) {
+          const bal = nn(localRecord.currentBalance);
           setFreshBal(bal);
-          if (bal > 0) setAmount(bal.toFixed(2));
-        } else {
-          setFreshBal(nn(customer.currentBalance));
+          if (bal > 0) setAmount((Number(bal) || 0).toFixed(2));
+        }
+
+                if (canUseCloud() && getDoc && doc) {
+          const snap = await getDoc(doc(db, 'customers', customer.id));
+          if (!active) return;
+          if (snap.exists()) {
+            const bal = nn(snap.data().currentBalance);
+            setFreshBal(bal);
+            if (bal > 0) setAmount((Number(bal) || 0).toFixed(2));
+            await localDb.customers.update(customer.id, { currentBalance: bal });
+          }
         }
       } catch (e) {
         console.error('Fresh balance error:', e);
-        const bal = nn(customer.currentBalance);
-        setFreshBal(bal);
-        if (bal > 0) setAmount(bal.toFixed(2));
       } finally {
         if (active) setFetchingBal(false);
       }
     })();
     return () => { active = false; };
-  }, []); // eslint-disable-line
+  }, [customer.id]);
 
   const currentBal = freshBal !== null ? freshBal : nn(customer?.currentBalance);
 
@@ -197,115 +239,94 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
       const refNo    = `PAY${Date.now().toString(36).toUpperCase().slice(-8)}`;
       const dateStr  = localDateStr();
       const timeStr  = nowHHMM24();
-      const nowTs    = Timestamp.now();
+      const nowTs    = Timestamp ? Timestamp.now() : null;
       const now      = new Date();
 
-      /* ── 1. Customer transaction record ── */
-      const cusTxnRef = await addDoc(collection(db, 'customerTransactions'), {
-        uid: user.uid,
-        customerId: customer.id,
-        customerName: customer.name || '',
-        customerPhone: customer.phone || '',
-        type: 'payment',
-        amount: payAmt,
-        method,
-        note: note || '',
-        status: 'confirmed',
-        refNo,
-        createdAt: serverTimestamp(),
-        timestamp: nowTs,
-        date: dateStr,
-        time: timeStr,
+      await localDb.customers.update(customer.id, {
+        currentBalance: newBal,
+        updatedAt: now.toISOString()
       });
 
-      /* ── 2. Update customer outstanding balance ── */
-      await updateDoc(doc(db, 'customers', customer.id), {
-        currentBalance: increment(-payAmt),
-        lastPaymentAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      if (window.electronAPI?.saveLocalData) {
+        const userCus = await localDb.customers.where('uid').equals(user.uid).toArray();
+        await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
+      }
 
-      /* ── 3. Cash & Bank Register Sync ── */
-      await addDoc(collection(db, `users/${user.uid}/cashTransactions`), {
-        type: 'in',
-        source: 'invoicePayment',
-        category: 'invoicePayment',
-        description: `💵 පාරිභෝගික ගෙවීම් ලැබීම [${customer.name || 'Customer'}]${note ? ' | ' + note : ''}`,
-        amount: payAmt,
-        paymentMethod: method,
-        customerId: customer.id,
-        customerName: customer.name || '',
-        customerPhone: customer.phone || '',
-        customerTxnId: cusTxnRef.id,
-        reference: refNo,
-        notes: note || '',
-        note: note || '',
-        previousOutstanding: prevBal,
-        newOutstanding: newBal,
-        date: dateStr,
-        time: timeStr,
-        timestamp: nowTs,
-        createdAt: serverTimestamp(),
-        createdBy: user?.email || '',
-        uid: user.uid,
-        isAutomatic: true,
-      });
-
-      /* ── 4. Bank Sync (optional) ── */
-      if (method === 'bank' && customer.defaultBankAccountId) {
+      let cusTxnId = `txn_${Date.now()}`;
+            if (canUseCloud() && addDoc && updateDoc && doc) {
         try {
-          await addDoc(collection(db, `users/${user.uid}/bankTransactions`), {
-            type: 'deposit',
-            source: 'invoicePayment',
-            category: 'invoicePayment',
-            accountId: customer.defaultBankAccountId,
+          const cusTxnRef = await addDoc(collection(db, 'customerTransactions'), {
+            uid: user.uid,
+            customerId: customer.id,
+            customerName: customer.name || '',
+            customerPhone: customer.phone || '',
+            type: 'payment',
             amount: payAmt,
-            description: `පාරිභෝගික ගෙවීම — ${customer.name}`,
-            reference: refNo,
-            date: nowTs,
+            method,
+            note: note || '',
+            status: 'confirmed',
+            refNo,
             createdAt: serverTimestamp(),
+            timestamp: nowTs,
+            date: dateStr,
+            time: timeStr,
           });
-          await updateDoc(doc(db, `users/${user.uid}/bankAccounts`, customer.defaultBankAccountId), {
-            currentBalance: increment(payAmt),
-            liveBalance: increment(payAmt),
+          cusTxnId = cusTxnRef.id;
+
+          await updateDoc(doc(db, 'customers', customer.id), {
+            currentBalance: increment(-payAmt),
+            lastPaymentAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
-        } catch (bankErr) {
-          console.warn('Bank sync skipped:', bankErr.message);
+
+          await addDoc(collection(db, `users/${user.uid}/cashTransactions`), {
+            type: 'in',
+            source: 'invoicePayment',
+            category: 'invoicePayment',
+            description: `💵 පාරිභෝගික ගෙවීම් ලැබීම [${customer.name || 'Customer'}]${note ? ' | ' + note : ''}`,
+            amount: payAmt,
+            paymentMethod: method,
+            customerId: customer.id,
+            customerName: customer.name || '',
+            customerPhone: customer.phone || '',
+            customerTxnId: cusTxnId,
+            reference: refNo,
+            notes: note || '',
+            note: note || '',
+            previousOutstanding: prevBal,
+            newOutstanding: newBal,
+            date: dateStr,
+            time: timeStr,
+            timestamp: nowTs,
+            createdAt: serverTimestamp(),
+            createdBy: user?.email || '',
+            uid: user.uid,
+            isAutomatic: true,
+          });
+        } catch (cloudErr) {
+          console.warn("Deferred cloud payment registration:", cloudErr.message);
         }
       }
 
       const methodMap = { cash: 'cash', bank: 'etransfer', card: 'card', cheque: 'cheque', online: 'etransfer' };
 
       const synthetic = {
-        _isReceipt:   true,
-        _receiptType: 'payment',
-
-        id:          `payment-${refNo}`,
-        invoiceNo:   refNo,
-        invoiceCode: `PAY-${refNo}`,
-
-        customerId:      customer.id      || '',
-        customerName:    customer.name    || '',
-        customerPhone:   customer.phone   || '',
-        customerAddress: customer.address || '',
-
+        _isReceipt: true, _receiptType: 'payment',
+        id: `payment-${refNo}`, invoiceNo: refNo, invoiceCode: `PAY-${refNo}`,
+        customerId: customer.id || '', customerName: customer.name || '',
+        customerPhone: customer.phone || '', customerAddress: customer.address || '',
         items: [{
           name: 'ගෙවීම් රිසිට්පත', nameSi: 'ගෙවීම',
           qty: 1, sellingPrice: payAmt, yourPrice: payAmt,
           lineTotal: payAmt, uom: 'unit', warrantyCode: '',
         }],
-
         grossTotal: payAmt, totalDiscount: 0, billDiscount: 0,
         billDiscountPercent: 0, exchangeAmount: 0,
         netAmount: payAmt, payAmount: payAmt, balance: 0,
         paymentMethod: methodMap[method] || 'cash',
         remarks: note || '', invoiceRemark: note || '',
-
-        previousOutstanding:    prevBal,
-        newOutstanding:         newBal,
+        previousOutstanding: prevBal, newOutstanding: newBal,
         customerCurrentBalance: newBal,
-
         createdAt: { toDate: () => now },
         date: dateStr, status: 'completed', type: 'receipt',
         _collection: 'customerTransactions',
@@ -328,7 +349,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
         <div style={{ padding: '10px 0 20px' }}>
-
           <div style={{ marginBottom: 16, padding: 14, background: '#f0fdf4', borderRadius: 12, border: '1px solid #bbf7d0' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               {customer.profilePicture ? (
@@ -355,14 +375,12 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
 
           <div style={{ marginBottom: 14 }}>
             <label style={S.label}>{t.amountReceived} *</label>
-            <input
-              type="number" autoFocus placeholder="0.00"
+            <input type="number" autoFocus placeholder="0.00"
               value={amount} onChange={(e) => setAmount(e.target.value)}
-              style={{ ...S.input, fontSize: 24, fontWeight: 'bold', color: '#16a34a', textAlign: 'center', padding: 16 }}
-            />
+              style={{ ...S.input, fontSize: 24, fontWeight: 'bold', color: '#16a34a', textAlign: 'center', padding: 16 }} />
             <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
               {currentBal > 0 && (
-                <button onClick={() => setAmount(currentBal.toFixed(2))} style={S.quickBtn}>
+                <button onClick={() => setAmount((Number(currentBal) || 0).toFixed(2))} style={S.quickBtn}>
                   ✅ Full Rs.{fmt(currentBal)}
                 </button>
               )}
@@ -386,16 +404,14 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
             <label style={S.label}>{t.paymentMethod}</label>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6 }}>
               {[
-                { v: 'cash',   i: '💵', l: 'Cash'   },
-                { v: 'card',   i: '💳', l: 'Card'   },
-                { v: 'bank',   i: '🏦', l: 'Bank'   },
-                { v: 'cheque', i: '🧾', l: 'Cheque' },
+                { v: 'cash', i: '💵', l: 'Cash' }, { v: 'card', i: '💳', l: 'Card' },
+                { v: 'bank', i: '🏦', l: 'Bank' }, { v: 'cheque', i: '🧾', l: 'Cheque' },
               ].map(m => (
                 <button key={m.v} onClick={() => setMethod(m.v)} style={{
                   padding: '10px 6px', borderRadius: 10, cursor: 'pointer', fontSize: 12, fontWeight: 700,
-                  border:     method === m.v ? '2px solid #16a34a' : '2px solid #e2e8f0',
+                  border: method === m.v ? '2px solid #16a34a' : '2px solid #e2e8f0',
                   background: method === m.v ? '#f0fdf4' : 'white',
-                  color:      method === m.v ? '#16a34a' : '#64748b',
+                  color: method === m.v ? '#16a34a' : '#64748b',
                   display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
                 }}>
                   <span style={{ fontSize: 18 }}>{m.i}</span><span>{m.l}</span>
@@ -442,9 +458,18 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
     (async () => {
       setFetchingBal(true);
       try {
-        const snap = await getDoc(doc(db, 'customers', customer.id));
-        if (!active) return;
-        setFreshBal(snap.exists() ? nn(snap.data().currentBalance) : nn(customer.currentBalance));
+        const localRecord = await localDb.customers.get(customer.id);
+        if (active && localRecord) {
+          setFreshBal(nn(localRecord.currentBalance));
+        }
+
+                if (canUseCloud() && getDoc && doc) {
+          const snap = await getDoc(doc(db, 'customers', customer.id));
+          if (!active) return;
+          const bal = snap.exists() ? nn(snap.data().currentBalance) : nn(customer.currentBalance);
+          setFreshBal(bal);
+          await localDb.customers.update(customer.id, { currentBalance: bal });
+        }
       } catch {
         setFreshBal(nn(customer.currentBalance));
       } finally {
@@ -452,7 +477,7 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
       }
     })();
     return () => { active = false; };
-  }, []); // eslint-disable-line
+  }, [customer.id]);
 
   const currentBal = freshBal !== null ? freshBal : nn(customer?.currentBalance);
 
@@ -470,89 +495,80 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
       const refNo   = `CRD${Date.now().toString(36).toUpperCase().slice(-8)}`;
       const dateStr = localDateStr();
       const timeStr = nowHHMM24();
-      const nowTs   = Timestamp.now();
+      const nowTs   = Timestamp ? Timestamp.now() : null;
       const now     = new Date();
 
-      /* ── 1. Customer transaction record ── */
-      const cusTxnRef = await addDoc(collection(db, 'customerTransactions'), {
-        uid: user.uid,
-        customerId: customer.id,
-        customerName: customer.name || '',
-        customerPhone: customer.phone || '',
-        type: 'credit',
-        amount: creditAmt,
-        note: note || t.addCreditTitle,
-        status: 'confirmed',
-        source: 'manual_credit',
-        refNo,
-        createdAt: serverTimestamp(),
-        timestamp: nowTs,
-        date: dateStr,
-        time: timeStr,
-        createdBy: user.email || 'Unknown',
+      await localDb.customers.update(customer.id, {
+        currentBalance: newBal,
+        updatedAt: now.toISOString()
       });
 
-      /* ── 2. Update balance ── */
-      await updateDoc(doc(db, 'customers', customer.id), {
-        currentBalance: increment(creditAmt),
-        updatedAt: serverTimestamp(),
-      });
+      if (window.electronAPI?.saveLocalData) {
+        const userCus = await localDb.customers.where('uid').equals(user.uid).toArray();
+        await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
+      }
 
-      /* ── 3. Cash Register sync (type: 'out') ── */
-      await addDoc(collection(db, `users/${user.uid}/cashTransactions`), {
-        type: 'out',
-        source: 'customerCredit',
-        category: 'customerCredit',
-        description: `👤 ${customer.name || 'Customer'} — ණය ලබාදීම${note ? ' | ' + note : ''}`,
-        amount: creditAmt,
-        paymentMethod: 'credit',
-        customerId: customer.id,
-        customerName: customer.name || '',
-        customerPhone: customer.phone || '',
-        customerTxnId: cusTxnRef.id,
-        reference: refNo,
-        notes: note || '',
-        note: note || '',
-        previousOutstanding: prevBal,
-        newOutstanding: newBal,
-        date: dateStr,
-        time: timeStr,
-        timestamp: nowTs,
-        createdAt: serverTimestamp(),
-        createdBy: user?.email || '',
-        uid: user.uid,
-        isAutomatic: true,
-      });
+      let cusTxnId = `txn_${Date.now()}`;
+            if (canUseCloud() && addDoc && updateDoc && doc) {
+        try {
+          const cusTxnRef = await addDoc(collection(db, 'customerTransactions'), {
+            uid: user.uid,
+            customerId: customer.id,
+            customerName: customer.name || '',
+            customerPhone: customer.phone || '',
+            type: 'credit',
+            amount: creditAmt,
+            note: note || t.addCreditTitle,
+            status: 'confirmed',
+            source: 'manual_credit',
+            refNo,
+            createdAt: serverTimestamp(),
+            timestamp: nowTs,
+            date: dateStr,
+            time: timeStr,
+            createdBy: user.email || 'Unknown',
+          });
+          cusTxnId = cusTxnRef.id;
+
+          await updateDoc(doc(db, 'customers', customer.id), {
+            currentBalance: increment(creditAmt),
+            updatedAt: serverTimestamp(),
+          });
+
+          await addDoc(collection(db, `users/${user.uid}/cashTransactions`), {
+            type: 'out', source: 'customerCredit', category: 'customerCredit',
+            description: `👤 ${customer.name || 'Customer'} — ණය ලබාදීම${note ? ' | ' + note : ''}`,
+            amount: creditAmt, paymentMethod: 'credit',
+            customerId: customer.id, customerName: customer.name || '',
+            customerPhone: customer.phone || '', customerTxnId: cusTxnId,
+            reference: refNo, notes: note || '', note: note || '',
+            previousOutstanding: prevBal, newOutstanding: newBal,
+            date: dateStr, time: timeStr, timestamp: nowTs,
+            createdAt: serverTimestamp(), createdBy: user?.email || '',
+            uid: user.uid, isAutomatic: true,
+          });
+        } catch (cloudErr) {
+          console.warn("Deferred cloud credit registration:", cloudErr.message);
+        }
+      }
 
       const synthetic = {
-        _isReceipt:   true,
-        _receiptType: 'credit',
-
-        id:          `credit-${refNo}`,
-        invoiceNo:   refNo,
-        invoiceCode: `CRD-${refNo}`,
-
-        customerId:      customer.id      || '',
-        customerName:    customer.name    || '',
-        customerPhone:   customer.phone   || '',
-        customerAddress: customer.address || '',
-
+        _isReceipt: true, _receiptType: 'credit',
+        id: `credit-${refNo}`, invoiceNo: refNo, invoiceCode: `CRD-${refNo}`,
+        customerId: customer.id || '', customerName: customer.name || '',
+        customerPhone: customer.phone || '', customerAddress: customer.address || '',
         items: [{
           name: 'ණය ඇතුළු කිරීම', nameSi: 'ණය',
           qty: 1, sellingPrice: creditAmt, yourPrice: creditAmt,
           lineTotal: creditAmt, uom: 'unit', warrantyCode: '',
         }],
-
         grossTotal: creditAmt, totalDiscount: 0, billDiscount: 0,
         billDiscountPercent: 0, exchangeAmount: 0,
         netAmount: creditAmt, payAmount: 0, balance: -creditAmt,
         paymentMethod: 'credit',
         remarks: note || '', invoiceRemark: note || '',
-
-        previousOutstanding:    prevBal,
-        newOutstanding:         newBal,
+        previousOutstanding: prevBal, newOutstanding: newBal,
         customerCurrentBalance: newBal,
-
         createdAt: { toDate: () => now },
         date: dateStr, status: 'completed', type: 'receipt',
         _collection: 'customerTransactions',
@@ -575,7 +591,6 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
         <div style={{ padding: '10px 0 20px' }}>
-
           <div style={{ marginBottom: 16, padding: 14, background: '#fef2f2', borderRadius: 12, border: '1px solid #fecaca' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               {customer.profilePicture ? (
@@ -604,11 +619,9 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
 
           <div style={{ marginBottom: 14 }}>
             <label style={S.label}>{t.creditAmount} *</label>
-            <input
-              type="number" autoFocus placeholder="0.00"
+            <input type="number" autoFocus placeholder="0.00"
               value={amount} onChange={(e) => setAmount(e.target.value)}
-              style={{ ...S.input, fontSize: 24, fontWeight: 'bold', color: '#dc2626', textAlign: 'center', padding: 16 }}
-            />
+              style={{ ...S.input, fontSize: 24, fontWeight: 'bold', color: '#dc2626', textAlign: 'center', padding: 16 }} />
             {nn(amount) > 0 && (
               <div style={{ marginTop: 8, padding: '8px 12px', background: '#fef2f2', borderRadius: 8, border: '1px solid #fecaca', display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ fontSize: 12, color: '#64748b' }}>{t.newBalance}:</span>
@@ -642,65 +655,40 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
   );
 }
 
-// ★ Smart Image Compressor & Telegraph Cloud Upload helper specifically for Customers Page
+/* ════════════════════════════════════════
+   IMAGE UPLOAD HELPER
+════════════════════════════════════════ */
 const handleAddLogoUpload = (e, setNewCust, showToast) => {
   const file = e.target.files?.[0];
   if (!file) return;
-
-  if (file.size > 5 * 1024 * 1024) {
-    showToast('❌ Image එක විශාල වැඩියි. (Max: 5MB)');
-    return;
-  }
+  if (file.size > 5 * 1024 * 1024) { showToast('❌ Image එක විශාල වැඩියි. (Max: 5MB)'); return; }
 
   const reader = new FileReader();
   reader.onload = (event) => {
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      const MAX_WIDTH = 150; 
-      const MAX_HEIGHT = 150;
-      let width = img.width;
-      let height = img.height;
-
-      if (width > height) {
-        if (width > MAX_WIDTH) {
-          height *= MAX_WIDTH / width;
-          width = MAX_WIDTH;
-        }
-      } else {
-        if (height > MAX_HEIGHT) {
-          width *= MAX_HEIGHT / height;
-          height = MAX_HEIGHT;
-        }
-      }
-
-      canvas.width = width;
-      canvas.height = height;
+      const MAX_WIDTH = 150, MAX_HEIGHT = 150;
+      let width = img.width, height = img.height;
+      if (width > height) { if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; } }
+      else { if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; } }
+      canvas.width = width; canvas.height = height;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, width, height);
-
       canvas.toBlob(async (blob) => {
         if (!blob) return;
         try {
           const formData = new FormData();
           formData.append('file', blob, 'customer_avatar.jpg');
-          
-          const res = await fetch('https://telegra.ph/upload', {
-            method: 'POST',
-            body: formData,
-          });
-          
+          const res = await fetch('https://telegra.ph/upload', { method: 'POST', body: formData });
           if (!res.ok) throw new Error('Cloud storage failed');
           const data = await res.json();
-          
           if (Array.isArray(data) && data[0]?.src) {
-            const cloudUrl = `https://telegra.ph${data[0].src}`;
-            setNewCust(prev => ({ ...prev, profilePicture: cloudUrl }));
+            setNewCust(prev => ({ ...prev, profilePicture: `https://telegra.ph${data[0].src}` }));
             showToast('✅ Profile Photo එක සාර්ථකව සකසා ගත්තා!');
           }
         } catch {
-          const compressedBase64 = canvas.toDataURL('image/jpeg', 0.8);
-          setNewCust(prev => ({ ...prev, profilePicture: compressedBase64 }));
+          setNewCust(prev => ({ ...prev, profilePicture: canvas.toDataURL('image/jpeg', 0.8) }));
           showToast('⚠️ Cloud upload අසාර්ථකයි. Base64 ලෙස එක් විය.');
         }
       }, 'image/jpeg', 0.8);
@@ -740,116 +728,314 @@ export default function Customers({ lang = 'si' }) {
   const [outputInvoice, setOutputInvoice] = useState(null);
   const [toastMsg,      setToastMsg     ] = useState('');
 
-  const showToast = useCallback((m)=>{setToastMsg(m);setTimeout(()=>setToastMsg(''),3000);},[]);
+  const showToast = useCallback((m) => { setToastMsg(m); setTimeout(() => setToastMsg(''), 3000); }, []);
 
-  /* ── Fetch customers ── */
+  /* ── Fetch customers (UID-Filtered, Offline-First) ── */
   const fetchCustomers = useCallback(async (force = false) => {
     if (!user?.uid) { setCustomers([]); setLoading(false); return; }
     setFetchErrMsg('');
-
-    if (!force) {
-      const cached = loadCache(user.uid);
-      if (cached?.length) {
-        setCustomers(cached.map(c => ({ ...c, currentBalance: nn(c.currentBalance) })));
-        setLoading(false);
-        return;
-      }
-    }
-
     setLoading(true);
+
     try {
-      const snap = await getDocs(query(collection(db, 'customers'), where('uid', '==', user.uid)));
-      const list = snap.docs.map(d => ({
-        id: d.id, ...d.data(),
-        currentBalance: nn(d.data().currentBalance),
-      }));
-      list.sort((a, b) => nn(b.currentBalance) - nn(a.currentBalance));
-      setCustomers(list);
-      setLastFetchTs(Date.now());
-      saveCache(user.uid, list);
-    } catch (e) {
-      console.error(e);
-      const cached = loadCache(user.uid);
-      if (cached?.length) {
-        setCustomers(cached.map(c => ({ ...c, currentBalance: nn(c.currentBalance) })));
-        setFetchErrMsg(e.code === 'resource-exhausted' ? t.quotaMsg : t.offlineMsg);
+      let localData;
+      try {
+        localData = await localDb.customers.where('uid').equals(user.uid).toArray();
+      } catch (filterErr) {
+        const allLocal = await localDb.customers.toArray();
+        localData = allLocal.filter(c => c.uid === user.uid);
       }
+
+      if (localData.length === 0 && window.electronAPI?.loadLocalData) {
+        try {
+          const backupData = await window.electronAPI.loadLocalData(`customers_${user.uid}.json`);
+          if (backupData && Array.isArray(backupData)) {
+            localData = backupData.filter(c => c.uid === user.uid);
+            for (const cust of localData) { await localDb.customers.put(cust); }
+          }
+        } catch (e) {
+          console.warn('Disk backup hydration skipped:', e.message);
+        }
+      }
+
+      const sortedLocal = localData.map(c => ({
+        ...c,
+        currentBalance: nn(c.currentBalance),
+        createdAt: normalizeDate(c.createdAt),
+        updatedAt: normalizeDate(c.updatedAt)
+      })).sort((a, b) => b.createdAt - a.createdAt);
+
+      setCustomers(sortedLocal);
+      setLastFetchTs(Date.now());
+
+            if (canUseCloud() && where && getDocs) {
+        try {
+          const snap = await getDocs(query(collection(db, 'customers'), where('uid', '==', user.uid)));
+          const cloudList = snap.docs.map(d => ({
+            id: d.id, ...d.data(),
+            currentBalance: nn(d.data().currentBalance),
+            synced: true
+          }));
+
+                    for (const cloudCust of cloudList) {
+            const existing = await localDb.customers.get(cloudCust.id);
+            if (!existing) {
+              await localDb.customers.put(cloudCust);
+            } else {
+              const localBal = nn(existing.currentBalance);
+              const cloudBal = nn(cloudCust.currentBalance);
+              const localTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+              const cloudRaw = cloudCust.updatedAt;
+              const cloudTime = cloudRaw?.toDate
+                ? cloudRaw.toDate().getTime()
+                : new Date(cloudRaw || cloudCust.createdAt || 0).getTime();
+
+              if (Math.abs(localBal - cloudBal) > 0.01 && localTime > cloudTime) {
+                // ✅ Local is newer — keep local balance, push to cloud
+                if (navigator.onLine && db && updateDoc && doc && serverTimestamp) {
+                  try {
+                    await updateDoc(doc(db, 'customers', cloudCust.id), {
+                      currentBalance: localBal,
+                      updatedAt: serverTimestamp(),
+                    });
+                    await localDb.customers.update(cloudCust.id, { synced: true });
+                    console.log(`[Sync] ✅ Pushed Rs.${localBal} → cloud for ${existing.name}`);
+                  } catch (pushErr) {
+                    console.warn(`[Sync] Push failed for ${existing.name}:`, pushErr.message);
+                  }
+                }
+              } else if (cloudTime > localTime) {
+                // Cloud is newer — update local
+                await localDb.customers.put(cloudCust);
+              }
+              // If equal timestamps & balances match → do nothing
+            }
+          }
+
+          let mergedList;
+          try {
+            mergedList = await localDb.customers.where('uid').equals(user.uid).toArray();
+          } catch {
+            const all = await localDb.customers.toArray();
+            mergedList = all.filter(c => c.uid === user.uid);
+          }
+
+          const sortedMerged = mergedList.map(c => ({
+            ...c,
+            currentBalance: nn(c.currentBalance),
+            createdAt: normalizeDate(c.createdAt),
+            updatedAt: normalizeDate(c.updatedAt)
+          })).sort((a, b) => b.createdAt - a.createdAt);
+
+          setCustomers(sortedMerged);
+
+          if (window.electronAPI?.saveLocalData) {
+            const userCus = await localDb.customers.where('uid').equals(user.uid).toArray();
+            await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
+          }
+        } catch (cloudErr) {
+          console.warn("Cloud synchronization deferred:", cloudErr);
+          setFetchErrMsg(cloudErr.code === 'resource-exhausted' ? t.quotaMsg : t.offlineMsg);
+        }
+      } else {
+        setFetchErrMsg(t.offlineMsg);
+      }
+    } catch (err) {
+      console.error("Local database retrieval failed:", err);
     } finally {
       setLoading(false);
     }
   }, [user?.uid, t.quotaMsg, t.offlineMsg]);
+    /* ── Sync pending local balances to cloud (runs on reconnect) ── */
+  const syncBalancesToCloud = useCallback(async () => {
+    if (!navigator.onLine || !user?.uid || !isValidDb() || !updateDoc || !doc || !serverTimestamp || !getDocs || !collection || !query || !where) return;
+
+    try {
+      let localCustomers;
+      try {
+        localCustomers = await localDb.customers.where('uid').equals(user.uid).toArray();
+      } catch {
+        const all = await localDb.customers.toArray();
+        localCustomers = all.filter(c => c.uid === user.uid);
+      }
+      if (localCustomers.length === 0) return;
+
+      const cloudSnap = await getDocs(query(collection(db, 'customers'), where('uid', '==', user.uid)));
+      const cloudMap = new Map(cloudSnap.docs.map(d => [d.id, d.data()]));
+
+      let syncCount = 0;
+            for (const local of localCustomers) {
+        const cloud = cloudMap.get(local.id);
+
+        // ✅ NEW: Push offline-added customers to cloud
+        if (!cloud) {
+          if (local.synced === false && navigator.onLine && db && setDoc && doc && serverTimestamp) {
+            try {
+              await setDoc(doc(db, 'customers', local.id), {
+                ...local,
+                synced: true,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+              await localDb.customers.update(local.id, { synced: true });
+              syncCount++;
+              console.log(`[BalanceSync] ✅ New customer pushed: ${local.name}`);
+            } catch (e) {
+              console.warn(`[BalanceSync] Push new customer failed: ${local.name}`, e.message);
+            }
+          }
+          continue;
+        }
+
+        const localBal = nn(local.currentBalance);
+        const cloudBal = nn(cloud.currentBalance);
+
+        if (Math.abs(localBal - cloudBal) > 0.01) {
+          const localTime = new Date(local.updatedAt || local.createdAt || 0).getTime();
+          const cloudRaw = cloud.updatedAt;
+          const cloudTime = cloudRaw?.toDate
+            ? cloudRaw.toDate().getTime()
+            : new Date(cloudRaw || cloud.createdAt || 0).getTime();
+
+          if (localTime >= cloudTime) {
+            try {
+              await updateDoc(doc(db, 'customers', local.id), {
+                currentBalance: localBal,
+                updatedAt: serverTimestamp(),
+              });
+              await localDb.customers.update(local.id, { synced: true });
+              syncCount++;
+              console.log(`[BalanceSync] ${local.name}: Rs.${cloudBal} → Rs.${localBal}`);
+            } catch (e) {
+              console.warn(`[BalanceSync] Failed for ${local.name}:`, e.message);
+            }
+          }
+        }
+      }
+
+      if (syncCount > 0) {
+        console.log(`[BalanceSync] ✅ Synced ${syncCount} customer balances to cloud`);
+        showToast(`✅ ණය ශේෂ ${syncCount}ක් cloud වෙත sync විය`);
+      }
+    } catch (e) {
+      console.warn('[BalanceSync] Error:', e.message);
+    }
+  }, [user?.uid, showToast]);
 
   /* ── Realtime Sync: Active Loans ── */
   useEffect(() => {
-    if (!user?.uid) return;
-    const q = query(
-      collection(db, `users/${user.uid}/customerLoans`),
-      where('status', '==', 'active')
-    );
-    const unsub = onSnapshot(q,
-      snap => setActiveLoans(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-      err  => console.warn('Loans listener:', err.message)
-    );
-    return () => unsub();
+    if (!user?.uid || !isValidDb() || !collection || !query || !where || !onSnapshot) return;
+    try {
+      const q = query(
+        collection(db, `users/${user.uid}/customerLoans`),
+        where('status', '==', 'active')
+      );
+      const unsub = onSnapshot(q,
+        snap => setActiveLoans(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+        err  => console.warn('Loans listener:', err.message)
+      );
+      return () => unsub();
+    } catch (e) {
+      console.warn('Loans listener setup failed:', e.message);
+    }
   }, [user?.uid]);
 
   useEffect(() => { if (!authLoading) fetchCustomers(); }, [authLoading, fetchCustomers]);
 
-  /* ── Add customer ── */
+  /* ── Auto-sync balances when coming back online ── */
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log('[Network] 🔌 Back online — syncing customer balances...');
+      setTimeout(() => {
+        syncBalancesToCloud();
+        fetchCustomers(true);
+      }, 3000); // 3s wait for Firebase to reconnect
+    };
+
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [syncBalancesToCloud, fetchCustomers]);
+
+  /* ── Add customer (UID-Scoped) ── */
   const handleAdd = async (e) => {
     if (e) e.preventDefault();
     if (!newCust.name || !phoneSuffix) return alert('Name + Phone required');
-    if (!user) return alert(t.loginRequired);
+    if (!user?.uid) return alert(t.loginRequired);
+
     setIsSaving(true);
+    const customerId = 'cust_' + Date.now();
+    const timestamp = new Date().toISOString();
+    const fullPhone = `+94${phoneSuffix}`;
+
+    const newCustomerObj = {
+      id: customerId,
+      uid: user.uid,
+      name: newCust.name.trim(),
+      phone: fullPhone,
+      address: newCust.address || '',
+      email: newCust.email || '',
+      nic: newCust.nic || '',
+      notes: newCust.notes || '',
+      profilePicture: newCust.profilePicture || '',
+      currentBalance: 0,
+      portalAccessKey: makePortalKey(newCust.name),
+      synced: false,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+
     try {
-      await addDoc(collection(db, 'customers'), {
-        name: newCust.name, phone: `+94${phoneSuffix}`,
-        address: newCust.address || '', email: newCust.email || '',
-        nic: newCust.nic || '', notes: newCust.notes || '',
-        profilePicture: newCust.profilePicture || '',
-        uid: user.uid, currentBalance: 0,
-        portalAccessKey: makePortalKey(newCust.name),
-        createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-      });
-      showToast(t.success);
+      await localDb.customers.put(newCustomerObj);
+
+      setCustomers(prev => [
+        { ...newCustomerObj, createdAt: new Date(timestamp), updatedAt: new Date(timestamp) },
+        ...prev
+      ]);
+
       setShowAddModal(false);
       setNewCust({ name: '', phone: '', address: '', email: '', nic: '', notes: '', profilePicture: '' });
       setPhoneSuffix('');
-      clearCache(user.uid);
-      fetchCustomers(true);
-    } catch (err) { alert('Error: ' + err.message); }
-    finally { setIsSaving(false); }
+      showToast(t.success);
+
+      if (window.electronAPI?.saveLocalData) {
+        const userCus = await localDb.customers.where('uid').equals(user.uid).toArray();
+        await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
+      }
+
+            if (canUseCloud() && setDoc && doc && serverTimestamp) {
+        try {
+          await setDoc(doc(db, 'customers', customerId), {
+            ...newCustomerObj,
+            synced: true,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+          await localDb.customers.update(customerId, { synced: true });
+          setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, synced: true } : c));
+        } catch (firebaseErr) {
+          console.warn("Deferred cloud synchronization:", firebaseErr.message);
+        }
+      }
+    } catch (err) {
+      console.error("Local save failed:", err);
+      alert('Error: ' + err.message);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  /* ── Contact Picker Integration ── */
+  /* ── Contact Picker ── */
   const handleImportContact = async () => {
     const isSupported = ('contacts' in navigator && 'ContactsManager' in window);
-    if (!isSupported) {
-      showToast(t.contactPickerNotSupported);
-      return;
-    }
-
+    if (!isSupported) { showToast(t.contactPickerNotSupported); return; }
     try {
-      const props = ['name', 'tel'];
-      const opts = { multiple: false };
-      const contacts = await navigator.contacts.select(props, opts);
-      
-      if (contacts && contacts.length > 0) {
+      const contacts = await navigator.contacts.select(['name', 'tel'], { multiple: false });
+      if (contacts?.length > 0) {
         const contact = contacts[0];
-        const rawName = contact.name?.[0] || '';
-        const rawTel = contact.tel?.[0] || '';
-
-        // Extract 9-digit suffix from raw phone number
-        let cleanTel = rawTel.replace(/\D/g, ''); // Keep only digits
-        if (cleanTel.startsWith('94') && cleanTel.length === 11) {
-          cleanTel = cleanTel.substring(2);
-        } else if (cleanTel.startsWith('0') && cleanTel.length === 10) {
-          cleanTel = cleanTel.substring(1);
-        } else if (cleanTel.length > 9) {
-          cleanTel = cleanTel.slice(-9);
-        }
-
-        setNewCust(prev => ({ ...prev, name: rawName }));
+        let cleanTel = (contact.tel?.[0] || '').replace(/\D/g, '');
+        if (cleanTel.startsWith('94') && cleanTel.length === 11) cleanTel = cleanTel.substring(2);
+        else if (cleanTel.startsWith('0') && cleanTel.length === 10) cleanTel = cleanTel.substring(1);
+        else if (cleanTel.length > 9) cleanTel = cleanTel.slice(-9);
+        setNewCust(prev => ({ ...prev, name: contact.name?.[0] || '' }));
         setPhoneSuffix(cleanTel);
         showToast('✅ Contact එක සාර්ථකව ඇතුළත් කළා!');
       }
@@ -904,6 +1090,9 @@ export default function Customers({ lang = 'si' }) {
     return <div style={{ fontWeight: 600, color: '#16a34a', fontSize: 13, background: '#dcfce7', padding: '4px 12px', borderRadius: 20, display: 'inline-block' }}>✅ {t.settled}</div>;
   };
 
+  /* ══════════════════════════════════════
+     🔐 AUTH GUARDS
+  ══════════════════════════════════════ */
   if (authLoading || loading) return (
     <div style={{ padding: 40, textAlign: 'center', color: '#64748b', fontSize: 18, fontWeight: 600 }}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
@@ -912,47 +1101,43 @@ export default function Customers({ lang = 'si' }) {
     </div>
   );
 
+  if (!user?.uid) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', padding: 20 }}>
+        <div style={{ background: 'white', borderRadius: 20, padding: 40, maxWidth: 400, width: '100%', textAlign: 'center', boxShadow: '0 10px 40px rgba(0,0,0,0.08)' }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
+          <h2 style={{ fontSize: 20, fontWeight: 800, color: '#1e293b', marginBottom: 8 }}>Login අවශ්‍යයි</h2>
+          <p style={{ fontSize: 14, color: '#64748b', marginBottom: 20 }}>
+            පාරිභෝගිකයින් බැලීමට පළමුව ඔබගේ ගිණුමට Login වන්න.
+          </p>
+          <a href="/" style={{ display: 'inline-block', padding: '12px 24px', background: '#3b82f6', color: 'white', borderRadius: 10, fontWeight: 700, textDecoration: 'none' }}>
+            Login පිටුවට යන්න
+          </a>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={S.container}>
       {toastMsg && (
         <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)', background:'#1e293b', color:'#fff', padding:'10px 20px', borderRadius:10, zIndex:10002, fontWeight:700, fontSize:14, boxShadow:'0 4px 20px rgba(0,0,0,0.4)', whiteSpace:'nowrap' }}>{toastMsg}</div>
       )}
 
-      {/* Invoice Receipt Output */}
       {outputInvoice && (
-        <InvoiceOutputManager
-          invoice={outputInvoice}
-          initialMode="whatsapp"
-          onClose={() => setOutputInvoice(null)}
-        />
+        <InvoiceOutputManager invoice={outputInvoice} initialMode="whatsapp" onClose={() => setOutputInvoice(null)} />
       )}
 
-      {/* Payment Modal */}
       {paymentCust && (
-        <PaymentModal
-          customer={paymentCust} t={t} user={user}
+        <PaymentModal customer={paymentCust} t={t} user={user}
           onClose={() => setPaymentCust(null)}
-          onSuccess={(synthetic) => {
-            setPaymentCust(null);
-            setOutputInvoice(synthetic);
-            clearCache(user.uid);
-            fetchCustomers(true);
-          }}
-        />
+          onSuccess={(synthetic) => { setPaymentCust(null); setOutputInvoice(synthetic); fetchCustomers(true); }} />
       )}
 
-      {/* Credit Modal */}
       {creditCust && (
-        <CreditModal
-          customer={creditCust} t={t} user={user}
+        <CreditModal customer={creditCust} t={t} user={user}
           onClose={() => setCreditCust(null)}
-          onSuccess={(synthetic) => {
-            setCreditCust(null);
-            setOutputInvoice(synthetic);
-            clearCache(user.uid);
-            fetchCustomers(true);
-          }}
-        />
+          onSuccess={(synthetic) => { setCreditCust(null); setOutputInvoice(synthetic); fetchCustomers(true); }} />
       )}
 
       {/* Header */}
@@ -961,7 +1146,12 @@ export default function Customers({ lang = 'si' }) {
           <span style={{ fontSize: 28 }}>👥</span>
           <div>
             <h2 style={S.title}>{t.title}</h2>
-            <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>{stats.total} {t.totalCustomers}</p>
+            <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
+              {stats.total} {t.totalCustomers}
+              <span style={{ marginLeft: 8, color: '#3b82f6', fontWeight: 700 }}>
+                👤 {user?.email?.split('@')[0] || user?.uid?.slice(0, 8)}
+              </span>
+            </p>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -989,9 +1179,9 @@ export default function Customers({ lang = 'si' }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(155px,1fr))', gap: 10, marginBottom: 16 }}>
         {[
           { bg: 'linear-gradient(135deg,#fef2f2,#fee2e2)', bc: '#fca5a5', tc: '#991b1b', vc: '#dc2626', icon: '💸', label: t.totalReceivables, value: `Rs.${fmt(stats.totalRec)}` },
-          { bg: 'linear-gradient(135deg,#eff6ff,#dbeafe)', bc: '#93c5fd', tc: '#1e40af', vc: '#2563eb', icon: '👥', label: t.totalCustomers,    value: stats.total },
-          { bg: 'linear-gradient(135deg,#fff7ed,#fed7aa)', bc: '#fdba74', tc: '#9a3412', vc: '#ea580c', icon: '⚠️', label: t.creditCustomers,   value: stats.creditCnt },
-          { bg: 'linear-gradient(135deg,#f0fdf4,#dcfce7)', bc: '#86efac', tc: '#166534', vc: '#16a34a', icon: '✅', label: t.settledCustomers,  value: stats.settledCnt },
+          { bg: 'linear-gradient(135deg,#eff6ff,#dbeafe)', bc: '#93c5fd', tc: '#1e40af', vc: '#2563eb', icon: '👥', label: t.totalCustomers, value: stats.total },
+          { bg: 'linear-gradient(135deg,#fff7ed,#fed7aa)', bc: '#fdba74', tc: '#9a3412', vc: '#ea580c', icon: '⚠️', label: t.creditCustomers, value: stats.creditCnt },
+          { bg: 'linear-gradient(135deg,#f0fdf4,#dcfce7)', bc: '#86efac', tc: '#166534', vc: '#16a34a', icon: '✅', label: t.settledCustomers, value: stats.settledCnt },
         ].map((s, i) => (
           <div key={i} style={{ padding: '14px 16px', borderRadius: 14, background: s.bg, border: `2px solid ${s.bc}` }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: s.tc }}>{s.icon} {s.label}</div>
@@ -1036,33 +1226,28 @@ export default function Customers({ lang = 'si' }) {
         {t.showing} {paged.length} {t.of} {filtered.length}
       </div>
 
-      {/* TABLE VIEW */}
+      {/* ── TABLE VIEW ── */}
       {viewMode === 'table' && (
         <div style={{ overflowX: 'auto', borderRadius: 12, border: '1px solid #e2e8f0', background: 'white' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
             <thead>
               <tr style={{ background: '#f8fafc' }}>
                 {['#', '', t.name, t.mobile, t.address, t.balance, t.action].map((h, i) => (
-                  <th key={i} style={{ padding: '14px 12px', borderBottom: '2px solid #e2e8f0', color: '#475569', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, textAlign: i === 5 ? 'right' : 'left' }}>
-                    {h}
-                  </th>
+                  <th key={i} style={{ padding: '14px 12px', borderBottom: '2px solid #e2e8f0', color: '#475569', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, textAlign: i === 5 ? 'right' : 'left' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {paged.length === 0 ? (
                 <tr><td colSpan="7" style={{ padding: 50, textAlign: 'center', color: '#94a3b8' }}>
-                  <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div>
-                  <div>{t.noData}</div>
+                  <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div><div>{t.noData}</div>
                 </td></tr>
               ) : paged.map((cus, idx) => {
                 const activeLoan = getCustomerActiveLoan(cus.phone);
                 return (
-                  <tr key={cus.id}
-                    style={{ borderBottom: '1px solid #f1f5f9', transition: 'background 0.15s' }}
+                  <tr key={cus.id} style={{ borderBottom: '1px solid #f1f5f9', transition: 'background 0.15s' }}
                     onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
-                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                  >
+                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
                     <td style={S.td}>{(page - 1) * perPage + idx + 1}</td>
                     <td style={S.td}>
                       {cus.profilePicture ? (
@@ -1077,13 +1262,12 @@ export default function Customers({ lang = 'si' }) {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                         <span style={{ fontWeight: 700, color: '#1e293b', fontSize: 15 }}>{cus.name}</span>
                         {activeLoan && (
-                          <span 
-                            onClick={(e) => { e.stopPropagation(); window.location.href = '/loans'; }}
+                          <span onClick={(e) => { e.stopPropagation(); window.location.href = '/loans'; }}
                             style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #86efac', padding: '2px 6px', borderRadius: 6, fontSize: 10, fontWeight: 800, cursor: 'pointer' }}
-                            title={`Remaining: Rs.${fmt(activeLoan.remainingBalance)}`}
-                          >
-                            {t.activeLoan}
-                          </span>
+                            title={`Remaining: Rs.${fmt(activeLoan.remainingBalance)}`}>{t.activeLoan}</span>
+                        )}
+                        {cus.synced === false && (
+                          <span style={{ background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a', padding: '2px 6px', borderRadius: 6, fontSize: 10, fontWeight: 800 }}>Offline Only</span>
                         )}
                       </div>
                       {cus.email && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>📧 {cus.email}</div>}
@@ -1093,13 +1277,11 @@ export default function Customers({ lang = 'si' }) {
                     <td style={{ ...S.td, textAlign: 'right' }}><BalBadge bal={cus.currentBalance} /></td>
                     <td style={{ ...S.td, textAlign: 'center' }}>
                       <div style={{ display: 'flex', justifyContent: 'center', gap: 6 }}>
-                        <button
-                          onClick={e => { e.stopPropagation(); setCreditCust(cus); }}
+                        <button onClick={e => { e.stopPropagation(); setCreditCust(cus); }}
                           style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5', whiteSpace: 'nowrap' }}>
                           ➕ {t.addCreditTitle}
                         </button>
-                        <button
-                          onClick={e => { e.stopPropagation(); setPaymentCust(cus); }}
+                        <button onClick={e => { e.stopPropagation(); setPaymentCust(cus); }}
                           style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#dcfce7', color: '#16a34a', border: '1px solid #86efac', whiteSpace: 'nowrap' }}>
                           💰 {t.receivePayment}
                         </button>
@@ -1113,7 +1295,7 @@ export default function Customers({ lang = 'si' }) {
         </div>
       )}
 
-      {/* CARDS VIEW */}
+      {/* ── CARDS VIEW ── */}
       {viewMode === 'cards' && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(320px,1fr))', gap: 12 }}>
           {paged.length === 0 ? (
@@ -1134,12 +1316,17 @@ export default function Customers({ lang = 'si' }) {
                     </div>
                   )}
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 16, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cus.name}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ fontWeight: 700, fontSize: 16, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cus.name}</div>
+                      {cus.synced === false && (
+                        <span style={{ fontSize: 9, background: '#fffbeb', color: '#b45309', padding: '1px 4px', borderRadius: 4, fontWeight: 800 }}>Offline</span>
+                      )}
+                    </div>
                     <div style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>{cus.phone || '-'}</div>
                   </div>
                   <BalBadge bal={cus.currentBalance} />
                 </div>
-                
+
                 {activeLoan && (
                   <div 
                     onClick={() => window.location.href = '/loans'}
@@ -1167,7 +1354,7 @@ export default function Customers({ lang = 'si' }) {
         </div>
       )}
 
-      {/* Pagination */}
+      {/* ── PAGINATION ── */}
       {totalPages > 1 && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, padding: '14px 16px', background: 'white', borderRadius: 12, border: '1px solid #e2e8f0', marginTop: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1191,7 +1378,7 @@ export default function Customers({ lang = 'si' }) {
         </div>
       )}
 
-      {/* Add Customer Modal */}
+      {/* ── ADD CUSTOMER MODAL ── */}
       {showAddModal && (
         <div style={S.overlay}>
           <div style={S.modal}>
@@ -1199,8 +1386,7 @@ export default function Customers({ lang = 'si' }) {
               <h3 style={{ margin: 0, fontSize: 18 }}>👤 {t.addNew}</h3>
               <button onClick={() => setShowAddModal(false)} style={S.closeBtn}>✕</button>
             </div>
-            
-            {/* profilePicture drag/select upload field inside Add Customer modal */}
+
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, marginBottom: 16 }}>
               <div style={{ position: 'relative', width: 85, height: 85 }}>
                 {newCust.profilePicture ? (
@@ -1209,42 +1395,23 @@ export default function Customers({ lang = 'si' }) {
                   <div style={{ width: 85, height: 85, borderRadius: '50%', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, color: '#94a3b8', border: '1px solid #cbd5e1' }}>👤</div>
                 )}
                 {newCust.profilePicture && (
-                  <button 
-                    type="button" 
-                    onClick={() => setNewCust(p => ({ ...p, profilePicture: '' }))} 
-                    style={{ position: 'absolute', top: 0, right: 0, background: '#ef4444', color: 'white', border: 'none', borderRadius: '50%', width: 22, height: 22, cursor: 'pointer', fontSize: 11, fontWeight: 'bold' }}
-                  >
-                    ✕
-                  </button>
+                  <button type="button" onClick={() => setNewCust(p => ({ ...p, profilePicture: '' }))}
+                    style={{ position: 'absolute', top: 0, right: 0, background: '#ef4444', color: 'white', border: 'none', borderRadius: '50%', width: 22, height: 22, cursor: 'pointer', fontSize: 11, fontWeight: 'bold' }}>✕</button>
                 )}
               </div>
-              <input 
-                type="file" 
-                accept="image/*" 
-                id="add-profile-pic-input" 
-                style={{ display: 'none' }} 
-                onChange={(e) => handleAddLogoUpload(e, setNewCust, showToast)} 
-              />
-              <button 
-                type="button" 
-                onClick={() => document.getElementById('add-profile-pic-input').click()} 
-                style={{ padding: '6px 12px', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer', color: '#475569' }}
-              >
+              <input type="file" accept="image/*" id="add-profile-pic-input" style={{ display: 'none' }}
+                onChange={(e) => handleAddLogoUpload(e, setNewCust, showToast)} />
+              <button type="button" onClick={() => document.getElementById('add-profile-pic-input').click()}
+                style={{ padding: '6px 12px', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer', color: '#475569' }}>
                 📷 Photo එකක් තෝරන්න (Select Image)
               </button>
             </div>
 
             <form onSubmit={handleAdd} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              
-              {/* Import Contacts from Phonebook Button */}
-              <button 
-                type="button" 
-                onClick={handleImportContact} 
-                style={{ width: '100%', padding: '12px', borderRadius: 10, background: '#f0f9ff', border: '2px solid #bfdbfe', color: '#0369a1', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-              >
+              <button type="button" onClick={handleImportContact}
+                style={{ width: '100%', padding: '12px', borderRadius: 10, background: '#f0f9ff', border: '2px solid #bfdbfe', color: '#0369a1', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
                 {t.importContact}
               </button>
-
               <div>
                 <label style={S.label}>{t.name} *</label>
                 <input style={S.input} value={newCust.name}

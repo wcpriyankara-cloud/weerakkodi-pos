@@ -1,12 +1,17 @@
-// catalog/app/invoices/[uid]/page.js
-import InvoiceListClient from './InvoiceListClient';
+// Static export wrapper
+import React, { Suspense } from 'react';
+import UserInvoicesClient from './InvoiceClientComponent';
 
-export const metadata = {
-  title: 'ඉන්වොයිස් ලැයිස්තුව',
-  description: 'Invoice history and management',
-};
+export async function generateStaticParams() {
+  return [{ uid: 'default' }];
+}
 
-export default async function InvoicePage({ params }) {
-  const { uid } = await params;
-  return <InvoiceListClient uid={uid} />;
+export const dynamicParams = false;
+
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-slate-900 text-slate-400 flex items-center justify-center p-6">Loading User Invoices...</div>}>
+      <UserInvoicesClient />
+    </Suspense>
+  );
 }

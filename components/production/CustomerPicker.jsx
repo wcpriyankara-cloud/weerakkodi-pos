@@ -65,7 +65,14 @@ export default function CustomerPicker({
             .catch(() => {});
         }
       }
-    );
+    ,
+    (error) => {
+      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
+      if (error?.code === "resource-exhausted") {
+        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      }
+    }
+  );
     return () => unsub();
   }, [uid]);
 

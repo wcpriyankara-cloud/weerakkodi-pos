@@ -1,8 +1,9 @@
-'use client';
+﻿'use client';
 
 // components/Sidebar.jsx
 // ═══════════════════════════════════════════════════════════
-// v28.4 — Added Bank Loan Management Navigation Link
+// v28.7 — Promoted settings to primary navigation block
+//        + Added Bank Loan Management Navigation Link
 //        + Fixed App-Wide Real-Time Language Broadcasting Sync
 //        + Production/Catalog Submenus + Mobile Responsive Controls
 // ═══════════════════════════════════════════════════════════
@@ -10,8 +11,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useUserAuth } from '@/context/UserContext';
-import { BUSINESS_TYPES } from '@/components/production/constants';
+import { useUserAuth } from '../context/UserContext';
+import { BUSINESS_TYPES } from './production/constants';
 
 const TEXT = {
   si: {
@@ -47,7 +48,8 @@ const TEXT = {
     sinhala:         'සිංහල',
     allProduction:   'සියලු නිෂ්පාදන',
     cashManagement:  'මුදල් පොත (Cash)',
-    bankLoans:       'බැංකු ලෝන්',       // ★ NEW
+    bankLoans:       'බැංකු ලෝන්',
+    settings:        'සැකසුම් & Backup',
   },
   en: {
     appName:         'Weerakkodi POS',
@@ -82,7 +84,8 @@ const TEXT = {
     sinhala:         'Sinhala',
     allProduction:   'All Production',
     cashManagement:  'Cash Book',
-    bankLoans:       'Bank Loans',       // ★ NEW
+    bankLoans:       'Bank Loans',
+    settings:        'Settings & Backup',
   },
 };
 
@@ -92,6 +95,7 @@ function getMenu(t) {
       section: t.dashboard,
       items: [
         { href: '/dashboard', label: t.dashboard, icon: '🏠' },
+        { href: '/settings',  label: t.settings,  icon: '⚙️' },
       ],
     },
     {
@@ -132,7 +136,7 @@ function getMenu(t) {
       section: t.finance,
       items: [
         { href: '/cash-management', label: t.cashManagement, icon: '💵' },
-        { href: '/bankloans',       label: t.bankLoans,      icon: '🏦' },  // ★ NEW
+        { href: '/bankloans',       label: t.bankLoans,      icon: '🏦' },
         { href: '/expenses',        label: t.expenses,       icon: '💰' },
       ],
     },
@@ -283,6 +287,17 @@ export default function Sidebar({ isOpen, onClose, isCollapsed, toggleCollapse, 
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
   }, []);
+
+  // Listen to external language broadcasts (App-Wide Broadcasting Sync)
+  useEffect(() => {
+    const handleBroadcastLang = (e) => {
+      if (e.detail && setLang) {
+        setLang(e.detail);
+      }
+    };
+    window.addEventListener('app-language-change', handleBroadcastLang);
+    return () => window.removeEventListener('app-language-change', handleBroadcastLang);
+  }, [setLang]);
 
   const sidebarWidth = isMobile ? 280 : (isCollapsed ? 70 : 280);
   const handleNavigate = () => { if (isMobile) onClose?.(); };
