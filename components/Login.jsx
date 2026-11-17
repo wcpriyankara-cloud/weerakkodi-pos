@@ -1,14 +1,14 @@
 ﻿'use client';
 
 // components/Login.jsx
-// âœ… Next.js App Router compatible
+// ✅ Next.js App Router compatible
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useUserAuth } from '@/context/UserContext';
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* =========================================================
    OTP INPUT COMPONENT
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ========================================================= */
 function OTPInput({ value, onChange, length = 6, disabled = false }) {
   const refs = useRef([]);
 
@@ -73,6 +73,7 @@ function OTPInput({ value, onChange, length = 6, disabled = false }) {
             background: (value || '')[i] ? '#eff6ff' : 'white',
             color: '#1e293b', transition: 'all 0.15s',
             opacity: disabled ? 0.6 : 1,
+            boxSizing: 'border-box'
           }}
         />
       ))}
@@ -80,9 +81,9 @@ function OTPInput({ value, onChange, length = 6, disabled = false }) {
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* =========================================================
    PASSWORD STRENGTH
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ========================================================= */
 function PasswordStrength({ password }) {
   if (!password) return null;
   let score = 0;
@@ -96,12 +97,12 @@ function PasswordStrength({ password }) {
   const filledBars = Math.floor((score / 6) * 4);
   const levels = [
     { min: 0, label: '', color: '#e2e8f0' },
-    { min: 1, label: 'à¶¯à·”à¶»à·Šà·€à¶½ ðŸ˜Ÿ', color: '#ef4444' },
-    { min: 3, label: 'à·ƒà·à¶¸à·à¶±à·Šâ€à¶º ðŸ˜', color: '#f59e0b' },
-    { min: 4, label: 'à·„à·œà¶³ ðŸ˜Š', color: '#3b82f6' },
-    { min: 5, label: 'à·à¶šà·Šà¶­à·’à¶¸à¶­à·Š ðŸ’ª', color: '#22c55e' },
+    { min: 1, label: 'දුර්වල 😞', color: '#ef4444' },
+    { min: 3, label: 'සාමාන්‍ය 😐', color: '#f59e0b' },
+    { min: 4, label: 'හොඳ 😊', color: '#3b82f6' },
+    { min: 5, label: 'ශක්තිමත් 💪', color: '#22c55e' },
   ];
-  const level = [...levels].reverse().find((l) => score >= l.min);
+  const level = [...levels].reverse().find((l) => score >= l.min) || levels[0];
 
   return (
     <div style={{ marginTop: 6 }}>
@@ -123,19 +124,21 @@ function PasswordStrength({ password }) {
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* =========================================================
    SHARED STYLES
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ========================================================= */
 const pageStyle = {
   minHeight: '100vh', display: 'flex', alignItems: 'center',
   justifyContent: 'center', padding: 20,
   background: 'linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%)',
-  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  boxSizing: 'border-box'
 };
 
 const cardStyle = {
   background: 'white', borderRadius: 20, padding: '36px 32px',
   width: '100%', maxWidth: 440, boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+  boxSizing: 'border-box'
 };
 
 const inputStyle = {
@@ -149,9 +152,9 @@ const labelStyle = {
   fontWeight: 700, color: '#334155',
 };
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* =========================================================
    PRIMARY BUTTON
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ========================================================= */
 function PrimaryBtn({
   onClick,
   disabled,
@@ -172,6 +175,7 @@ function PrimaryBtn({
         background: disabled || isLoading ? '#94a3b8' : bg,
         boxShadow: disabled || isLoading ? 'none' : '0 4px 12px rgba(59,130,246,0.3)',
         transition: 'all 0.2s',
+        boxSizing: 'border-box'
       }}
     >
       {children}
@@ -179,9 +183,9 @@ function PrimaryBtn({
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* =========================================================
    ALERT BOX
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ========================================================= */
 function AlertBox({ msg, type = 'error' }) {
   if (!msg) return null;
   const cfg = {
@@ -195,16 +199,16 @@ function AlertBox({ msg, type = 'error' }) {
       padding: '11px 16px', borderRadius: 12, marginBottom: 14,
       background: cfg.bg, border: `1px solid ${cfg.border}`,
       color: cfg.color, fontSize: 13, fontWeight: 600, lineHeight: 1.5,
-      whiteSpace: 'pre-wrap',
+      whiteSpace: 'pre-wrap', boxSizing: 'border-box'
     }}>
       {msg}
     </div>
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* =========================================================
    GOOGLE ICON
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ========================================================= */
 function GoogleIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 48 48">
@@ -216,14 +220,15 @@ function GoogleIcon() {
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* =========================================================
    GOOGLE SIGN-IN BUTTON
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ========================================================= */
 function GoogleSignInBtn({ onClick, loading, label = 'Continue with Google' }) {
   return (
     <button
       onClick={onClick}
       disabled={loading}
+      type="button"
       style={{
         width: '100%', padding: '13px', borderRadius: 12,
         border: '2px solid #e2e8f0', background: 'white',
@@ -231,31 +236,33 @@ function GoogleSignInBtn({ onClick, loading, label = 'Continue with Google' }) {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         gap: 12, fontSize: 15, fontWeight: 700, color: '#334155',
         transition: 'all 0.2s', opacity: loading ? 0.7 : 1,
+        boxSizing: 'border-box'
       }}
     >
       <GoogleIcon />
-      {loading ? 'â³ Connecting...' : label}
+      {loading ? '⏳ Connecting...' : label}
     </button>
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* =========================================================
    OR DIVIDER
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ========================================================= */
 function OrDivider() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '18px 0' }}>
       <div style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
-      <span style={{ fontSize: 12, color: '#94a3b8', fontWeight: 600 }}>à·„à·</span>
+      <span style={{ fontSize: 12, color: '#94a3b8', fontWeight: 600 }}>හෝ</span>
       <div style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
     </div>
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* =========================================================
    REGISTER SCREEN
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ========================================================= */
 function RegisterScreen({ onBack }) {
+  const auth = useUserAuth();
   const {
     sendOTP,
     verifyOTP,
@@ -263,7 +270,7 @@ function RegisterScreen({ onBack }) {
     isPhoneRegistered,
     isEmailRegistered,
     loginWithGoogle,
-  } = useUserAuth();
+  } = auth || {};
 
   const [step, setStep] = useState(1);
   const [phone, setPhone] = useState('');
@@ -293,38 +300,54 @@ function RegisterScreen({ onBack }) {
     setError(''); setSuccess('');
     const cleaned = phone.replace(/\s+/g, '').replace(/[^\d+]/g, '');
     if (cleaned.replace(/[^\d]/g, '').length < 9)
-      return setError('âŒ à·€à¶½à¶‚à¶œà·” à¶¯à·”à¶»à¶šà¶­à¶± à¶…à¶‚à¶šà¶ºà¶šà·Š à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±');
+      return setError('❌ වලංගු දුරකථන අංකයක් ඇතුළත් කරන්න');
     if (!email.trim() || !/\S+@\S+\.\S+/.test(email))
-      return setError('âŒ à·€à¶½à¶‚à¶œà·” email à¶½à·’à¶´à·’à¶±à¶ºà¶šà·Š à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±');
+      return setError('❌ වලංගු email ලිපිනයක් ඇතුළත් කරන්න');
 
     setLoading(true);
     try {
-      const phoneExists = await isPhoneRegistered(cleaned);
-      if (phoneExists) { setError('âŒ à¶¸à·™à¶¸ à¶¯à·”à¶»à¶šà¶­à¶± à¶…à¶‚à¶šà¶º à¶¯à·à¶±à¶§à¶¸à¶­à·Š à¶½à·’à¶ºà·à¶´à¶¯à·’à¶‚à¶ à·’ à·€à·“ à¶‡à¶­'); setLoading(false); return; }
-      const emailExists = await isEmailRegistered(email.trim());
-      if (emailExists) { setError('âŒ à¶¸à·™à¶¸ email à¶¯à·à¶±à¶§à¶¸à¶­à·Š à¶·à·à·€à·’à¶­à¶ºà·š à¶‡à¶­'); setLoading(false); return; }
+      if (typeof isPhoneRegistered === 'function') {
+        const phoneExists = await isPhoneRegistered(cleaned);
+        if (phoneExists) { setError('❌ මෙම දුරකථන අංකය දැනටමත් ලියාපදිංචි වී ඇත'); setLoading(false); return; }
+      }
+      if (typeof isEmailRegistered === 'function') {
+        const emailExists = await isEmailRegistered(email.trim());
+        if (emailExists) { setError('❌ මෙම email දැනටමත් භාවිතයේ ඇත'); setLoading(false); return; }
+      }
     } catch (e) { console.warn('Check error:', e); }
 
+    if (typeof sendOTP !== 'function') {
+      setError('❌ OTP සේවාව දැනට සක්‍රීය නැත.');
+      setLoading(false);
+      return;
+    }
+
     const result = await sendOTP(cleaned, email.trim());
-    if (result.success) {
+    if (result?.success) {
       setStep(2); setTimer(60);
-      setSuccess(`âœ… OTP à¶ºà·€à· à¶‡à¶­ ðŸ“§ ${email.trim()} à·€à·™à¶­\nDEBUG OTP: ${result.otp || ''}`);
+      setSuccess(`✅ OTP යවා ඇත 📧 ${email.trim()} වෙත\nDEBUG OTP: ${result.otp || ''}`);
       otpAutoRef.current = false;
     } else {
-      setError(result.error || 'OTP à¶ºà·à·€à·“à¶¸ à¶…à·ƒà·à¶»à·Šà¶®à¶š à·€à·’à¶º');
+      setError(result?.error || 'OTP යැවීම අසාර්ථක විය');
     }
     setLoading(false);
   };
 
   const handleVerifyOTP = useCallback(async () => {
-    if ((otp || '').length !== 6) return setError('âŒ OTP à¶‰à¶½à¶šà·Šà¶šà¶¸à·Š 6à¶¸ à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±');
+    if ((otp || '').length !== 6) return setError('❌ OTP ඉලක්කම් 6ම ඇතුළත් කරන්න');
     setError(''); setLoading(true);
+    if (typeof verifyOTP !== 'function') {
+      setError('❌ Verify සේවාව නොමැත');
+      setLoading(false);
+      return;
+    }
     const result = await verifyOTP(phone, otp);
-    if (result.success) {
+    if (result?.success) {
       setVerifiedPhone(phone); setStep(3); setOtp('');
-      setSuccess('âœ… à·ƒà·à¶»à·Šà¶®à¶šà·€ à·ƒà¶­à·Šâ€à¶ºà·à¶´à¶±à¶º à·€à·’à¶º!');
+      setSuccess('✅ සාර්ථකව සත්‍යාපනය විය!');
     } else {
-      setError(result.error || 'OTP verification à¶…à·ƒà·à¶»à·Šà¶®à¶š à·€à·’à¶º'); setOtp('');
+      setError(result?.error || 'OTP verification අසාර්ථක විය');
+      otpAutoRef.current = false; // Reset so user can try again!
     }
     setLoading(false);
   }, [otp, phone, verifyOTP]);
@@ -338,12 +361,17 @@ function RegisterScreen({ onBack }) {
 
   const handleRegister = async () => {
     setError('');
-    if (!name.trim()) return setError('âŒ à¶±à¶¸ à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±');
-    if (!password) return setError('âŒ à¶¸à·”à¶»à¶´à¶¯à¶º à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±');
-    if (password.length < 6) return setError('âŒ à¶¸à·”à¶»à¶´à¶¯à¶º à¶…à·€à¶¸ à¶…à¶šà·Šà·‚à¶» 6à¶šà·Š à·€à·’à¶º à¶ºà·”à¶­à·”à¶º');
-    if (password !== confirmPw) return setError('âŒ à¶¸à·”à¶»à¶´à¶¯ à¶±à·œà¶œà·à·…à¶´à·š');
+    if (!name.trim()) return setError('❌ නම ඇතුළත් කරන්න');
+    if (!password) return setError('❌ මුරපදය ඇතුළත් කරන්න');
+    if (password.length < 6) return setError('❌ මුරපදය අවම අක්ෂර 6ක් විය යුතුය');
+    if (password !== confirmPw) return setError('❌ මුරපද නොගැළපේ');
 
     setLoading(true);
+    if (typeof registerWithEmail !== 'function') {
+      setError('❌ ලියාපදිංචි වීමේ පහසුකම නොමැත');
+      setLoading(false);
+      return;
+    }
     const result = await registerWithEmail({
       email: email.trim(),
       password,
@@ -352,15 +380,20 @@ function RegisterScreen({ onBack }) {
       businessName: business.trim(),
       phoneVerified: true,
     });
-    if (result.success) { setStep(4); setSuccess('ðŸŽ‰ à¶œà·’à¶«à·”à¶¸ à·ƒà·à¶»à·Šà¶®à¶šà·€ à·ƒà·‘à¶¯à·’à¶«à·’!'); }
-    else { setError(result.error || 'à¶œà·’à¶«à·”à¶¸ à·ƒà·‘à¶¯à·“à¶¸ à¶…à·ƒà·à¶»à·Šà¶®à¶š à·€à·’à¶º'); }
+    if (result?.success) { setStep(4); setSuccess('🎉 ගිණුම සාර්ථකව සෑදිණි!'); }
+    else { setError(result?.error || 'ගිණුම සෑදීම අසාර්ථක විය'); }
     setLoading(false);
   };
 
   const handleGoogleRegister = async () => {
     setError(''); setLoading(true);
+    if (typeof loginWithGoogle !== 'function') {
+      setError('❌ Google Sign-In සේවාව නොමැත');
+      setLoading(false);
+      return;
+    }
     const result = await loginWithGoogle();
-    if (!result.success && result.error) setError(result.error);
+    if (!result?.success && result?.error) setError(result.error);
     setLoading(false);
   };
 
@@ -373,10 +406,10 @@ function RegisterScreen({ onBack }) {
   const StepDots = () => (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, marginBottom: 24 }}>
       {[
-        { n: 1, icon: 'ðŸ“±', label: 'Info' },
-        { n: 2, icon: 'ðŸ”¢', label: 'OTP' },
-        { n: 3, icon: 'ðŸ“', label: 'Account' },
-        { n: 4, icon: 'âœ…', label: 'Done' },
+        { n: 1, icon: '📱', label: 'Info' },
+        { n: 2, icon: '🔢', label: 'OTP' },
+        { n: 3, icon: '📝', label: 'Account' },
+        { n: 4, icon: '✅', label: 'Done' },
       ].map((s, i) => (
         <React.Fragment key={s.n}>
           <div style={{ textAlign: 'center' }}>
@@ -387,7 +420,7 @@ function RegisterScreen({ onBack }) {
               background: step > s.n ? '#22c55e' : step === s.n ? '#3b82f6' : '#e2e8f0',
               color: step >= s.n ? 'white' : '#94a3b8', transition: 'all 0.3s',
             }}>
-              {step > s.n ? 'âœ“' : s.icon}
+              {step > s.n ? '✓' : s.icon}
             </div>
             <div style={{ fontSize: 9, color: step >= s.n ? '#3b82f6' : '#94a3b8', fontWeight: 600 }}>{s.label}</div>
           </div>
@@ -407,9 +440,9 @@ function RegisterScreen({ onBack }) {
     <div style={pageStyle}>
       <div style={cardStyle}>
         <div style={{ textAlign: 'center', marginBottom: 20 }}>
-          <div style={{ fontSize: 44, marginBottom: 6 }}>ðŸª</div>
-          <h1 style={{ margin: '0 0 3px', fontSize: 21, color: '#1e293b' }}>à¶±à·€ à¶œà·’à¶«à·”à¶¸à¶šà·Š à·ƒà·à¶¯à¶±à·Šà¶±</h1>
-          <p style={{ margin: 0, color: '#64748b', fontSize: 13 }}>Email OTP à·ƒà¶­à·Šâ€à¶ºà·à¶´à¶±à¶º</p>
+          <div style={{ fontSize: 44, marginBottom: 6 }}>🏪</div>
+          <h1 style={{ margin: '0 0 3px', fontSize: 21, color: '#1e293b' }}>නව ගිණුමක් සාදන්න</h1>
+          <p style={{ margin: 0, color: '#64748b', fontSize: 13 }}>Email OTP සත්‍යාපනය</p>
         </div>
 
         <StepDots />
@@ -420,43 +453,43 @@ function RegisterScreen({ onBack }) {
         {step === 1 && (
           <div>
             <div style={{ background: '#eff6ff', borderRadius: 12, padding: '12px 16px', marginBottom: 18, border: '1px solid #bfdbfe' }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: '#1e40af' }}>ðŸ“§ Email OTP à·ƒà¶­à·Šâ€à¶ºà·à¶´à¶±à¶º</div>
-              <div style={{ fontSize: 12, color: '#3b82f6', marginTop: 2 }}>à¶”à¶¶à·š email à¶‘à¶šà¶§ OTP à¶šà·šà¶­à¶ºà¶šà·Š à¶ºà·€à¶±à·” à¶½à·à¶¶à·š</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#1e40af' }}>📧 Email OTP සත්‍යාපනය</div>
+              <div style={{ fontSize: 12, color: '#3b82f6', marginTop: 2 }}>ඔබේ email එකට OTP කේතයක් යවනු ලැබේ</div>
             </div>
 
             <div style={{ marginBottom: 14 }}>
-              <label style={labelStyle}>ðŸ“± à¶¯à·”à¶»à¶šà¶­à¶± à¶…à¶‚à¶šà¶º (Sri Lanka)</label>
+              <label style={labelStyle}>📱 දුරකථන අංකය (Sri Lanka)</label>
               <div style={{ position: 'relative' }}>
-                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 18, pointerEvents: 'none' }}>ðŸ‡±ðŸ‡°</span>
+                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 18, pointerEvents: 'none' }}>🇱🇰</span>
                 <input type="tel" value={phone}
                   onChange={(e) => setPhone(e.target.value.replace(/[^\d+\s]/g, ''))}
                   placeholder="077 123 4567"
                   style={{ ...inputStyle, paddingLeft: 44, fontSize: 17, fontWeight: 700, letterSpacing: 1 }}
-                  disabled={loading} autoFocus />
+                  disabled={loading} />
               </div>
             </div>
 
             <div style={{ marginBottom: 18 }}>
-              <label style={labelStyle}>ðŸ“§ Email à¶½à·’à¶´à·’à¶±à¶º</label>
+              <label style={labelStyle}>📧 Email ලිපිනය</label>
               <input type="email" value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="your@email.com" style={inputStyle}
                 disabled={loading}
                 onKeyDown={(e) => e.key === 'Enter' && handleSendOTP()} />
-              <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>ðŸ“§ OTP à¶šà·šà¶­à¶º à¶¸à·™à¶¸ email à¶‘à¶šà¶§ à¶ºà·€à¶±à·” à¶½à·à¶¶à·š</div>
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>📧 OTP කේතය මෙම email එකට යවනු ලැබේ</div>
             </div>
 
             <PrimaryBtn onClick={handleSendOTP} disabled={!phone.trim() || !email.trim() || loading} loading={loading}>
-              {loading ? 'â³ OTP à¶ºà·€à¶¸à·’à¶±à·Š...' : 'ðŸ“§ OTP à¶ºà·€à¶±à·Šà¶±'}
+              {loading ? '⏳ OTP යවමින්...' : '📧 OTP යවන්න'}
             </PrimaryBtn>
 
             <OrDivider />
             <GoogleSignInBtn onClick={handleGoogleRegister} loading={loading} label="Continue with Google" />
 
             <div style={{ textAlign: 'center', marginTop: 18, fontSize: 13, color: '#64748b' }}>
-              à¶¯à·à¶±à¶§à¶¸à¶­à·Š à¶œà·’à¶«à·”à¶¸à¶šà·Š à¶‡à¶­?{' '}
+              දැනටමත් ගිණුමක් ඇත?{' '}
               <span onClick={onBack} style={{ color: '#3b82f6', fontWeight: 700, cursor: 'pointer', textDecoration: 'underline' }}>
-                à¶‡à¶­à·”à¶½à·Š à·€à¶±à·Šà¶± â†’
+                ඇතුළු වන්න →
               </span>
             </div>
           </div>
@@ -466,10 +499,10 @@ function RegisterScreen({ onBack }) {
         {step === 2 && (
           <div>
             <div style={{ background: '#fefce8', borderRadius: 12, padding: 16, marginBottom: 20, border: '1px solid #fde047', textAlign: 'center' }}>
-              <div style={{ fontSize: 36, marginBottom: 6 }}>ðŸ“§</div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: '#854d0e' }}>OTP à¶šà·šà¶­à¶º à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±</div>
-              <div style={{ fontSize: 12, color: '#a16207', marginTop: 3 }}>{email} â€” à·€à·™à¶­ OTP à¶šà·šà¶­à¶º à¶ºà·€à· à¶‡à¶­</div>
-              <div style={{ fontSize: 11, color: '#a16207', marginTop: 2 }}>ðŸ“± Phone: {phone}</div>
+              <div style={{ fontSize: 36, marginBottom: 6 }}>📧</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#854d0e' }}>OTP කේතය ඇතුළත් කරන්න</div>
+              <div style={{ fontSize: 12, color: '#a16207', marginTop: 3 }}>{email} — වෙත OTP කේතය යවා ඇත</div>
+              <div style={{ fontSize: 11, color: '#a16207', marginTop: 2 }}>📱 Phone: {phone}</div>
             </div>
 
             <div style={{ marginBottom: 20 }}>
@@ -477,26 +510,26 @@ function RegisterScreen({ onBack }) {
             </div>
 
             <PrimaryBtn onClick={handleVerifyOTP} disabled={loading || (otp || '').length !== 6} loading={loading} bg="linear-gradient(135deg,#22c55e,#16a34a)">
-              {loading ? 'â³ à·ƒà¶­à·Šâ€à¶ºà·à¶´à¶±à¶º à·€à·™à¶¸à·’à¶±à·Š...' : 'âœ… OTP Verify à¶šà¶»à¶±à·Šà¶±'}
+              {loading ? '⏳ සත්‍යාපනය වෙමින්...' : '✅ OTP Verify කරන්න'}
             </PrimaryBtn>
 
             <div style={{ textAlign: 'center', marginTop: 14, fontSize: 13 }}>
               {timer > 0 ? (
-                <span style={{ color: '#94a3b8' }}>â±ï¸ à¶±à·à·€à¶­ OTP: <b style={{ color: '#3b82f6' }}>{timer}s</b></span>
+                <span style={{ color: '#94a3b8' }}>⏱️ නැවත OTP: <b style={{ color: '#3b82f6' }}>{timer}s</b></span>
               ) : (
                 <span onClick={handleResend} style={{ color: '#3b82f6', fontWeight: 700, cursor: 'pointer', textDecoration: 'underline' }}>
-                  ðŸ”„ OTP à¶±à·à·€à¶­ à¶ºà·€à¶±à·Šà¶±
+                  🔄 OTP නැවත යවන්න
                 </span>
               )}
             </div>
 
             <div style={{ background: '#eff6ff', borderRadius: 10, padding: '10px 14px', marginTop: 14, border: '1px solid #bfdbfe' }}>
-              <div style={{ fontSize: 11, color: '#1e40af' }}>ðŸ’¡ Email à¶‘à¶šà·š Inbox / Spam / Promotions folders à¶´à¶»à·“à¶šà·Šà·‚à· à¶šà¶»à¶±à·Šà¶±</div>
+              <div style={{ fontSize: 11, color: '#1e40af' }}>💡 Email එකේ Inbox / Spam / Promotions folders පරීක්ෂා කරන්න</div>
             </div>
 
             <button onClick={() => { setStep(1); setOtp(''); setError(''); setSuccess(''); otpAutoRef.current = false; }}
               style={{ width: '100%', padding: '11px', marginTop: 10, borderRadius: 10, border: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
-              â† à¶†à¶´à·ƒà·” à¶ºà¶±à·Šà¶±
+              ← ආපසු යන්න
             </button>
           </div>
         )}
@@ -505,62 +538,62 @@ function RegisterScreen({ onBack }) {
         {step === 3 && (
           <div>
             <div style={{ background: '#dcfce7', borderRadius: 12, padding: '10px 14px', marginBottom: 16, border: '1px solid #86efac', display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: 22 }}>âœ…</span>
+              <span style={{ fontSize: 22 }}>✅</span>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#166534' }}>OTP à·ƒà¶­à·Šâ€à¶ºà·à¶´à¶±à¶º à·ƒà·à¶»à·Šà¶®à¶šà¶ºà·’!</div>
-                <div style={{ fontSize: 11, color: '#16a34a' }}>ðŸ“± {verifiedPhone || phone} &nbsp;|&nbsp; ðŸ“§ {email}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#166534' }}>OTP සත්‍යාපනය සාර්ථකයි!</div>
+                <div style={{ fontSize: 11, color: '#16a34a' }}>📱 {verifiedPhone || phone} &nbsp;|&nbsp; 📧 {email}</div>
               </div>
             </div>
 
             <div style={{ marginBottom: 13 }}>
-              <label style={labelStyle}>ðŸ‘¤ à·ƒà¶¸à·Šà¶´à·–à¶»à·Šà¶« à¶±à¶¸ *</label>
+              <label style={labelStyle}>👤 සම්පූර්ණ නම *</label>
               <input type="text" value={name} onChange={(e) => setName(e.target.value)}
-                placeholder="à¶”à¶¶à·š à¶±à¶¸" style={inputStyle} disabled={loading} autoFocus />
+                placeholder="ඔබේ නම" style={inputStyle} disabled={loading} />
             </div>
 
             <div style={{ marginBottom: 13 }}>
-              <label style={labelStyle}>ðŸª à·€à·Šâ€à¶ºà·à¶´à·à¶» à¶±à¶¸</label>
+              <label style={labelStyle}>🏪 ව්‍යාපාර නම</label>
               <input type="text" value={business} onChange={(e) => setBusiness(e.target.value)}
-                placeholder="à·€à·Šâ€à¶ºà·à¶´à·à¶» à¶±à¶¸ (optional)" style={inputStyle} disabled={loading} />
+                placeholder="ව්‍යාපාර නම (optional)" style={inputStyle} disabled={loading} />
             </div>
 
             <div style={{ background: '#f0fdf4', borderRadius: 10, padding: '10px 14px', marginBottom: 13, border: '1px solid #86efac' }}>
-              <div style={{ fontSize: 12, color: '#166534' }}>ðŸ“§ Email: <b>{email}</b> (OTP verified âœ…)</div>
-              <div style={{ fontSize: 12, color: '#166534', marginTop: 2 }}>ðŸ“± Phone: <b>{verifiedPhone || phone}</b></div>
+              <div style={{ fontSize: 12, color: '#166534' }}>📧 Email: <b>{email}</b> (OTP verified ✅)</div>
+              <div style={{ fontSize: 12, color: '#166534', marginTop: 2 }}>📱 Phone: <b>{verifiedPhone || phone}</b></div>
             </div>
 
             <div style={{ marginBottom: 13 }}>
-              <label style={labelStyle}>ðŸ”’ à¶¸à·”à¶»à¶´à¶¯à¶º *</label>
+              <label style={labelStyle}>🔒 මුරපදය *</label>
               <div style={{ position: 'relative' }}>
                 <input type={showPw ? 'text' : 'password'} value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="à¶…à·€à¶¸ à¶…à¶šà·Šà·‚à¶» 6à¶šà·Š"
+                  placeholder="අවම අක්ෂර 6ක්"
                   style={{ ...inputStyle, paddingRight: 44 }} disabled={loading} />
                 <button type="button" onClick={() => setShowPw(!showPw)}
                   style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>
-                  {showPw ? 'ðŸ™ˆ' : 'ðŸ‘ï¸'}
+                  {showPw ? '🙈' : '👁️'}
                 </button>
               </div>
               <PasswordStrength password={password} />
             </div>
 
             <div style={{ marginBottom: 18 }}>
-              <label style={labelStyle}>ðŸ”’ à¶¸à·”à¶»à¶´à¶¯à¶º à¶­à·„à·€à·”à¶»à·” à¶šà¶»à¶±à·Šà¶± *</label>
+              <label style={labelStyle}>🔒 මුරපදය තහවුරු කරන්න *</label>
               <input type={showPw ? 'text' : 'password'} value={confirmPw}
                 onChange={(e) => setConfirmPw(e.target.value)}
-                placeholder="à¶±à·à·€à¶­ à¶¸à·”à¶»à¶´à¶¯à¶º"
+                placeholder="නැවත මුරපදය"
                 style={{ ...inputStyle, borderColor: confirmPw && password !== confirmPw ? '#ef4444' : '#e2e8f0' }}
                 disabled={loading} />
               {confirmPw && password !== confirmPw && (
-                <div style={{ fontSize: 11, color: '#ef4444', marginTop: 3 }}>âŒ à¶¸à·”à¶»à¶´à¶¯ à¶±à·œà¶œà·à·…à¶´à·š</div>
+                <div style={{ fontSize: 11, color: '#ef4444', marginTop: 3 }}>❌ මුරපද නොගැළපේ</div>
               )}
               {confirmPw && password === confirmPw && confirmPw.length > 0 && (
-                <div style={{ fontSize: 11, color: '#22c55e', marginTop: 3 }}>âœ… à¶¸à·”à¶»à¶´à¶¯ à¶œà·à·…à¶´à·š</div>
+                <div style={{ fontSize: 11, color: '#22c55e', marginTop: 3 }}>✅ මුරපද ගැළපේ</div>
               )}
             </div>
 
             <PrimaryBtn onClick={handleRegister} loading={loading}>
-              {loading ? 'â³ à¶œà·’à¶«à·”à¶¸ à·ƒà·à¶¯à¶¸à·’à¶±à·Š...' : 'ðŸš€ à¶œà·’à¶«à·”à¶¸ à·ƒà·à¶¯à¶±à·Šà¶±'}
+              {loading ? '⏳ ගිණුම සාදමින්...' : '🚀 ගිණුම සාදන්න'}
             </PrimaryBtn>
           </div>
         )}
@@ -568,28 +601,28 @@ function RegisterScreen({ onBack }) {
         {/* STEP 4 */}
         {step === 4 && (
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 64, marginBottom: 12 }}>ðŸŽ‰</div>
-            <h2 style={{ margin: '0 0 6px', fontSize: 22, color: '#166534' }}>à¶œà·’à¶«à·”à¶¸ à·ƒà·à¶»à·Šà¶®à¶šà¶ºà·’!</h2>
+            <div style={{ fontSize: 64, marginBottom: 12 }}>🎉</div>
+            <h2 style={{ margin: '0 0 6px', fontSize: 22, color: '#166534' }}>ගිණුම සාර්ථකයි!</h2>
             <p style={{ color: '#64748b', fontSize: 14, marginBottom: 18 }}>
-              âœ… OTP verified &nbsp;|&nbsp; ðŸ“§ Email verification pending
+              ✅ OTP verified &nbsp;|&nbsp; 📧 Email verification pending
             </p>
 
             <div style={{ background: '#fffbeb', borderRadius: 12, padding: 16, border: '1px solid #fde047', marginBottom: 18, textAlign: 'left' }}>
-              <div style={{ fontWeight: 800, fontSize: 14, color: '#854d0e', marginBottom: 6 }}>ðŸ“§ Email à·ƒà¶­à·Šâ€à¶ºà·à¶´à¶±à¶º</div>
+              <div style={{ fontWeight: 800, fontSize: 14, color: '#854d0e', marginBottom: 6 }}>📧 Email සත්‍යාපනය</div>
               <div style={{ fontSize: 13, color: '#a16207' }}>
-                <b>{email}</b> à·€à·™à¶­ verification link à¶ºà·€à· à¶‡à¶­.<br />
-                Inbox (spam folder à¶¯) à¶´à¶»à·“à¶šà·Šà·‚à· à¶šà¶» link click à¶šà¶»à¶±à·Šà¶±.
+                <b>{email}</b> වෙත verification link යවා ඇත.<br />
+                Inbox (spam folder ද) පරීක්ෂා කර link click කරන්න.
               </div>
             </div>
 
             <div style={{ background: '#f0fdf4', borderRadius: 12, padding: '12px 16px', border: '1px solid #86efac', marginBottom: 18, textAlign: 'left' }}>
-              <div style={{ fontSize: 12, color: '#166534' }}>ðŸ“± Phone: <b>{verifiedPhone || phone}</b></div>
-              <div style={{ fontSize: 12, color: '#166534', marginTop: 3 }}>ðŸ“§ Email: <b>{email}</b></div>
-              <div style={{ fontSize: 12, color: '#166534', marginTop: 3 }}>ðŸ‘¤ Name: <b>{name}</b></div>
+              <div style={{ fontSize: 12, color: '#166534' }}>📱 Phone: <b>{verifiedPhone || phone}</b></div>
+              <div style={{ fontSize: 12, color: '#166534', marginTop: 3 }}>📧 Email: <b>{email}</b></div>
+              <div style={{ fontSize: 12, color: '#166534', marginTop: 3 }}>👤 Name: <b>{name}</b></div>
             </div>
 
             <PrimaryBtn onClick={onBack} bg="linear-gradient(135deg,#22c55e,#16a34a)">
-              ðŸš€ Login Page à¶‘à¶šà¶§ à¶ºà¶±à·Šà¶±
+              🚀 Login Page එකට යන්න
             </PrimaryBtn>
           </div>
         )}
@@ -598,11 +631,12 @@ function RegisterScreen({ onBack }) {
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/* =========================================================
    FORGOT PASSWORD SCREEN
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+   ========================================================= */
 function ForgotPasswordScreen({ onBack }) {
-  const { sendOTP, verifyOTP, resetPasswordByEmail } = useUserAuth();
+  const auth = useUserAuth();
+  const { sendOTP, verifyOTP, resetPasswordByEmail } = auth || {};
 
   const [step, setStep] = useState(1);
   const [method, setMethod] = useState('');
@@ -628,41 +662,60 @@ function ForgotPasswordScreen({ onBack }) {
 
   const handleEmailReset = async () => {
     reset();
-    if (!email.trim()) return setError('âŒ Email à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±');
+    if (!email.trim()) return setError('❌ Email ඇතුළත් කරන්න');
     setLoading(true);
+    if (typeof resetPasswordByEmail !== 'function') {
+      setError('❌ Reset සේවාව නොමැත');
+      setLoading(false);
+      return;
+    }
     const r = await resetPasswordByEmail(email.trim());
-    if (r.success) { setStep(5); setSuccess(r.message); }
-    else { setError(r.error); }
+    if (r?.success) { setStep(5); setSuccess(r.message || 'Reset link යවා ඇත'); }
+    else { setError(r?.error || 'Reset යැවීම අසාර්ථක විය'); }
     setLoading(false);
   };
 
   const handlePhoneSend = async () => {
     reset();
-    if (!phone.trim()) return setError('âŒ à¶¯à·”à¶»à¶šà¶­à¶± à¶…à¶‚à¶šà¶º à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±');
+    if (!phone.trim()) return setError('❌ දුරකථන අංකය ඇතුළත් කරන්න');
     if (!resetEmail.trim() || !/\S+@\S+\.\S+/.test(resetEmail))
-      return setError('âŒ à·€à¶½à¶‚à¶œà·” email à¶½à·’à¶´à·’à¶±à¶ºà¶šà·Š à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±');
+      return setError('❌ වලංගු email ලිපිනයක් ඇතුළත් කරන්න');
 
     setLoading(true);
+    if (typeof sendOTP !== 'function') {
+      setError('❌ OTP සේවාව නොමැත');
+      setLoading(false);
+      return;
+    }
     const result = await sendOTP(phone.trim(), resetEmail.trim());
-    if (result.success) {
+    if (result?.success) {
       setStep(3); setTimer(60);
-      setSuccess(`âœ… OTP à¶ºà·€à· à¶‡à¶­ ðŸ“§ ${resetEmail.trim()} à·€à·™à¶­\nDEBUG OTP: ${result.otp || ''}`);
+      setSuccess(`✅ OTP යවා ඇත 📧 ${resetEmail.trim()} වෙත\nDEBUG OTP: ${result.otp || ''}`);
       otpAutoRef.current = false;
-    } else { setError(result.error); }
+    } else { setError(result?.error || 'OTP යැවීම අසාර්ථක විය'); }
     setLoading(false);
   };
 
   const handleOTPVerify = useCallback(async () => {
-    if ((otp || '').length !== 6) return setError('âŒ OTP à¶‰à¶½à¶šà·Šà¶šà¶¸à·Š 6à¶¸ à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±');
+    if ((otp || '').length !== 6) return setError('❌ OTP ඉලක්කම් 6ම ඇතුළත් කරන්න');
     reset(); setLoading(true);
+    if (typeof verifyOTP !== 'function') {
+      setError('❌ Verify සේවාව නොමැත');
+      setLoading(false);
+      return;
+    }
     const r = await verifyOTP(phone, otp);
-    if (r.success) {
+    if (r?.success) {
       const resetResult = await resetPasswordByEmail(resetEmail.trim());
-      if (resetResult.success) {
+      if (resetResult?.success) {
         setStep(5);
-        setSuccess('âœ… OTP Verified! Password reset link ' + resetEmail + ' à·€à·™à¶­ à¶ºà·€à· à¶‡à¶­');
-      } else { setError(resetResult.error); }
-    } else { setError(r.error); setOtp(''); }
+        setSuccess('✅ OTP Verified! Password reset link ' + resetEmail + ' වෙත යවා ඇත');
+      } else { setError(resetResult?.error || 'Reset අසාර්ථක විය'); }
+    } else {
+      setError(r?.error || 'OTP verification අසාර්ථක විය');
+      setOtp('');
+      otpAutoRef.current = false;
+    }
     setLoading(false);
   }, [otp, phone, resetEmail, verifyOTP, resetPasswordByEmail]);
 
@@ -677,21 +730,21 @@ function ForgotPasswordScreen({ onBack }) {
     <div style={pageStyle}>
       <div style={cardStyle}>
         <div style={{ textAlign: 'center', marginBottom: 22 }}>
-          <div style={{ fontSize: 44, marginBottom: 6 }}>ðŸ”</div>
-          <h1 style={{ margin: '0 0 3px', fontSize: 21, color: '#1e293b' }}>à¶¸à·”à¶»à¶´à¶¯à¶º à¶±à·à·€à¶­ à¶½à¶¶à· à¶œà¶±à·Šà¶±</h1>
-          <p style={{ margin: 0, color: '#64748b', fontSize: 13 }}>Email à·„à· Phone + Email OTP à¶¸à¶œà·’à¶±à·Š</p>
+          <div style={{ fontSize: 44, marginBottom: 6 }}>🔑</div>
+          <h1 style={{ margin: '0 0 3px', fontSize: 21, color: '#1e293b' }}>මුරපදය නැවත ලබා ගන්න</h1>
+          <p style={{ margin: 0, color: '#64748b', fontSize: 13 }}>Email හෝ Phone + Email OTP මගින්</p>
         </div>
 
         <AlertBox msg={error} type="error" />
         <AlertBox msg={success} type="success" />
 
-        {/* Step 1 â€” choose method */}
+        {/* Step 1 — choose method */}
         {step === 1 && (
           <div>
             <div style={{ display: 'grid', gap: 12, marginBottom: 20 }}>
               {[
-                { m: 'email', icon: 'ðŸ“§', title: 'Email Reset', desc: 'Password reset link email à¶‘à¶šà¶§', bg: '#eff6ff' },
-                { m: 'phone', icon: 'ðŸ“±', title: 'Phone + Email OTP', desc: 'Email OTP verify à¶šà¶» password reset', bg: '#f0fdf4' },
+                { m: 'email', icon: '📧', title: 'Email Reset', desc: 'Password reset link email එකට', bg: '#eff6ff' },
+                { m: 'phone', icon: '📱', title: 'Phone + Email OTP', desc: 'Email OTP verify කර password reset', bg: '#f0fdf4' },
               ].map((o) => (
                 <div key={o.m} onClick={() => { setMethod(o.m); setStep(2); reset(); }}
                   style={{ padding: 18, borderRadius: 14, border: `2px solid ${o.bg}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14, transition: 'all 0.2s' }}>
@@ -700,103 +753,103 @@ function ForgotPasswordScreen({ onBack }) {
                     <div style={{ fontWeight: 800, fontSize: 14, color: '#1e293b' }}>{o.title}</div>
                     <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{o.desc}</div>
                   </div>
-                  <span style={{ fontSize: 20 }}>â†’</span>
+                  <span style={{ fontSize: 20 }}>→</span>
                 </div>
               ))}
             </div>
             <div style={{ textAlign: 'center', fontSize: 13 }}>
-              <span onClick={onBack} style={{ color: '#3b82f6', fontWeight: 700, cursor: 'pointer' }}>â† Login Page</span>
+              <span onClick={onBack} style={{ color: '#3b82f6', fontWeight: 700, cursor: 'pointer' }}>← Login Page</span>
             </div>
           </div>
         )}
 
-        {/* Step 2 â€” Email method */}
+        {/* Step 2 — Email method */}
         {step === 2 && method === 'email' && (
           <div>
-            <label style={labelStyle}>ðŸ“§ à¶½à·’à¶ºà·à¶´à¶¯à·’à¶‚à¶ à·’ Email</label>
+            <label style={labelStyle}>📧 ලියාපදිංචි Email</label>
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
               placeholder="your@email.com" style={{ ...inputStyle, marginBottom: 18 }}
-              onKeyDown={(e) => e.key === 'Enter' && handleEmailReset()} disabled={loading} autoFocus />
+              onKeyDown={(e) => e.key === 'Enter' && handleEmailReset()} disabled={loading} />
             <PrimaryBtn onClick={handleEmailReset} loading={loading} disabled={!email.trim()}>
-              {loading ? 'â³ à¶ºà·€à¶¸à·’à¶±à·Š...' : 'ðŸ“§ Reset Link à¶ºà·€à¶±à·Šà¶±'}
+              {loading ? '⏳ යවමින්...' : '📧 Reset Link යවන්න'}
             </PrimaryBtn>
             <button onClick={() => { setStep(1); reset(); }}
               style={{ width: '100%', padding: 11, marginTop: 10, borderRadius: 10, border: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontWeight: 600, cursor: 'pointer', fontSize: 13 }}>
-              â† à¶†à¶´à·ƒà·”
+              ← ආපසු
             </button>
           </div>
         )}
 
-        {/* Step 2 â€” Phone method */}
+        {/* Step 2 — Phone method */}
         {step === 2 && method === 'phone' && (
           <div>
             <div style={{ marginBottom: 14 }}>
-              <label style={labelStyle}>ðŸ“± à¶½à·’à¶ºà·à¶´à¶¯à·’à¶‚à¶ à·’ à¶¯à·”à¶»à¶šà¶­à¶± à¶…à¶‚à¶šà¶º</label>
+              <label style={labelStyle}>📱 ලියාපදිංචි දුරකථන අංකය</label>
               <div style={{ position: 'relative' }}>
-                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 18, pointerEvents: 'none' }}>ðŸ‡±ðŸ‡°</span>
+                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 18, pointerEvents: 'none' }}>🇱🇰</span>
                 <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value.replace(/[^\d+\s]/g, ''))}
                   placeholder="077 123 4567"
                   style={{ ...inputStyle, paddingLeft: 44, fontSize: 17, fontWeight: 700 }}
-                  disabled={loading} autoFocus />
+                  disabled={loading} />
               </div>
             </div>
             <div style={{ marginBottom: 18 }}>
-              <label style={labelStyle}>ðŸ“§ Email à¶½à·’à¶´à·’à¶±à¶º (OTP à¶½à·à¶¶à·“à¶¸à¶§)</label>
+              <label style={labelStyle}>📧 Email ලිපිනය (OTP ලැබීමට)</label>
               <input type="email" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)}
                 placeholder="your@email.com" style={inputStyle}
                 onKeyDown={(e) => e.key === 'Enter' && handlePhoneSend()} disabled={loading} />
-              <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>ðŸ“§ OTP à¶šà·šà¶­à¶º à¶¸à·™à¶¸ email à¶‘à¶šà¶§ à¶ºà·€à¶±à·” à¶½à·à¶¶à·š</div>
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>📧 OTP කේතය මෙම email එකට යවනු ලැබේ</div>
             </div>
             <PrimaryBtn onClick={handlePhoneSend} loading={loading} disabled={!phone.trim() || !resetEmail.trim()} bg="linear-gradient(135deg,#22c55e,#16a34a)">
-              {loading ? 'â³ OTP à¶ºà·€à¶¸à·’à¶±à·Š...' : 'ðŸ“§ OTP à¶ºà·€à¶±à·Šà¶±'}
+              {loading ? '⏳ OTP යවමින්...' : '📧 OTP යවන්න'}
             </PrimaryBtn>
             <button onClick={() => { setStep(1); reset(); }}
               style={{ width: '100%', padding: 11, marginTop: 10, borderRadius: 10, border: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontWeight: 600, cursor: 'pointer', fontSize: 13 }}>
-              â† à¶†à¶´à·ƒà·”
+              ← ආපසු
             </button>
           </div>
         )}
 
-        {/* Step 3 â€” OTP verify */}
+        {/* Step 3 — OTP verify */}
         {step === 3 && (
           <div>
             <div style={{ background: '#fefce8', borderRadius: 12, padding: 14, marginBottom: 18, border: '1px solid #fde047', textAlign: 'center' }}>
-              <div style={{ fontSize: 32, marginBottom: 4 }}>ðŸ“§</div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: '#854d0e' }}>OTP à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±</div>
-              <div style={{ fontSize: 12, color: '#a16207', marginTop: 2 }}>{resetEmail} à·€à·™à¶­ OTP à¶ºà·€à· à¶‡à¶­</div>
+              <div style={{ fontSize: 32, marginBottom: 4 }}>📧</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#854d0e' }}>OTP ඇතුළත් කරන්න</div>
+              <div style={{ fontSize: 12, color: '#a16207', marginTop: 2 }}>{resetEmail} වෙත OTP යවා ඇත</div>
             </div>
             <div style={{ marginBottom: 20 }}>
               <OTPInput value={otp} onChange={(v) => { setOtp(v); otpAutoRef.current = false; }} disabled={loading} />
             </div>
             <PrimaryBtn onClick={handleOTPVerify} loading={loading} disabled={(otp || '').length !== 6} bg="linear-gradient(135deg,#22c55e,#16a34a)">
-              {loading ? 'â³ Verify...' : 'âœ… OTP Verify à¶šà¶»à¶±à·Šà¶±'}
+              {loading ? '⏳ Verify...' : '✅ OTP Verify කරන්න'}
             </PrimaryBtn>
             <div style={{ textAlign: 'center', marginTop: 12, fontSize: 13 }}>
               {timer > 0 ? (
-                <span style={{ color: '#94a3b8' }}>â±ï¸ {timer}s</span>
+                <span style={{ color: '#94a3b8' }}>⏱️ {timer}s</span>
               ) : (
                 <span onClick={() => { otpAutoRef.current = false; handlePhoneSend(); }}
                   style={{ color: '#3b82f6', fontWeight: 700, cursor: 'pointer' }}>
-                  ðŸ”„ OTP à¶±à·à·€à¶­ à¶ºà·€à¶±à·Šà¶±
+                  🔄 OTP නැවත යවන්න
                 </span>
               )}
             </div>
             <div style={{ background: '#eff6ff', borderRadius: 10, padding: '10px 14px', marginTop: 14, border: '1px solid #bfdbfe' }}>
-              <div style={{ fontSize: 11, color: '#1e40af' }}>ðŸ’¡ Email à¶‘à¶šà·š Inbox / Spam / Promotions folders à¶´à¶»à·“à¶šà·Šà·‚à· à¶šà¶»à¶±à·Šà¶±</div>
+              <div style={{ fontSize: 11, color: '#1e40af' }}>💡 Email එකේ Inbox / Spam / Promotions folders පරීක්ෂා කරන්න</div>
             </div>
           </div>
         )}
 
-        {/* Step 5 â€” Done */}
+        {/* Step 5 — Done */}
         {step === 5 && (
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 60, marginBottom: 12 }}>âœ…</div>
-            <h2 style={{ margin: '0 0 8px', fontSize: 21, color: '#166534' }}>à·ƒà·à¶»à·Šà¶®à¶šà¶ºà·’!</h2>
+            <div style={{ fontSize: 60, marginBottom: 12 }}>✅</div>
+            <h2 style={{ margin: '0 0 8px', fontSize: 21, color: '#166534' }}>සාර්ථකයි!</h2>
             <p style={{ color: '#64748b', fontSize: 14, marginBottom: 20 }}>
-              ðŸ“§ Password reset link email à¶‘à¶šà¶§ à¶ºà·€à· à¶‡à¶­. Inbox (spam à¶¯) à¶´à¶»à·“à¶šà·Šà·‚à· à¶šà¶»à¶±à·Šà¶±.
+              📧 Password reset link email එකට යවා ඇත. Inbox (spam ද) පරීක්ෂා කරන්න.
             </p>
             <PrimaryBtn onClick={onBack} bg="linear-gradient(135deg,#22c55e,#16a34a)">
-              ðŸš€ Login Page
+              🚀 Login Page
             </PrimaryBtn>
           </div>
         )}
@@ -805,11 +858,12 @@ function ForgotPasswordScreen({ onBack }) {
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-   MAIN LOGIN â€” Default Export
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+/* =========================================================
+   MAIN LOGIN — Default Export
+   ========================================================= */
 export default function Login() {
-  const { login, loginWithGoogle, user } = useUserAuth();
+  const auth = useUserAuth();
+  const { login, loginWithGoogle, user } = auth || {};
 
   const [screen, setScreen] = useState('login');
   const [email, setEmail] = useState('');
@@ -823,17 +877,27 @@ export default function Login() {
   const handleLogin = async (e) => {
     if (e) e.preventDefault();
     setError('');
-    if (!email.trim() || !password) return setError('âŒ Email à·ƒà·„ à¶¸à·”à¶»à¶´à¶¯à¶º à¶‡à¶­à·”à·…à¶­à·Š à¶šà¶»à¶±à·Šà¶±');
+    if (!email.trim() || !password) return setError('❌ Email සහ මුරපදය ඇතුළත් කරන්න');
     setLoading(true);
+    if (typeof login !== 'function') {
+      setError('❌ Login සේවාව සක්‍රීය නැත.');
+      setLoading(false);
+      return;
+    }
     const result = await login(email.trim(), password);
-    if (!result.success) setError(result.error || 'Login à¶…à·ƒà·à¶»à·Šà¶®à¶š à·€à·’à¶º');
+    if (!result?.success) setError(result?.error || 'Login අසාර්ථක විය');
     setLoading(false);
   };
 
   const handleGoogleLogin = async () => {
     setError(''); setLoading(true);
+    if (typeof loginWithGoogle !== 'function') {
+      setError('❌ Google Sign-In සේවාව නොමැත');
+      setLoading(false);
+      return;
+    }
     const result = await loginWithGoogle();
-    if (!result.success) setError(result.error || 'Google Sign-In à¶…à·ƒà·à¶»à·Šà¶®à¶š à·€à·’à¶º');
+    if (!result?.success) setError(result?.error || 'Google Sign-In අසාර්ථක විය');
     setLoading(false);
   };
 
@@ -844,32 +908,32 @@ export default function Login() {
     <div style={pageStyle}>
       <div style={cardStyle}>
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <div style={{ fontSize: 52, marginBottom: 10 }}>ðŸª</div>
+          <div style={{ fontSize: 52, marginBottom: 10 }}>🏪</div>
           <h1 style={{ margin: '0 0 4px', fontSize: 24, color: '#1e293b' }}>POS System</h1>
-          <p style={{ margin: 0, color: '#64748b', fontSize: 14 }}>à¶”à¶¶à·š à¶œà·’à¶«à·”à¶¸à¶§ à¶‡à¶­à·”à·…à·” à·€à¶±à·Šà¶±</p>
+          <p style={{ margin: 0, color: '#64748b', fontSize: 14 }}>ඔබේ ගිණුමට ඇතුළු වන්න</p>
         </div>
 
         <AlertBox msg={error} type="error" />
 
         <form onSubmit={handleLogin}>
           <div style={{ marginBottom: 15 }}>
-            <label style={labelStyle}>ðŸ“§ Email à¶½à·’à¶´à·’à¶±à¶º</label>
+            <label style={labelStyle}>📧 Email ලිපිනය</label>
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
               placeholder="your@email.com" style={inputStyle}
-              disabled={loading} autoFocus required autoComplete="email" />
+              disabled={loading} required autoComplete="email" />
           </div>
 
           <div style={{ marginBottom: 6 }}>
-            <label style={labelStyle}>ðŸ”’ à¶¸à·”à¶»à¶´à¶¯à¶º</label>
+            <label style={labelStyle}>🔒 මුරපදය</label>
             <div style={{ position: 'relative' }}>
               <input type={showPw ? 'text' : 'password'} value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="à¶”à¶¶à·š à¶¸à·”à¶»à¶´à¶¯à¶º"
+                placeholder="ඔබේ මුරපදය"
                 style={{ ...inputStyle, paddingRight: 44 }}
                 disabled={loading} required autoComplete="current-password" />
               <button type="button" onClick={() => setShowPw(!showPw)}
                 style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>
-                {showPw ? 'ðŸ™ˆ' : 'ðŸ‘ï¸'}
+                {showPw ? '🙈' : '👁️'}
               </button>
             </div>
           </div>
@@ -877,12 +941,12 @@ export default function Login() {
           <div style={{ textAlign: 'right', marginBottom: 20 }}>
             <span onClick={() => setScreen('forgot')}
               style={{ color: '#3b82f6', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-              ðŸ” à¶¸à·”à¶»à¶´à¶¯à¶º à¶…à¶¸à¶­à¶šà¶¯?
+              🔑 මුරපදය අමතකද?
             </span>
           </div>
 
           <PrimaryBtn type="submit" loading={loading}>
-            {loading ? 'â³ à¶‡à¶­à·”à¶½à·Š à·€à·™à¶¸à·’à¶±à·Š...' : 'ðŸš€ à¶‡à¶­à·”à¶½à·Š à·€à¶±à·Šà¶±'}
+            {loading ? '⏳ ඇතුළු වෙමින්...' : '🚀 ඇතුළු වන්න'}
           </PrimaryBtn>
         </form>
 
@@ -890,16 +954,16 @@ export default function Login() {
         <GoogleSignInBtn onClick={handleGoogleLogin} loading={loading} />
 
         <div style={{ textAlign: 'center', marginTop: 22, paddingTop: 18, borderTop: '1px solid #e2e8f0' }}>
-          <span style={{ color: '#64748b', fontSize: 14 }}>à¶œà·’à¶«à·”à¶¸à¶šà·Š à¶±à·à¶¯à·Šà¶¯? </span>
+          <span style={{ color: '#64748b', fontSize: 14 }}>ගිණුමක් නැද්ද? </span>
           <span onClick={() => setScreen('register')}
             style={{ color: '#3b82f6', fontWeight: 800, fontSize: 14, cursor: 'pointer', textDecoration: 'underline' }}>
-            à¶±à·€ à¶œà·’à¶«à·”à¶¸à¶šà·Š à·ƒà·à¶¯à¶±à·Šà¶± â†’
+            නව ගිණුමක් සාදන්න →
           </span>
         </div>
 
         <div style={{ background: '#f8fafc', borderRadius: 10, padding: 10, marginTop: 16, textAlign: 'center' }}>
           <div style={{ fontSize: 11, color: '#94a3b8' }}>
-            ðŸ”’ Secure &nbsp;|&nbsp; ðŸ“§ Email OTP &nbsp;|&nbsp; ðŸ”µ Google
+            🔒 Secure &nbsp;|&nbsp; 📧 Email OTP &nbsp;|&nbsp; 🔵 Google
           </div>
         </div>
       </div>
