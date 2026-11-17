@@ -88,7 +88,7 @@ export default function ProtectedLayout({ children }) {
   }
 
   if (!user) {
-    return <FullPageLoader />;
+    return null;
   }
 
   return (
