@@ -3,6 +3,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { localDb } from '@/lib/localDb';
 import { useUserAuth } from '@/context/UserContext';
+import { getApps, getApp } from 'firebase/app';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 
 // ============ FIREBASE IMPORTS (ROBUST) ============
 let db = null;
@@ -10,7 +12,6 @@ let doc, setDoc, updateDoc, collection, query, where, getDocs, serverTimestamp;
 
 try {
   const firestore = require('firebase/firestore');
-  const firebaseApp = require('firebase/app');
 
   doc = firestore.doc;
   setDoc = firestore.setDoc;
@@ -29,17 +30,9 @@ try {
 
   if (!db) {
     try {
-      const apps = firebaseApp.getApps();
+      const apps = getApps();
       if (apps.length > 0) db = firestore.getFirestore(apps[0]);
     } catch (e) {}
-  }
-
-  if (db) {
-    try {
-      firestore.collection(db, '_test_validation_');
-    } catch (e) {
-      db = null;
-    }
   }
 } catch (e) {
   console.error('[SyncButton] Firebase import error:', e);
@@ -47,6 +40,24 @@ try {
 
 function isValidDb() {
   return db !== null;
+}
+
+// Recursive helper to sanitize undefined values for Firestore
+function sanitizeForFirestore(obj) {
+  if (obj === null || obj === undefined) return null;
+  if (typeof obj !== 'object') return obj;
+  if (obj instanceof Date) return obj;
+
+  const clean = Array.isArray(obj) ? [] : {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === undefined) continue;
+    if (value && typeof value === 'object' && !(value instanceof Date)) {
+      clean[key] = sanitizeForFirestore(value);
+    } else {
+      clean[key] = value;
+    }
+  }
+  return clean;
 }
 
 /* ══════════════════════════════════════════
@@ -61,8 +72,11 @@ async function countPending() {
     } catch {}
 
     try {
-      const txns = await localDb.customerTransactions.toArray();
-      count += txns.filter(t => t.id?.startsWith('ctxn_')).length;
+      const txTable = localDb.customerTransactions || localDb.customer_transactions;
+      if (txTable) {
+        const txns = await txTable.toArray();
+        count += txns.filter(t => t.synced === false || t.synced === 0 || t.id?.startsWith('ctxn_')).length;
+      }
     } catch {}
 
     try {
@@ -71,8 +85,11 @@ async function countPending() {
     } catch {}
 
     try {
-      const cash = await localDb.cashTransactions.toArray();
-      count += cash.filter(c => c.id?.startsWith('cash_')).length;
+      const cashTable = localDb.cashTransactions || localDb.cash_transactions;
+      if (cashTable) {
+        const cash = await cashTable.toArray();
+        count += cash.filter(c => c.synced === false || c.synced === 0 || c.id?.startsWith('cash_')).length;
+      }
     } catch {}
   } catch (e) {
     console.warn('[Sync] countPending error:', e.message);
@@ -85,6 +102,15 @@ async function countPending() {
 ══════════════════════════════════════════ */
 async function syncAllPending(activeUid, onProgress) {
   if (!activeUid || !navigator.onLine || !isValidDb()) return { success: 0, failed: 0, total: 0 };
+
+  // Safety check: ensure user is actually logged in to Firebase Auth
+  const apps = getApps();
+  if (!apps.length) return { success: 0, failed: 0, total: 0, unauth: true };
+  const auth = getAuth(getApp());
+  if (!auth.currentUser) {
+    if (onProgress) onProgress('⚠️ පළමුව Login වන්න');
+    return { success: 0, failed: 0, total: 0, unauth: true };
+  }
 
   let success = 0;
   let failed = 0;
@@ -107,15 +133,17 @@ async function syncAllPending(activeUid, onProgress) {
       total++;
       report(`Customer: ${cust.name}`);
       try {
-        const payload = {
+        const rawPayload = {
           ...cust,
-          uid: cust.uid && cust.uid !== 'offline_user' ? cust.uid : activeUid,
+          uid: activeUid,
+          userId: activeUid,
           synced: true,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         };
-        await setDoc(doc(db, 'customers', cust.id), payload);
-        await localDb.customers.update(cust.id, { synced: true, uid: payload.uid });
+        const payload = sanitizeForFirestore(rawPayload);
+        await setDoc(doc(db, 'customers', cust.id), payload, { merge: true });
+        await localDb.customers.update(cust.id, { synced: 1, uid: activeUid });
         success++;
       } catch (e) {
         report(`❌ ${cust.name}: ${e.message}`);
@@ -123,59 +151,34 @@ async function syncAllPending(activeUid, onProgress) {
       }
     }
 
-    // ── 2. CUSTOMER BALANCES ──
-    const myCusts = allCusts.filter(c => c.uid === activeUid || !c.uid || c.uid === 'offline_user');
-    if (myCusts.length > 0 && getDocs && query && where && collection) {
-      try {
-        const cloudSnap = await getDocs(query(collection(db, 'customers'), where('uid', '==', activeUid)));
-        const cloudMap = new Map(cloudSnap.docs.map(d => [d.id, d.data()]));
-
-        for (const local of myCusts) {
-          const cloud = cloudMap.get(local.id);
-          if (!cloud) continue;
-          const localBal = parseFloat(local.currentBalance) || 0;
-          const cloudBal = parseFloat(cloud.currentBalance) || 0;
-          if (Math.abs(localBal - cloudBal) > 0.01) {
-            const localTime = new Date(local.updatedAt || local.createdAt || 0).getTime();
-            const cloudRaw = cloud.updatedAt;
-            const cloudTime = cloudRaw?.toDate ? cloudRaw.toDate().getTime() : new Date(cloudRaw || 0).getTime();
-            if (localTime >= cloudTime) {
-              total++;
-              report(`Balance: ${local.name} Rs.${localBal}`);
-              try {
-                await updateDoc(doc(db, 'customers', local.id), {
-                  currentBalance: localBal, updatedAt: serverTimestamp()
-                });
-                success++;
-              } catch { failed++; }
-            }
-          }
-        }
-      } catch (e) {
-        report(`⚠️ Balance sync skipped: ${e.message}`);
-      }
-    }
-
-    // ── 3. CUSTOMER TRANSACTIONS ──
+    // ── 2. CUSTOMER TRANSACTIONS ──
     try {
-      const txns = await localDb.customerTransactions.toArray();
-      const offlineTxns = txns.filter(t => t.id?.startsWith('ctxn_'));
-      for (const tx of offlineTxns) {
-        total++;
-        report(`Txn: ${tx.type} Rs.${tx.amount}`);
-        try {
-          const payload = {
-            ...tx,
-            uid: tx.uid && tx.uid !== 'offline_user' ? tx.uid : activeUid,
-            createdAt: serverTimestamp(),
-          };
-          await setDoc(doc(db, 'customerTransactions', tx.id), payload);
-          success++;
-        } catch { failed++; }
+      const txTable = localDb.customerTransactions || localDb.customer_transactions;
+      if (txTable) {
+        const txns = await txTable.toArray();
+        const unsyncedTxns = txns.filter(t => t.synced === false || t.synced === 0 || t.id?.startsWith('ctxn_'));
+        for (const tx of unsyncedTxns) {
+          total++;
+          report(`Txn: ${tx.type || 'Transaction'} Rs.${tx.amount || 0}`);
+          try {
+            const rawPayload = {
+              ...tx,
+              uid: activeUid,
+              userId: activeUid,
+              synced: true,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            };
+            const payload = sanitizeForFirestore(rawPayload);
+            await setDoc(doc(db, 'customerTransactions', tx.id), payload, { merge: true });
+            await txTable.update(tx.id, { synced: 1, uid: activeUid });
+            success++;
+          } catch { failed++; }
+        }
       }
     } catch {}
 
-    // ── 4. INVOICES ──
+    // ── 3. INVOICES ──
     let unsyncedInvoices = [];
     try {
       const allInvs = await localDb.invoices.toArray();
@@ -186,35 +189,45 @@ async function syncAllPending(activeUid, onProgress) {
       total++;
       report(`Invoice: ${inv.invoiceNo || inv.id}`);
       try {
-        const payload = {
+        const rawPayload = {
           ...inv,
-          uid: inv.uid && inv.uid !== 'offline_user' ? inv.uid : activeUid,
+          uid: activeUid,
+          userId: activeUid,
           synced: true,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         };
-        await setDoc(doc(db, 'invoices', inv.id), payload);
-        await localDb.invoices.update(inv.id, { synced: true, uid: payload.uid });
+        const payload = sanitizeForFirestore(rawPayload);
+        await setDoc(doc(db, 'invoices', inv.id), payload, { merge: true });
+        await localDb.invoices.update(inv.id, { synced: 1, uid: activeUid });
         success++;
       } catch { failed++; }
     }
 
-    // ── 5. CASH TRANSACTIONS ──
+    // ── 4. CASH TRANSACTIONS ──
     try {
-      const cash = await localDb.cashTransactions.toArray();
-      const offlineCash = cash.filter(c => c.id?.startsWith('cash_'));
-      for (const c of offlineCash) {
-        total++;
-        report(`Cash: ${c.type} Rs.${c.amount}`);
-        try {
-          const payload = {
-            ...c,
-            uid: c.uid && c.uid !== 'offline_user' ? c.uid : activeUid,
-            createdAt: serverTimestamp(),
-          };
-          await setDoc(doc(db, `users/${activeUid}/cashTransactions`, c.id), payload);
-          success++;
-        } catch { failed++; }
+      const cashTable = localDb.cashTransactions || localDb.cash_transactions;
+      if (cashTable) {
+        const cash = await cashTable.toArray();
+        const unsyncedCash = cash.filter(c => c.synced === false || c.synced === 0 || c.id?.startsWith('cash_'));
+        for (const c of unsyncedCash) {
+          total++;
+          report(`Cash: ${c.type || 'Cash'} Rs.${c.amount || 0}`);
+          try {
+            const rawPayload = {
+              ...c,
+              uid: activeUid,
+              userId: activeUid,
+              synced: true,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            };
+            const payload = sanitizeForFirestore(rawPayload);
+            await setDoc(doc(db, `users/${activeUid}/cashTransactions`, c.id), payload, { merge: true });
+            await cashTable.update(c.id, { synced: 1, uid: activeUid });
+            success++;
+          } catch { failed++; }
+        }
       }
     } catch {}
 
@@ -235,9 +248,6 @@ export default function SyncButton({ uid: propUid }) {
     user = authContext?.user;
   } catch (e) {}
 
-  // Resolve UID safely with fallback to real UID
-  const activeUid = propUid || user?.uid || (typeof window !== 'undefined' ? localStorage.getItem('weerakkodi_last_uid') : null) || 'wlknSmbTOEbcxp527cqGBnc3yu93';
-
   const [mounted, setMounted] = useState(false);
   const [pending, setPending] = useState(0);
   const [syncing, setSyncing] = useState(false);
@@ -245,6 +255,7 @@ export default function SyncButton({ uid: propUid }) {
   const [showResult, setShowResult] = useState(false);
   const [result, setResult] = useState(null);
   const [isOnline, setIsOnline] = useState(true);
+  const [fbUser, setFbUser] = useState(null);
   const intervalRef = useRef(null);
 
   useEffect(() => {
@@ -252,7 +263,19 @@ export default function SyncButton({ uid: propUid }) {
     if (typeof navigator !== 'undefined') {
       setIsOnline(navigator.onLine);
     }
+
+    // Track Firebase Auth user
+    let unsub = () => {};
+    const apps = getApps();
+    if (apps.length) {
+      const auth = getAuth(getApp());
+      setFbUser(auth.currentUser);
+      unsub = onAuthStateChanged(auth, (u) => setFbUser(u));
+    }
+    return () => unsub();
   }, []);
+
+  const activeUid = propUid || user?.uid || fbUser?.uid || (typeof window !== 'undefined' ? localStorage.getItem('weerakkodi_last_uid') : null) || 'wlknSmbTOEbcxp527cqGBnc3yu93';
 
   useEffect(() => {
     if (user?.uid && typeof window !== 'undefined') {
@@ -294,7 +317,15 @@ export default function SyncButton({ uid: propUid }) {
   }, [mounted, refreshCount]);
 
   const handleSync = async () => {
-    if (syncing || !isOnline || !activeUid) return;
+    if (syncing || !isOnline) return;
+
+    if (!fbUser) {
+      setResult({ failed: 1, success: 0, msg: '⚠️ Sync කිරීමට කරුණාකර පළමුව Login වන්න' });
+      setShowResult(true);
+      setTimeout(() => setShowResult(false), 4000);
+      return;
+    }
+
     setSyncing(true);
     setShowResult(false);
     setStatus('ආරම්භ කරමින්...');
@@ -336,14 +367,16 @@ export default function SyncButton({ uid: propUid }) {
             ? 'linear-gradient(135deg,#f59e0b,#d97706)'
             : syncing
               ? 'linear-gradient(135deg,#6366f1,#4f46e5)'
-              : pending > 0
-                ? 'linear-gradient(135deg,#ef4444,#dc2626)'
-                : 'linear-gradient(135deg,#10b981,#059669)',
+              : !fbUser
+                ? 'linear-gradient(135deg,#64748b,#475569)'
+                : pending > 0
+                  ? 'linear-gradient(135deg,#ef4444,#dc2626)'
+                  : 'linear-gradient(135deg,#10b981,#059669)',
           boxShadow: '0 6px 24px rgba(0,0,0,0.3)',
           transition: 'all 0.3s ease',
-          animation: pending > 0 && !syncing ? 'syncPulse 2s infinite' : 'none',
+          animation: pending > 0 && !syncing && fbUser ? 'syncPulse 2s infinite' : 'none',
         }}
-        title={!isOnline ? 'Offline — Internet නැත' : `${pending} items sync කිරීමට ඇත`}
+        title={!isOnline ? 'Offline — Internet නැත' : !fbUser ? 'Login required to sync' : `${pending} items sync කිරීමට ඇත`}
       >
         {syncing ? (
           <span style={{
@@ -356,6 +389,8 @@ export default function SyncButton({ uid: propUid }) {
           }} />
         ) : !isOnline ? (
           <span style={{ fontSize: 18 }}>📡</span>
+        ) : !fbUser ? (
+          <span style={{ fontSize: 18 }}>🔒</span>
         ) : (
           <span style={{ fontSize: 18 }}>🔄</span>
         )}
@@ -365,16 +400,18 @@ export default function SyncButton({ uid: propUid }) {
             ? status || 'Sync...'
             : !isOnline
               ? 'Offline'
-              : pending > 0
-                ? `Sync (${pending})`
-                : 'Synced ✓'
+              : !fbUser
+                ? `Login to Sync (${pending})`
+                : pending > 0
+                  ? `Sync (${pending})`
+                  : 'Synced ✓'
           }
         </span>
 
         {pending > 0 && !syncing && isOnline && (
           <span style={{
             background: 'white',
-            color: '#dc2626',
+            color: !fbUser ? '#475569' : '#dc2626',
             borderRadius: '50%',
             width: 24, height: 24,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -391,7 +428,7 @@ export default function SyncButton({ uid: propUid }) {
           bottom: 90,
           right: 24,
           zIndex: 999999,
-          background: result.failed === 0 ? '#10b981' : '#f59e0b',
+          background: result.msg ? '#f59e0b' : result.failed === 0 ? '#10b981' : '#f59e0b',
           color: 'white',
           padding: '12px 20px',
           borderRadius: 12,
@@ -400,9 +437,11 @@ export default function SyncButton({ uid: propUid }) {
           boxShadow: '0 6px 20px rgba(0,0,0,0.2)',
           animation: 'syncSlideUp 0.3s ease',
         }}>
-          {result.failed === 0
-            ? `✅ ${result.success} items sync විය!`
-            : `⚠️ ${result.success} sync, ${result.failed} failed`
+          {result.msg
+            ? result.msg
+            : result.failed === 0
+              ? `✅ ${result.success} items sync විය!`
+              : `⚠️ ${result.success} sync, ${result.failed} failed`
           }
         </div>
       )}
