@@ -116,6 +116,15 @@ export default function SyncButton() {
     return () => unsub();
   }, [isDuplicate]);
 
+  // Helper check for unsynced item
+  const isItemUnsynced = (item) => {
+    if (!item) return false;
+    if (item._synced === false || item.synced === false || item.synced === 0 || item._localSaved === true) {
+      return true;
+    }
+    return !item.synced && item._synced !== true;
+  };
+
   // ══ 1. Auto-Upload Local -> Cloud (All 5 Core Collections) ══
   const autoUploadLocalToCloud = useCallback(async () => {
     const activeUser = fbUser || auth.currentUser;
@@ -123,7 +132,7 @@ export default function SyncButton() {
 
     try {
       const syncTargets = [
-        { table: localDb.invoices, col: 'customerTransactions', idKey: 'id' },
+        { table: localDb.invoices, col: 'invoices', idKey: 'id' },
         { table: localDb.customers, col: 'customers', idKey: 'id' },
         { table: localDb.items, col: 'items', idKey: 'id' },
         { table: localDb.purchases, col: 'purchases', idKey: 'id' },
@@ -132,7 +141,8 @@ export default function SyncButton() {
 
       for (const target of syncTargets) {
         if (!target.table) continue;
-        const unsynced = await target.table.filter((item) => !item.synced || item.synced === 0).toArray();
+        const allLocal = await target.table.toArray();
+        const unsynced = allLocal.filter(isItemUnsynced);
 
         for (const item of unsynced) {
           try {
@@ -141,13 +151,21 @@ export default function SyncButton() {
             const cleanDoc = sanitizeForFirestore({
               ...item,
               id: docId,
-              synced: true,
+              synced: 1,
+              _synced: true,
+              _localSaved: false,
               syncedAt: new Date().toISOString(),
               updatedAt: serverTimestamp(),
             });
 
             await setDoc(doc(db, target.col, docId), cleanDoc, { merge: true });
-            await target.table.put({ ...item, id: docId, synced: 1 });
+            await target.table.put({
+              ...item,
+              id: docId,
+              synced: 1,
+              _synced: true,
+              _localSaved: false,
+            });
           } catch (e) {
             console.warn(`[Auto-Upload] Error uploading ${target.col} ${item.id}:`, e);
           }
@@ -158,7 +176,8 @@ export default function SyncButton() {
       let remaining = 0;
       for (const target of syncTargets) {
         if (target.table) {
-          const count = await target.table.filter((item) => !item.synced || item.synced === 0).count();
+          const allDocs = await target.table.toArray();
+          const count = allDocs.filter(isItemUnsynced).length;
           remaining += count;
         }
       }
@@ -184,7 +203,13 @@ export default function SyncButton() {
           snapshot.docChanges().forEach((change) => {
             if (change.type === 'added' || change.type === 'modified') {
               const data = change.doc.data();
-              docsToPut.push(customMapping ? customMapping(change.doc.id, data) : { id: change.doc.id, ...data, synced: 1 });
+              docsToPut.push(customMapping ? customMapping(change.doc.id, data) : {
+                id: change.doc.id,
+                ...data,
+                synced: 1,
+                _synced: true,
+                _localSaved: false
+              });
             }
           });
           if (docsToPut.length > 0) {
@@ -197,9 +222,18 @@ export default function SyncButton() {
       }
     };
 
-    setupListener('customerTransactions', localDb.invoices, (id, data) => ({ id, docId: id, ...data, synced: 1 }));
+    setupListener('invoices', localDb.invoices, (id, data) => ({ id, docId: id, ...data, synced: 1, _synced: true, _localSaved: false }));
+    setupListener('customerTransactions', localDb.invoices, (id, data) => ({ id, docId: id, ...data, synced: 1, _synced: true, _localSaved: false }));
     setupListener('customers', localDb.customers);
-    setupListener('items', localDb.items);
+    setupListener('items', localDb.items, (id, data) => ({
+      id,
+      docId: id,
+      ...data,
+      currentStock: data.currentStock ?? data.stock ?? 0,
+      synced: 1,
+      _synced: true,
+      _localSaved: false
+    }));
     setupListener('purchases', localDb.purchases);
     setupListener('suppliers', localDb.suppliers);
 
@@ -253,7 +287,7 @@ export default function SyncButton() {
     const fullBackupExport = {};
 
     const collectionsToDownload = [
-      { name: 'customerTransactions', localTable: localDb.invoices, label: 'Invoices' },
+      { name: 'invoices', localTable: localDb.invoices, label: 'Invoices' },
       { name: 'customers', localTable: localDb.customers, label: 'Customers' },
       { name: 'items', localTable: localDb.items, label: 'Items' },
       { name: 'purchases', localTable: localDb.purchases, label: 'Purchases' },
@@ -285,7 +319,19 @@ export default function SyncButton() {
           const batchData = [];
           snapshot.forEach((docSnap) => {
             const data = docSnap.data();
-            const record = { id: docSnap.id, docId: docSnap.id, ...data, synced: 1 };
+            const record = {
+              id: docSnap.id,
+              docId: docSnap.id,
+              ...data,
+              synced: 1,
+              _synced: true,
+              _localSaved: false
+            };
+
+            if (colDef.name === 'items') {
+              record.currentStock = record.currentStock ?? record.stock ?? 0;
+            }
+
             batchData.push(record);
             colDocs.push(record);
           });
