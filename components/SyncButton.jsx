@@ -116,80 +116,95 @@ export default function SyncButton() {
     return () => unsub();
   }, [isDuplicate]);
 
-  // ══ 1. Auto-Upload Local -> Cloud (Background Processor) ══
+  // ══ 1. Auto-Upload Local -> Cloud (All 5 Core Collections) ══
   const autoUploadLocalToCloud = useCallback(async () => {
     const activeUser = fbUser || auth.currentUser;
-    if (!activeUser || !navigator.onLine) return;
+    if (!activeUser || !navigator.onLine || !localDb) return;
 
     try {
-      if (!localDb || !localDb.invoices) return;
+      const syncTargets = [
+        { table: localDb.invoices, col: 'customerTransactions', idKey: 'id' },
+        { table: localDb.customers, col: 'customers', idKey: 'id' },
+        { table: localDb.items, col: 'items', idKey: 'id' },
+        { table: localDb.purchases, col: 'purchases', idKey: 'id' },
+        { table: localDb.suppliers, col: 'suppliers', idKey: 'id' },
+      ];
 
-      const pendingInvoices = await localDb.invoices
-        .filter((inv) => !inv.synced || inv.synced === 0)
-        .toArray();
+      for (const target of syncTargets) {
+        if (!target.table) continue;
+        const unsynced = await target.table.filter((item) => !item.synced || item.synced === 0).toArray();
 
-      setPendingCount(pendingInvoices.length);
-
-      if (pendingInvoices.length > 0) {
-        for (const inv of pendingInvoices) {
+        for (const item of unsynced) {
           try {
-            const rawDocId = inv.id || inv.docId || inv.invoiceNo || Date.now();
-            const docId = String(rawDocId).replace(/[/\\#?]/g, '_');
-            const cleanInv = sanitizeForFirestore({
-              ...inv,
+            const rawId = item[target.idKey] || item.docId || Date.now();
+            const docId = String(rawId).replace(/[/\\#?]/g, '_');
+            const cleanDoc = sanitizeForFirestore({
+              ...item,
               id: docId,
               synced: true,
               syncedAt: new Date().toISOString(),
               updatedAt: serverTimestamp(),
             });
 
-            await setDoc(doc(db, 'customerTransactions', docId), cleanInv, { merge: true });
-            await localDb.invoices.put({ ...inv, id: inv.id || docId, synced: 1 });
-          } catch (e) {}
+            await setDoc(doc(db, target.col, docId), cleanDoc, { merge: true });
+            await target.table.put({ ...item, id: docId, synced: 1 });
+          } catch (e) {
+            console.warn(`[Auto-Upload] Error uploading ${target.col} ${item.id}:`, e);
+          }
         }
-        const updatedCount = await localDb.invoices
-          .filter((inv) => !inv.synced || inv.synced === 0)
-          .count();
-        setPendingCount(updatedCount);
       }
-    } catch (e) {}
+
+      // Compute total remaining pending records across all tables
+      let remaining = 0;
+      for (const target of syncTargets) {
+        if (target.table) {
+          const count = await target.table.filter((item) => !item.synced || item.synced === 0).count();
+          remaining += count;
+        }
+      }
+      setPendingCount(remaining);
+    } catch (e) {
+      console.warn('[Auto-Upload] Global error:', e);
+    }
   }, [fbUser]);
 
-  // ══ 2. Real-time Cloud -> PC Hard Disc Listeners (Auto-Download) ══
+  // ══ 2. Real-time Cloud -> PC Hard Disc Listeners (Auto-Download for All Collections) ══
   useEffect(() => {
     if (isDuplicate || !navigator.onLine) return;
     const activeUser = fbUser || auth.currentUser;
     if (!activeUser) return;
 
-    // Real-time listener for latest Firestore invoices
-    const unsubInvoices = onSnapshot(collection(db, 'customerTransactions'), (snapshot) => {
-      const docsToPut = [];
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added' || change.type === 'modified') {
-          docsToPut.push({ id: change.doc.id, docId: change.doc.id, ...change.doc.data(), synced: 1 });
-        }
-      });
-      if (docsToPut.length > 0) {
-        localDb.invoices.bulkPut(docsToPut).catch(() => {});
-      }
-    }, (err) => console.warn('Invoices onSnapshot:', err));
+    const unsubs = [];
 
-    // Real-time listener for Customers
-    const unsubCustomers = onSnapshot(collection(db, 'customers'), (snapshot) => {
-      const docsToPut = [];
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added' || change.type === 'modified') {
-          docsToPut.push({ id: change.doc.id, ...change.doc.data() });
-        }
-      });
-      if (docsToPut.length > 0) {
-        localDb.customers.bulkPut(docsToPut).catch(() => {});
+    const setupListener = (colName, localTable, customMapping) => {
+      if (!localTable) return;
+      try {
+        const unsub = onSnapshot(collection(db, colName), (snapshot) => {
+          const docsToPut = [];
+          snapshot.docChanges().forEach((change) => {
+            if (change.type === 'added' || change.type === 'modified') {
+              const data = change.doc.data();
+              docsToPut.push(customMapping ? customMapping(change.doc.id, data) : { id: change.doc.id, ...data, synced: 1 });
+            }
+          });
+          if (docsToPut.length > 0) {
+            localTable.bulkPut(docsToPut).catch(() => {});
+          }
+        }, (err) => console.warn(`[Snapshot] ${colName} error:`, err.message));
+        unsubs.push(unsub);
+      } catch (err) {
+        console.warn(`[Snapshot Setup] ${colName} error:`, err.message);
       }
-    }, (err) => console.warn('Customers onSnapshot:', err));
+    };
+
+    setupListener('customerTransactions', localDb.invoices, (id, data) => ({ id, docId: id, ...data, synced: 1 }));
+    setupListener('customers', localDb.customers);
+    setupListener('items', localDb.items);
+    setupListener('purchases', localDb.purchases);
+    setupListener('suppliers', localDb.suppliers);
 
     return () => {
-      unsubInvoices();
-      unsubCustomers();
+      unsubs.forEach((unsub) => unsub && unsub());
     };
   }, [fbUser, isDuplicate]);
 
