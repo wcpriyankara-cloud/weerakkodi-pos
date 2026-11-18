@@ -89,7 +89,10 @@ const INITIAL_FORM = {
   colorId: '', colorName: '',
   rackId: '', rackName: '',
   supplierId: '', supplierName: '',
-  minStockLevel: '', maxStockLevel: '',
+  
+  // ★ පවතින සම්පූර්ණ ප්‍රමාණය
+  currentStock: '', minStockLevel: '', maxStockLevel: '',
+  
   buyingPrice: '',
   sellingPriceRetail: '', retailDiscount: '', retailYourPrice: '',
   sellingPriceWholesale: '', wholesaleDiscount: '', wholesaleYourPrice: '',
@@ -240,7 +243,6 @@ function ImageUploadSection({ formData, uid, itemId, onImagesChange, isOnline })
     return { url, path };
   };
 
-  // ★ OFFLINE: Convert file to base64 for local storage
   const fileToBase64 = (file) =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -262,14 +264,12 @@ function ImageUploadSection({ formData, uid, itemId, onImagesChange, isOnline })
           newImages.push(url);
           newPaths.push(path);
         } else {
-          // ★ OFFLINE: Save as base64 locally
           const base64 = await fileToBase64(files[i]);
           newImages.push(base64);
           newPaths.push(`offline_pending_${Date.now()}_${i}`);
         }
       } catch (err) {
         console.error('Upload failed:', err);
-        // Fallback to base64 on error
         try {
           const base64 = await fileToBase64(files[i]);
           newImages.push(base64);
@@ -312,7 +312,6 @@ function ImageUploadSection({ formData, uid, itemId, onImagesChange, isOnline })
                 <span className="absolute bottom-1 left-1 bg-blue-600
                   text-white text-[9px] px-1.5 py-0.5 rounded font-bold">Main</span>
               )}
-              {/* ★ OFFLINE indicator */}
               {(formData.imagePaths || [])[idx]?.startsWith('offline_') && (
                 <span className="absolute top-1 left-1 bg-orange-500
                   text-white text-[8px] px-1 py-0.5 rounded font-bold">💾</span>
@@ -404,7 +403,6 @@ function SmartSelectWithManage({
       if (parentFilter) newDoc[parentFilter.field] = parentFilter.value;
       extraFields.forEach(ef => { if (editExtras[ef.key]) newDoc[ef.key] = editExtras[ef.key]; });
 
-      // ★ OFFLINE: Check online status
       if (isOnline()) {
         const docRef = await addDoc(collection(db, collectionName), newDoc);
         showToast?.(`✅ "${nameToAdd.trim()}" එක් කරන ලදී`);
@@ -648,8 +646,10 @@ function SmartSelectWithManage({
                 </div>
               ))}
             </div>
-            <div className="p-3 bg-gray-50 border-t text-center">
-              <span className="text-xs text-gray-500 font-medium">📊 මුළු: {filteredByParent.length}</span>
+            
+            {/* Modal Footer with Total Count */}
+            <div className="p-3 bg-gray-50 border-t text-center font-bold text-xs text-gray-600">
+              📊 මුළු සංඛ්‍යාව: {filteredByParent.length} {search && `(සෙවූ ප්‍රතිඵල: ${filtered.length})`}
             </div>
           </div>
           <style>{`
@@ -700,28 +700,6 @@ function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast })
   const removeConversion = (idx) => setConversions(prev => prev.filter((_, i) => i !== idx));
   const openCreate = () => { setNewUomName(''); setNewUomSymbol(''); setConversions([]); setIsCreateOpen(true); };
   const openEdit = (uom) => { setEditUom(uom); setNewUomName(uom.fromUnitName || ''); setNewUomSymbol(uom.symbol || ''); setConversions(uom.conversions?.map(c => ({ ...c })) || []); setIsEditOpen(true); };
-
-  const quickAddCommon = async (commonUom) => {
-    if (!uid) return;
-    if (uoms.find(u => (u.fromUnitName || '').toLowerCase() === commonUom.name.toLowerCase())) {
-      showToast?.(`"${commonUom.name}" දැනටමත් ඇත`, 'error'); return;
-    }
-    setIsSaving(true);
-    try {
-      const uomData = { fromUnitName: commonUom.name, symbol: commonUom.symbol, conversions: [], uid, createdAt: new Date().toISOString() };
-      if (isOnline()) {
-        const docRef = await addDoc(collection(db, 'uoms'), uomData);
-        showToast?.(`✅ "${commonUom.name}" එක් කරන ලදී`);
-        onSelect(docRef.id, commonUom.name, []);
-      } else {
-        const localId = `local_${Date.now()}`;
-        await addToSyncQueue(uid, 'add', 'uoms', uomData, localId);
-        showToast?.(`💾 "${commonUom.name}" offline සුරකින ලදී`);
-        onSelect(localId, commonUom.name, []);
-      }
-    } catch (e) { showToast?.('❌ Error: ' + e.message, 'error'); }
-    finally { setIsSaving(false); }
-  };
 
   const saveNewUom = async () => {
     if (!newUomName.trim() || !uid) { showToast?.('කරුණාකර මිනුම් නම ඇතුළත් කරන්න', 'error'); return; }
@@ -927,6 +905,11 @@ function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast })
                 </div>
               ))}
             </div>
+            
+            {/* Modal Footer with Total UOM Count */}
+            <div className="p-3 bg-gray-50 border-t text-center font-bold text-xs text-gray-600">
+              📊 මුළු UOM සංඛ්‍යාව: {uoms.length}
+            </div>
           </div>
         </div>
       )}
@@ -1023,7 +1006,6 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
           const unsub = onSnapshot(q, async (snap) => {
             const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
             setter(data);
-            // ★ Cache locally
             try { await cacheRefData(name, user.uid, data); } catch {}
           }, async (err) => {
             console.warn(`[${name}] Firestore error, loading cache:`, err);
@@ -1110,12 +1092,12 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
         name: formData.name.trim(),
         sellingPrice: parseFloat(formData.sellingPriceRetail) || 0,
         costPrice: parseFloat(formData.buyingPrice) || 0,
+        currentStock: parseFloat(formData.currentStock) || 0,
         updatedAt: new Date().toISOString(),
       };
       delete payload.id;
 
       if (mode === 'edit' && itemId) {
-        // ── UPDATE ──
         if (isOnline() && !itemId.startsWith('local_')) {
           await updateDoc(doc(db, 'items', itemId), payload);
           showToast('✅ භාණ්ඩය යාවත්කාලීන කරන ලදී');
@@ -1125,7 +1107,6 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
           showToast('💾 Offline update — sync pending');
         }
       } else {
-        // ── ADD NEW ──
         if (isOnline()) {
           payload.createdAt = new Date().toISOString();
           const docRef = await addDoc(collection(db, 'items'), payload);
@@ -1141,12 +1122,10 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
         }
       }
 
-      // Reset form if add mode
       if (mode === 'add') {
         setFormData(INITIAL_FORM);
       }
 
-      // Navigate back
       setTimeout(() => {
         if (onCancel) onCancel();
         else router.push('/items');
@@ -1154,7 +1133,6 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
 
     } catch (e) {
       console.error('Save error:', e);
-      // Fallback: save locally even on error
       try {
         const localId = itemId || `local_${Date.now()}`;
         await saveItemLocal(user.uid, { ...formData, id: localId, uid: user.uid });
@@ -1195,9 +1173,6 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
     }
   };
 
-  // ══════════════════════════════════════════
-  //  LOADING STATE
-  // ══════════════════════════════════════════
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -1209,9 +1184,6 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
     );
   }
 
-  // ══════════════════════════════════════════
-  //  RENDER
-  // ══════════════════════════════════════════
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
 
@@ -1430,6 +1402,26 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
         {/* ═══ STOCK TAB ═══ */}
         {activeTab === 'stock' && (
           <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
+            
+            {/* ★ පවතින සම්පූර්ණ භාණ්ඩ ප්‍රමාණය (Current / Total Stock) Input එක */}
+            <div className="bg-blue-50 p-3.5 rounded-xl border-2 border-blue-200">
+              <label className="block text-sm font-bold text-blue-900 mb-1">
+                📦 පවතින සම්පූර්ණ භාණ්ඩ ප්‍රමාණය (Total Current Quantity) *
+              </label>
+              <input
+                type="number"
+                step="any"
+                min="0"
+                className="w-full border-2 border-blue-300 p-3 rounded-xl font-bold text-lg text-blue-800 outline-none focus:border-blue-600 bg-white shadow-inner"
+                value={formData.currentStock}
+                onChange={(e) => updateField('currentStock', e.target.value)}
+                placeholder="0"
+              />
+              <p className="text-[11px] text-blue-600 mt-1 font-medium">
+                💡 දැනට ගබඩාවේ/සාප්පුවේ පවතින මුළු ඒකක (Units) ගණන මෙහි ඇතුළත් කරන්න.
+              </p>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-sm font-bold text-gray-800 mb-1">📉 අවම මට්ටම</label>
@@ -1450,6 +1442,7 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
                 />
               </div>
             </div>
+            
             <SmartSelectWithManage
               label="රාක්කය" icon="🗄️"
               value={formData.rackId} displayValue={formData.rackName}
