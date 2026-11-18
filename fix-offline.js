@@ -1,0 +1,12 @@
+const fs = require('fs');
+let fc = fs.readFileSync('firebase-config.js', 'utf8');
+fc = fc.replace(/\/\/ 🔒 Startup network disable[\s\S]*?if \(db\) disableNetwork\(db\)\.catch\(\(\) => \{\}\);\s*\n\s*\n/, '');
+fc = fc.replace(/if \(!navigator\.onLine\) \{\s*\n\s*await disableNetwork\(db\);\s*\n\s*\}\s*\n\s*\/\/ 🔒 Online වූ විට auto-enable නොකරයි — syncService manage කරයි/, 'if (navigator.onLine) {\n        await enableNetwork(db);\n      } else {\n        await disableNetwork(db);\n      }');
+fs.writeFileSync('firebase-config.js', fc, 'utf8');
+let ss = fs.readFileSync('lib/syncService.js', 'utf8');
+ss = ss.replace(/\/\/ 🔒 Network enable for pull only\s*\n\s*try \{ await enableNetwork\(db\); \} catch\(e\) \{\}\s*\n/, '');
+ss = ss.replace(/\s*\/\/ 🔒 Network disable after pull\s*\n\s*try \{ await disableNetwork\(db\); \} catch\(e\) \{\}/, '');
+ss = ss.replace(/\s*\/\/ 🔒 Network enable for syncAll push \(after guards\)\s*\n\s*try \{ await enableNetwork\(db\); \} catch\(e\) \{\}\s*\n/, '');
+ss = ss.replace(/\s*\/\/ 🔒 Network disable after syncAll completes\s*\n\s*try \{ await disableNetwork\(db\); \} catch\(e\) \{\}/, '');
+fs.writeFileSync('lib/syncService.js', ss, 'utf8');
+console.log('Done!');

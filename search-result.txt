@@ -1,0 +1,26 @@
+﻿\app\(dashboard)\pos\page.jsx:14: import { syncPendingInvoices } from '@/lib/syncService';
+\app\(dashboard)\pos\page.jsx:67: syncPendingInvoices().catch(err =>
+\app\(dashboard)\pos\page.jsx:94: syncPendingInvoices().catch(err =>
+\app\invoices\[uid]\[invoiceId]\InvoiceClientComponent.jsx:5: import { db } from '@/firebaseConfig';
+\app\invoices\[uid]\InvoiceClientComponent.jsx:5: import { db } from '@/firebaseConfig';
+\app\lib\firebase.js:5: const firebaseConfig = {
+\app\lib\firebase.js:16: ? initializeApp(firebaseConfig)
+\components\production\BillModal.jsx:10: import { db } from '../../firebaseConfig';
+\components\production\cashSync.js:7: import { db } from '../../firebaseConfig';
+\components\production\CustomerPicker.jsx:10: import { db } from '../../firebaseConfig';
+\components\production\ProductionEntry.jsx:10: import { db } from '../../firebaseConfig';
+\components\BankLoanManagement.jsx:7: import { db, storage } from "@/firebaseConfig";
+\components\CashManagement.jsx:4: import { db } from "../firebaseConfig";
+\components\Customers.jsx:13: import { db } from '@/firebaseConfig';
+\components\DashboardShell.jsx:15: import { db } from '@/firebaseConfig';
+\components\ExpenseManager.jsx:6: import { db } from "@/firebaseConfig";
+\components\InvoiceList.jsx:161: const handleSyncPendingInvoices = async () => {
+\components\InvoiceList.jsx:376: onClick={handleSyncPendingInvoices}
+\components\LoanManagement.jsx:12: import { db } from "@/firebaseConfig";
+\components\SalesInvoice.jsx:2: import { db } from "../firebaseConfig";
+\components\SupplierReport.jsx:7: // firebaseConfig → @/shared/firebase-config
+\lib\firebase.js:6: const firebaseConfig = {
+\lib\firebase.js:15: const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+\lib\loaders.js:6: import { db } from '../firebaseConfig';
+\shared\firebase-config.js:8: firebaseConfig
+\shared\firebase-config.js:17: firebaseConfig

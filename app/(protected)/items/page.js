@@ -154,6 +154,16 @@ export default function ItemsPage() {
     });
   }, [items, searchQuery]);
 
+  // 📊 Calculate Total Items and Stock Totals
+  const summaryStats = useMemo(() => {
+    const totalTypes = items.length;
+    const totalStock = items.reduce((sum, item) => sum + (parseFloat(item.currentStock ?? item.stock ?? 0) || 0), 0);
+    const filteredTypes = filtered.length;
+    const filteredStock = filtered.reduce((sum, item) => sum + (parseFloat(item.currentStock ?? item.stock ?? 0) || 0), 0);
+
+    return { totalTypes, totalStock, filteredTypes, filteredStock };
+  }, [items, filtered]);
+
   // ★ OFFLINE: Delete with offline support
   const handleDelete = async (item) => {
     if (!confirm('මකා දැමීම තහවුරු කරන්න?')) return;
@@ -205,7 +215,15 @@ export default function ItemsPage() {
     <div className="min-h-screen bg-gray-100">
       <div className="bg-white p-4 shadow-sm sticky top-0 z-10 border-b">
         <div className="flex justify-between items-center mb-3">
-          <h1 className="text-xl font-bold">📦 භාණ්ඩ ලියාපදිංචිය</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-bold flex items-center gap-2">
+              📦 භාණ්ඩ ලියාපදිංචිය
+            </h1>
+            <span className="bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1 rounded-full border border-blue-200">
+              මුළු භාණ්ඩ: {summaryStats.totalTypes}
+            </span>
+          </div>
+
           <div className="flex items-center gap-2">
             {/* ★ OFFLINE: Sync button */}
             {syncCount > 0 && (
@@ -222,19 +240,39 @@ export default function ItemsPage() {
             <button
               onClick={() => router.push('/items/add')}
               className="bg-blue-600 text-white px-4 py-2 rounded-lg
-                         font-bold hover:bg-blue-700"
+                         font-bold hover:bg-blue-700 shadow-sm"
             >
               ➕ නව+
             </button>
           </div>
         </div>
+
         <input
           className="w-full p-3 border-2 rounded-xl
                      focus:border-blue-400 outline-none"
-          placeholder="🔍 සොයන්න..."
+          placeholder="🔍 සොයන්න (නම, කේතය, බාර්කෝඩ්, සන්නාමය...)..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
+
+        {/* 📊 SUMMARY COUNTER BAR */}
+        <div className="mt-2.5 flex flex-wrap justify-between items-center text-xs font-bold bg-slate-50 p-2.5 rounded-lg border border-slate-200 text-gray-700">
+          <div className="flex items-center gap-4">
+            <span className="flex items-center gap-1">
+              📦 මුළු භාණ්ඩ වර්ග: <strong className="text-blue-700 text-sm">{summaryStats.totalTypes}</strong>
+            </span>
+            <span className="flex items-center gap-1 border-l pl-3 border-gray-300">
+              📊 මුළු තොග ප්‍රමාණය: <strong className="text-emerald-700 text-sm">{summaryStats.totalStock}</strong>
+            </span>
+          </div>
+
+          {searchQuery.trim() !== '' && (
+            <div className="text-amber-800 bg-amber-50 px-2.5 py-1 rounded border border-amber-200 flex items-center gap-2">
+              <span>🔍 සෙවූ ප්‍රතිඵල: <strong>{summaryStats.filteredTypes}</strong></span>
+              <span>(තොගය: <strong>{summaryStats.filteredStock}</strong>)</span>
+            </div>
+          )}
+        </div>
 
         {/* ★ OFFLINE: Status banners */}
         {!online && (
@@ -271,7 +309,7 @@ export default function ItemsPage() {
           </div>
         ) : filtered.map((item) => {
           const price    = parseFloat(item.sellingPriceRetail || 0);
-          const stock    = parseFloat(item.stock || 0);
+          const stock    = parseFloat(item.currentStock ?? item.stock ?? 0);
           const img      = getSafeImageUrl(item);
           const imgCount = item.images?.length || (item.picture ? 1 : 0);
           // ★ OFFLINE: Check if this is a local-only item
@@ -291,7 +329,7 @@ export default function ItemsPage() {
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     e.target.onerror = null;
-                    e.target.src = DEFAULT_IMG;
+                    e.target.src = DEFAULT_DEFAULT_IMG || DEFAULT_IMG;
                   }}
                   alt={item.name}
                 />
@@ -349,8 +387,8 @@ export default function ItemsPage() {
                 <div className="mt-1.5 font-bold text-green-700">
                   Rs. {price.toFixed(2)}
                 </div>
-                <div className="text-xs text-gray-400">
-                  තොග: {stock}
+                <div className="text-xs font-bold text-gray-600 mt-0.5">
+                  තොග: <span className="text-emerald-700">{stock}</span>
                 </div>
               </div>
 
