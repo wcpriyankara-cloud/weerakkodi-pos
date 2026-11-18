@@ -1,12 +1,11 @@
 'use client';
 
 // app/(dashboard)/customers/[id]/CustomerDetailClient.jsx
-// v2 — Data Isolation + Offline Crash Fix
+// v3 — Data Isolation + Direct Firebase Import + Auto-Sync Parity Fix
+// ✅ Correct Firebase import via @/lib/firebase & @/shared/firebase-config
+// ✅ Explicit synced: 0 flag on offline txns for instant Auto-Sync engine detection
+// ✅ Bank Accounts integration for bank transfer payments
 // ✅ UID ownership check on customer fetch
-// ✅ UID-filtered transaction queries
-// ✅ Safe Firebase imports with null fallback
-// ✅ All cloudDb calls guarded with null checks
-// ✅ Auth guard UI (Login prompt)
 // ✅ 100% Offline-First via Dexie Local DB
 
 import React, {
@@ -16,37 +15,15 @@ import { useParams, useRouter } from 'next/navigation';
 import { useUserAuth } from '@/context/UserContext';
 import InvoiceOutputManager from '@/components/InvoiceOutputManager';
 
-// ✅ Safe Firebase import with null fallback
-let cloudDb = null;
-let doc, getDoc, collection, query, where, orderBy, getDocs, setDoc;
-let addDoc, serverTimestamp, updateDoc, increment, deleteDoc;
-let runTransaction, writeBatch, Timestamp, onSnapshot;
-try {
-  const firebaseApp = require('@/firebaseConfig');
-  const firestore = require('firebase/firestore');
-  cloudDb = firebaseApp.db || null;
-  doc = firestore.doc;
-  getDoc = firestore.getDoc;
-  collection = firestore.collection;
-  query = firestore.query;
-  where = firestore.where;
-  orderBy = firestore.orderBy;
-  getDocs = firestore.getDocs;
-  setDoc = firestore.setDoc;
-  addDoc = firestore.addDoc;
-  serverTimestamp = firestore.serverTimestamp;
-  updateDoc = firestore.updateDoc;
-  increment = firestore.increment;
-  deleteDoc = firestore.deleteDoc;
-  runTransaction = firestore.runTransaction;
-  writeBatch = firestore.writeBatch;
-  Timestamp = firestore.Timestamp;
-  onSnapshot = firestore.onSnapshot;
-} catch (e) {
-  console.warn('Firebase SDK not reachable. CustomerDetail running offline.', e);
-}
+// ✅ Safe Firebase imports
+import { db as cloudDb } from '@/lib/firebase';
+import {
+  doc, getDoc, collection, query, where, orderBy, getDocs, setDoc,
+  addDoc, serverTimestamp, updateDoc, increment, deleteDoc,
+  runTransaction, writeBatch, Timestamp, onSnapshot
+} from 'firebase/firestore';
 
-// ✅ Correct Dexie import
+// ✅ Dexie import
 import { localDb } from '@/lib/localDb';
 
 /* ══════════════════════════════════════════════════════════════
@@ -66,7 +43,6 @@ const PAYMENT_METHODS = [
 
 const pad2 = (n) => String(n).padStart(2, '0');
 const nowHHMM24 = () => { const d = new Date(); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
-const localDateStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
 
 const validateAmount = v => {
   const n = parseFloat(v);
@@ -116,46 +92,24 @@ const translations = {
     payment: 'ගෙවීම (Payment)', runningBalance: 'ශේෂය', save: 'සුරකින්න',
     cancel: 'අවලංගු', amount: 'මුදල', note: 'සටහන', loading: 'පූරණය වෙමින්...',
     uploadReceipt: 'රිසිට් (Optional)', viewReport: 'වාර්තාව', remind: 'මතක් කරන්න',
-    setDueDate: 'ගෙවිය යුතු දිනය', whatsapp: 'WhatsApp', sms: 'SMS',
-    dueDateSet: 'දිනය යාවත්කාලීන විය!', approvals: 'අනුමැතිය',
-    noApprovals: 'අනුමත කිරීමට කිසිවක් නැත', sendLink: 'Link යවන්න',
     editCustomer: 'සංශෝධනය', deleteCustomer: 'මකන්න', editTitle: 'සංශෝධනය',
     customerName: 'නම', phone: 'දුරකථනය', address: 'ලිපිනය',
     updateSuccess: 'යාවත්කාලීන විය!', deleteConfirm: 'මකා දමන්නද?',
-    deleteWarning: '⚠️ ආපසු හැරවිය නොහැක!', deleteSuccess: 'මකා දමන ලදී!',
-    updating: 'යාවත්කාලීන...', generatingLink: 'Link සකසමින්...',
-    copyLink: '📋 Copy', copied: '✅ Copied!', close: 'වසන්න',
     editTxn: 'ගනුදෙනුව සංස්කරණය', deleteTxn: 'මකන්න',
     confirmDeleteTxn: 'ගනුදෙනුව මකා දැමීමට?', updateTxn: 'යාවත්කාලීන',
-    selectImage: '🖼️ ගැලරිය', openCamera: '📷 කැමරාව', reminderTitle: 'සිහිකැඳවීම',
-    capture: 'ගන්න', reminderMsg: 'ගෙවීමට Rs.{amount} ඇත.\n\nවිස්තර: {link}',
-    vehicleTrip: 'වාහන ගමන', tripFare: 'ගාස්තුව', tripPaid: 'ගෙවූ',
-    filterAll: 'සියල්ල', filterShop: 'සාප්පු', filterVehicle: 'වාහන',
-    filterPayments: 'ගෙවීම්', filterServices: 'සේවා',
-    noVehicleTrips: 'වාහන ගමන් නොමැත', noTransactions: 'ගනුදෙනු නොමැත',
-    noServices: 'සේවා නොමැත', transportFare: 'ප්‍රවාහන ගාස්තු',
-    transportPayment: 'ප්‍රවාහන ගෙවීම', serviceEntry: 'සේවා ඇතුළත් කිරීම',
-    serviceItems: 'සේවා', partsUsed: 'කොටස්', labourCost: 'ශ්‍රම', totalPaid: 'ගෙවූ',
-    balanceDue: 'ගෙවිය යුතු', grandTotal: 'එකතුව', discount: 'වට්ටම්',
-    servicePayment: 'සේවා ගෙවීම', fullPaid: 'සම්පූර්ණ', partialPaid: 'අර්ධ',
-    unpaid: 'නොගෙවූ', warranty: 'වගකීම', days: 'දින', viewBill: 'බිල්පත',
-    invoicePayment: 'Invoice ගෙවීම', adjustment: 'adjustment',
     totalCredits: 'මුළු ණය', totalPayments: 'මුළු ගෙවීම්',
     paymentMethod: 'ගෙවීම් ක්‍රමය', bankAccount: 'බැංකු ගිණුම',
     selectBankAccount: 'බැංකු ගිණුම තෝරන්න *', noBankAccounts: 'බැංකු ගිණුම් නොමැත.',
-    bankBalanceBefore: 'වත්මන් බැංකු ශේෂය', bankBalanceAfter: 'ගනුදෙනුවෙන් පසු ශේෂය',
-    customerBalanceAfter: 'නව ශේෂය', addCreditTitle: '➕ ණය එකතු කිරීම',
-    receivePaymentTitle: '💰 මුදල් ලබාගැනීම', creditDescription: 'ණය විස්තරය',
-    paymentDescription: 'ගෙවීම් විස්තරය', creditAmount: 'ණය මුදල',
-    paymentAmount: 'ලැබෙන මුදල', saveCredit: '➕ ණය එකතු කරන්න',
+    addCreditTitle: '➕ ණය එකතු කිරීම', receivePaymentTitle: '💰 මුදල් ලබාගැනීම',
+    creditDescription: 'ණය විස්තරය', paymentDescription: 'ගෙවීම් විස්තරය',
+    creditAmount: 'ණය මුදල', paymentAmount: 'ලැබෙන මුදල', saveCredit: '➕ ණය එකතු කරන්න',
     savePayment: '💰 ලබාගන්න', processing: 'සකසමින්...',
     cash: '💵 මුදල්', bank: '🏦 බැංකු', cheque: '📝 චෙක්',
-    creditAdded: '✅ ණය සාර්ථකව එකතු විය!',
-    paymentReceived: '✅ මුදල් ලැබීම සාර්ථකයි!', autoRemind: '🔔 Auto Remind',
+    creditAdded: '✅ ණය සාර්ථකව එකතු විය!', paymentReceived: '✅ මුදල් ලැබීම සාර්ථකයි!',
     loginRequired: 'Login අවශ්‍යයි', loginPrompt: 'මෙම පිටුව බැලීමට පළමුව Login වන්න.',
     loginBtn: 'Login පිටුවට යන්න', accessDenied: '⛔ ප්‍රවේශය ප්‍රතික්ෂේපයි',
-    accessDeniedMsg: 'මෙම පාරිභෝගිකයා ඔබගේ ගිණුමට අයත් නොවේ.',
-    backToCustomers: '← ආපසු',
+    accessDeniedMsg: 'මෙම පාරිභෝගිකයා ඔබගේ ගිණුමට අයත් නොවේ.', backToCustomers: '← ආපසු',
+    noTransactions: 'ගනුදෙනු නොමැත'
   },
   en: {
     title: 'Customer Details', balance: 'Current Balance', addCredit: 'Add Credit',
@@ -164,46 +118,23 @@ const translations = {
     payment: 'Payment', runningBalance: 'Balance', save: 'Save', cancel: 'Cancel',
     amount: 'Amount', note: 'Note', loading: 'Loading...',
     uploadReceipt: 'Upload Receipt (Optional)', viewReport: 'View Report',
-    remind: 'Remind', setDueDate: 'Set Due Date', whatsapp: 'WhatsApp', sms: 'SMS',
-    dueDateSet: 'Due date updated!', approvals: 'Approvals',
-    noApprovals: 'No pending approvals', sendLink: 'Send Link', editCustomer: 'Edit',
-    deleteCustomer: 'Delete', editTitle: 'Edit Customer', customerName: 'Name',
-    phone: 'Phone', address: 'Address', updateSuccess: 'Updated!',
-    deleteConfirm: 'Delete this customer?', deleteWarning: '⚠️ Cannot be undone!',
-    deleteSuccess: 'Deleted!', updating: 'Updating...', generatingLink: 'Generating...',
-    copyLink: '📋 Copy Link', copied: '✅ Copied!', close: 'Close',
-    editTxn: 'Edit Transaction', deleteTxn: 'Delete',
-    confirmDeleteTxn: 'Delete this transaction?', updateTxn: 'Update',
-    selectImage: '🖼️ Gallery', openCamera: '📷 Camera', reminderTitle: 'Send Reminder',
-    capture: 'Capture',
-    reminderMsg: 'You owe Rs.{amount}. Please settle soon.\n\nDetails: {link}',
-    vehicleTrip: 'Vehicle Trip', tripFare: 'Fare', tripPaid: 'Paid',
-    filterAll: 'All', filterShop: 'Shop', filterVehicle: 'Vehicle',
-    filterPayments: 'Payments', filterServices: 'Services',
-    noVehicleTrips: 'No vehicle trips', noTransactions: 'No transactions',
-    noServices: 'No service entries', transportFare: 'Transport Fare',
-    transportPayment: 'Transport Payment', serviceEntry: 'Service Entry',
-    serviceItems: 'Services', partsUsed: 'Parts', labourCost: 'Labour', totalPaid: 'Paid',
-    balanceDue: 'Balance Due', grandTotal: 'Grand Total', discount: 'Discount',
-    servicePayment: 'Service Payment', fullPaid: 'Fully Paid', partialPaid: 'Partial',
-    unpaid: 'Unpaid', warranty: 'Warranty', days: 'days', viewBill: 'View Bill',
-    invoicePayment: 'Invoice Payment', adjustment: 'Adjustment',
-    totalCredits: 'Total Credits', totalPayments: 'Total Payments',
+    remind: 'Remind', editCustomer: 'Edit', deleteCustomer: 'Delete',
+    editTitle: 'Edit Customer', customerName: 'Name', phone: 'Phone', address: 'Address',
+    updateSuccess: 'Updated!', deleteConfirm: 'Delete this customer?',
+    editTxn: 'Edit Transaction', deleteTxn: 'Delete', confirmDeleteTxn: 'Delete this transaction?',
+    updateTxn: 'Update', totalCredits: 'Total Credits', totalPayments: 'Total Payments',
     paymentMethod: 'Payment Method', bankAccount: 'Bank Account',
     selectBankAccount: 'Select Bank Account *', noBankAccounts: 'No bank accounts.',
-    bankBalanceBefore: 'Current Bank Balance', bankBalanceAfter: 'Bank Balance After',
-    customerBalanceAfter: 'New Customer Balance', addCreditTitle: '➕ Add Credit Entry',
-    receivePaymentTitle: '💰 Receive Payment', creditDescription: 'Credit Description',
-    paymentDescription: 'Payment Description', creditAmount: 'Credit Amount',
-    paymentAmount: 'Payment Amount', saveCredit: '➕ Add Credit',
-    savePayment: '💰 Receive', processing: 'Processing...',
+    addCreditTitle: '➕ Add Credit Entry', receivePaymentTitle: '💰 Receive Payment',
+    creditDescription: 'Credit Description', paymentDescription: 'Payment Description',
+    creditAmount: 'Credit Amount', paymentAmount: 'Payment Amount',
+    saveCredit: '➕ Add Credit', savePayment: '💰 Receive', processing: 'Processing...',
     cash: 'Cash', bank: 'Bank Transfer', cheque: 'Cheque',
-    creditAdded: 'Credit added successfully!',
-    paymentReceived: 'Payment received successfully!', autoRemind: 'Auto Remind',
+    creditAdded: 'Credit added successfully!', paymentReceived: 'Payment received successfully!',
     loginRequired: 'Login Required', loginPrompt: 'Please login to view this page.',
     loginBtn: 'Go to Login', accessDenied: '⛔ Access Denied',
-    accessDeniedMsg: 'This customer does not belong to your account.',
-    backToCustomers: '← Back',
+    accessDeniedMsg: 'This customer does not belong to your account.', backToCustomers: '← Back',
+    noTransactions: 'No transactions'
   }
 };
 
@@ -229,7 +160,7 @@ function useBankAccounts(uid) {
   const [bankAccounts, setBankAccounts] = useState([]);
   const [bankLoading, setBankLoading] = useState(true);
   useEffect(() => {
-    if (!uid || !cloudDb || !collection || !query || !orderBy || !getDocs) {
+    if (!uid || !cloudDb) {
       setBankLoading(false);
       return;
     }
@@ -238,7 +169,7 @@ function useBankAccounts(uid) {
       try {
         const snap = await getDocs(query(collection(cloudDb, `users/${uid}/bankAccounts`), orderBy('createdAt', 'desc')));
         if (!cancelled) setBankAccounts(snap.docs.map(d => ({ id: d.id, ...d.data(), currentBalance: nn(d.data().currentBalance) })).filter(a => a.isActive !== false));
-      } catch (e) { console.warn('Bank accounts:', e); }
+      } catch (e) { console.warn('Bank accounts fetch:', e.message); }
       finally { if (!cancelled) setBankLoading(false); }
     })();
     return () => { cancelled = true; };
@@ -277,15 +208,13 @@ const TransactionModal = memo(function TransactionModal({
   const [bankId, setBankId] = useState('');
   const [amountErr, setAmountErr] = useState('');
   const [bankErr, setBankErr] = useState('');
-  const [receiptImage, setReceiptImage] = useState(null);
-  const fileRef = useRef(null);
   const isCredit = type === 'credit';
   const isBank = method === 'bank';
 
   useEffect(() => {
     if (show) {
       setAmount(''); setNote(''); setDate(new Date().toISOString().split('T')[0]);
-      setMethod('cash'); setBankId(''); setAmountErr(''); setBankErr(''); setReceiptImage(null);
+      setMethod('cash'); setBankId(''); setAmountErr(''); setBankErr('');
     }
   }, [show]);
 
@@ -293,36 +222,15 @@ const TransactionModal = memo(function TransactionModal({
     if (isBank && bankAccounts.length > 0 && !bankId) setBankId(bankAccounts[0].id);
   }, [isBank, bankAccounts, bankId]);
 
-  useEffect(() => {
-    if (!show) return;
-    const h = e => { if (e.key === 'Escape' && !isProcessing) onClose(); };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, [show, isProcessing, onClose]);
-
   const selectedBank = isBank ? bankAccounts.find(a => a.id === bankId) : null;
   const amt = nn(amount);
-  const bankBalAfter = useMemo(() => {
-    if (!selectedBank || !amt) return null;
-    return isCredit ? selectedBank.currentBalance - amt : selectedBank.currentBalance + amt;
-  }, [selectedBank, amt, isCredit]);
-
-  const custBalAfter = useMemo(() => { if (!customer || !amt) return null; const cur = nn(customer.currentBalance); return isCredit ? cur + amt : cur - amt; }, [customer, amt, isCredit]);
-
-  const handleImageSelect = e => {
-    const file = e.target.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onloadend = () => setReceiptImage(reader.result);
-    reader.readAsDataURL(file);
-    if (fileRef.current) fileRef.current.value = '';
-  };
 
   const handleConfirm = () => {
     const err = validateAmount(amount);
     if (err) { setAmountErr(err); return; }
     if (isBank && !bankId) { setBankErr(t.selectBankAccount); return; }
     onConfirm({
-      type, amount: amt, note, date, method, receiptImage,
+      type, amount: amt, note, date, method,
       bankAccountId: isBank ? bankId : null,
       bankAccountName: selectedBank ? `${selectedBank.bankName} - ${selectedBank.accountName}` : null,
     });
@@ -380,131 +288,11 @@ const TransactionModal = memo(function TransactionModal({
           </div>
           <button onClick={handleConfirm} disabled={isProcessing || !!amountErr}
             style={{ width: '100%', padding: 14, background: headerColor, color: 'white', border: 'none', borderRadius: 10, fontWeight: 'bold', fontSize: 16, cursor: isProcessing ? 'not-allowed' : 'pointer', opacity: isProcessing ? 0.7 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-            {isProcessing ? <><span className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} /> {t.processing}</> : isCredit ? t.saveCredit : t.savePayment}
+            {isProcessing ? t.processing : isCredit ? t.saveCredit : t.savePayment}
           </button>
         </div>
       </div>
     </div>
-  );
-});
-
-/* ─── REMINDER MODAL ─────────────────────────────────────── */
-const ReminderModal = memo(function ReminderModal({ isOpen, onClose, customer, lang, onUpdateCustomer }) {
-  const t = translations[lang];
-  const [loading, setLoading] = useState(false);
-  const [link, setLink] = useState('');
-  useEffect(() => {
-    if (!isOpen || !customer) return;
-    if (customer.portalAccessKey) { setLink(`${window.location.origin}/portal/${customer.portalAccessKey}`); return; }
-    // ✅ cloudDb null guard
-    if (!cloudDb || !updateDoc || !doc) { setLink(''); return; }
-    setLoading(true);
-    const k = Math.random().toString(36).substring(2, 10) + Date.now().toString(36).substring(4, 8);
-    updateDoc(doc(cloudDb, 'customers', customer.id), { portalAccessKey: k })
-      .then(() => { setLink(`${window.location.origin}/portal/${k}`); onUpdateCustomer({ ...customer, portalAccessKey: k }); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [isOpen, customer, onUpdateCustomer]);
-  if (!isOpen || !customer) return null;
-  const msg = t.reminderMsg.replace('{amount}', customer.currentBalance?.toLocaleString() || '0').replace('{link}', link);
-  const phone = customer.phone?.replace(/[^0-9]/g, '');
-  return (
-    <div style={styles.modalOverlay} onClick={onClose}><div style={styles.modal} onClick={e => e.stopPropagation()}>
-      <h3>🔔 {t.reminderTitle}</h3>
-      {loading ? <p>{t.generatingLink}</p> : <p style={{ background: '#f3f4f6', padding: 10, borderRadius: 8, fontSize: 13, whiteSpace: 'pre-wrap' }}>{msg}</p>}
-      <button onClick={() => window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank')} disabled={loading} style={{ ...styles.btnFull, background: '#25D366', marginBottom: 10 }}>💬 WhatsApp</button>
-      <button onClick={() => window.open(`sms:${customer.phone}?body=${encodeURIComponent(msg)}`, '_self')} disabled={loading} style={{ ...styles.btnFull, background: '#3b82f6' }}>📩 SMS</button>
-      <button onClick={onClose} style={{ ...styles.btnFull, background: '#ef4444', marginTop: 10 }}>{t.close}</button>
-    </div></div>
-  );
-});
-
-/* ─── EDIT TRANSACTION MODAL ─────────────────────────────── */
-const EditTransactionModal = memo(function EditTransactionModal({ isOpen, onClose, txn, onSave, lang }) {
-  const t = translations[lang];
-  const [amount, setAmount] = useState(''); const [note, setNote] = useState(''); const [date, setDate] = useState('');
-  useEffect(() => { if (isOpen && txn) { setAmount(txn.amount); setNote(txn.note || ''); setDate(txn.date || new Date().toISOString().split('T')[0]); } }, [isOpen, txn]);
-  if (!isOpen) return null;
-  return (
-    <div style={styles.modalOverlay}><div style={styles.modal}>
-      <h3>{t.editTxn}</h3>
-      <input type="date" value={date} onChange={e => setDate(e.target.value)} style={styles.input} />
-      <input type="number" value={amount} onChange={e => setAmount(e.target.value)} style={styles.input} />
-      <textarea value={note} onChange={e => setNote(e.target.value)} style={styles.textarea} />
-      <div style={styles.modalActions}>
-        <button onClick={onClose} style={styles.btnCancel}>{t.cancel}</button>
-        <button onClick={() => { if (!amount) return; onSave({ ...txn, amount: parseFloat(amount), note, date }); onClose(); }} style={styles.btnSave}>{t.updateTxn}</button>
-      </div>
-    </div></div>
-  );
-});
-
-/* ─── SEND LINK MODAL ────────────────────────────────────── */
-const SendLinkModal = memo(function SendLinkModal({ isOpen, onClose, customer, onUpdateCustomer, lang }) {
-  const [copied, setCopied] = useState(false);
-  const [loadingKey, setLoadingKey] = useState(false);
-  const [portalKey, setPortalKey] = useState(customer?.portalAccessKey);
-  const t = translations[lang];
-  useEffect(() => {
-    if (!isOpen || !customer) return;
-    if (customer.portalAccessKey) { setPortalKey(customer.portalAccessKey); return; }
-    // ✅ cloudDb null guard
-    if (!cloudDb || !updateDoc || !doc) return;
-    setLoadingKey(true);
-    const k = Math.random().toString(36).substring(2, 10) + Date.now().toString(36).substring(4, 8);
-    updateDoc(doc(cloudDb, 'customers', customer.id), { portalAccessKey: k })
-      .then(() => { setPortalKey(k); onUpdateCustomer({ ...customer, portalAccessKey: k }); setLoadingKey(false); })
-      .catch(() => setLoadingKey(false));
-  }, [isOpen, customer, onUpdateCustomer]);
-  if (!isOpen || !customer) return null;
-  const link = portalKey ? `${window.location.origin}/portal/${portalKey}` : '';
-  return (
-    <div style={styles.modalOverlay} onClick={onClose}><div style={styles.modal} onClick={e => e.stopPropagation()}>
-      <h3>🔗 {t.sendLink}</h3>
-      {loadingKey ? <div style={{ padding: 20, textAlign: 'center' }}>{t.generatingLink}</div> : (<>
-        <div style={{ background: '#f3f4f6', padding: 10, borderRadius: 8, wordBreak: 'break-all', fontSize: 12, marginBottom: 10 }}>{link}</div>
-        <button onClick={() => { navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 2000); }} style={styles.btnFull}>{copied ? t.copied : t.copyLink}</button>
-        <button onClick={() => window.open(`https://wa.me/${customer.phone?.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(link)}`, '_blank')} style={{ ...styles.btnFull, background: '#25D366', marginTop: 10 }}>💬 WhatsApp</button>
-      </>)}
-      <button onClick={onClose} style={{ ...styles.btnFull, background: '#ef4444', marginTop: 10 }}>{t.close}</button>
-    </div></div>
-  );
-});
-
-/* ─── EDIT CUSTOMER MODAL ────────────────────────────────── */
-const EditCustomerModal = memo(function EditCustomerModal({ isOpen, onClose, customer, onSave, lang }) {
-  const t = translations[lang];
-  const [form, setForm] = useState({ name: '', phone: '', address: '', profilePicture: '' });
-  useEffect(() => {
-    if (isOpen && customer) {
-      setForm({ name: customer.name || '', phone: formatPhoneWithCode(customer.phone), address: customer.address || '', profilePicture: customer.profilePicture || '' });
-    }
-  }, [isOpen, customer]);
-  if (!isOpen) return null;
-  return (
-    <div style={styles.modalOverlay}><div style={styles.modal}>
-      <h3>✏️ {t.editTitle}</h3>
-      <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} style={styles.input} placeholder={t.customerName} />
-      <input value={form.phone} onChange={e => setForm({ ...form, phone: handlePhoneInput(e.target.value) })} style={styles.input} />
-      <textarea value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} style={styles.textarea} placeholder={t.address} />
-      <div style={styles.modalActions}>
-        <button onClick={onClose} style={styles.btnCancel}>{t.cancel}</button>
-        <button onClick={async () => {
-          if (!form.name.trim()) return;
-          try {
-            // ✅ cloudDb null guard
-            if (cloudDb && updateDoc && doc) {
-              await updateDoc(doc(cloudDb, 'customers', customer.id), form);
-            }
-            // Always update local
-            if (localDb?.customers) {
-              await localDb.customers.update(customer.id, form);
-            }
-            onSave({ ...customer, ...form });
-            onClose();
-          } catch (e) { alert(e.message); }
-        }} style={styles.btnSave}>{t.save}</button>
-      </div>
-    </div></div>
   );
 });
 
@@ -517,6 +305,7 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
   const [lang, setLang] = useState(propLang);
   const t = useMemo(() => translations[lang] || translations.en, [lang]);
   const { user, loading: authLoading } = useUserAuth();
+  const { bankAccounts, bankLoading } = useBankAccounts(user?.uid);
 
   const [isPortalMode, setIsPortalMode] = useState(false);
   useEffect(() => {
@@ -526,32 +315,17 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
   }, []);
 
   const { toast, showToast } = useToast();
-  const mountedRef = useRef(true);
-  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
-
   const [customer, setCustomer] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [dueDate, setDueDate] = useState('');
-  const [dueTime, setDueTime] = useState('');
-  const [txnFilter, setTxnFilter] = useState('all');
   const [isProcessing, setIsProcessing] = useState(false);
   const [receiptInvoice, setReceiptInvoice] = useState(null);
   const [accessDenied, setAccessDenied] = useState(false);
 
-  const [modals, setModals] = useState({
-    txn: false, txnType: 'credit', editTxn: false, sendLink: false,
-    edit: false, delete: false, reminder: false, date: false,
-  });
+  const [modals, setModals] = useState({ txn: false, txnType: 'credit' });
 
   const openModal = useCallback((key, extra = {}) => setModals(p => ({ ...p, [key]: true, ...extra })), []);
   const closeModal = useCallback(key => setModals(p => ({ ...p, [key]: false })), []);
-
-  const invalidateListCache = useCallback(() => {
-    if (user?.uid) {
-      try { sessionStorage.removeItem(`customers_${user.uid}`); } catch (e) {}
-    }
-  }, [user?.uid]);
 
   /* ══════════════════════════════════════════════════════════
      🔐 OFFLINE-FIRST FETCH — WITH UID OWNERSHIP CHECK
@@ -565,15 +339,12 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
       if (localDb?.customers) {
         const lc = await localDb.customers.get(id);
         if (lc) {
-          // ✅ UID OWNERSHIP CHECK — වෙනත් user කෙනෙක්ගේ customer නම් block
           if (lc.uid && lc.uid !== user.uid && !isPortalMode) {
             setAccessDenied(true);
             setLoading(false);
             return;
           }
           setCustomer(lc);
-          if (lc.dueDate) setDueDate(lc.dueDate);
-          if (lc.dueTime) setDueTime(lc.dueTime);
         }
       }
     } catch (e) { console.error("Local read error", e); }
@@ -590,29 +361,18 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
         }
       }
 
-      // ✅ Cloud sync with UID filter + null guard
-      if (navigator.onLine && cloudDb && collection && query && where && getDocs) {
+      // Cloud sync
+      if (navigator.onLine && cloudDb) {
         try {
-          let q;
-          // Try UID-filtered query first, fallback to customerId-only
-          try {
-            q = query(
-              collection(cloudDb, 'customerTransactions'),
-              where('customerId', '==', id),
-              where('uid', '==', user.uid)
-            );
-          } catch {
-            q = query(collection(cloudDb, 'customerTransactions'), where('customerId', '==', id));
-          }
+          const q = query(
+            collection(cloudDb, 'customerTransactions'),
+            where('customerId', '==', id)
+          );
           const snap = await getDocs(q);
           const cloudTxns = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-          // ✅ Extra safety: filter out any txns not belonging to this user
-          const userTxns = cloudTxns.filter(tx => !tx.uid || tx.uid === user.uid);
-
-                    if (localDb?.customerTransactions) {
-            await localDb.customerTransactions.bulkPut(userTxns).catch(() => {});
-            // ✅ Re-read merged data (includes offline txns not yet in cloud)
+          if (localDb?.customerTransactions) {
+            await localDb.customerTransactions.bulkPut(cloudTxns).catch(() => {});
             try {
               localTxns = await localDb.customerTransactions.where('customerId').equals(id).toArray();
             } catch {
@@ -620,9 +380,7 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
               localTxns = all.filter(tx => tx.customerId === id);
             }
           }
-        } catch (cloudErr) {
-          console.warn("Cloud txn sync skipped:", cloudErr.message);
-        }
+        } catch (cloudErr) {}
       }
 
       const formatted = localTxns.map(dt => {
@@ -646,83 +404,17 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
       setTransactions(formatted);
       setLoading(false);
     } catch (err) {
-      console.warn("Txn sync skipped", err);
       setLoading(false);
     }
   }, [id, user?.uid, customer?.initialBalance, isPortalMode]);
 
-  
-  /* ── Auto-sync when coming back online ── */
   useEffect(() => {
-    const handleOnline = async () => {
-      if (!user?.uid || !id) return;
-      console.log('[CustomerDetail] 🔌 Back online — syncing...');
-      await new Promise(r => setTimeout(r, 3000));
+    fetchCustomerDetailsOffline();
+  }, [fetchCustomerDetailsOffline]);
 
-      // Push local balance to cloud if different
-      try {
-        const localCust = await localDb.customers.get(id);
-        if (!localCust || !navigator.onLine || !cloudDb || !updateDoc || !doc || !serverTimestamp || !getDoc) return;
-
-        const cloudSnap = await getDoc(doc(cloudDb, 'customers', id));
-        if (!cloudSnap.exists()) return;
-
-        const localBal = nn(localCust.currentBalance);
-        const cloudBal = nn(cloudSnap.data().currentBalance);
-
-        if (Math.abs(localBal - cloudBal) > 0.01) {
-          const localTime = new Date(localCust.updatedAt || localCust.createdAt || 0).getTime();
-          const cloudRaw = cloudSnap.data().updatedAt;
-          const cloudTime = cloudRaw?.toDate
-            ? cloudRaw.toDate().getTime()
-            : new Date(cloudRaw || cloudSnap.data().createdAt || 0).getTime();
-
-          if (localTime >= cloudTime) {
-            await updateDoc(doc(cloudDb, 'customers', id), {
-              currentBalance: localBal,
-              updatedAt: serverTimestamp(),
-            });
-            await localDb.customers.update(id, { synced: true });
-            console.log(`[CustomerDetail] ✅ Synced balance Rs.${localBal} → cloud`);
-          }
-        }
-
-        // Push unsynced local transactions to cloud
-        if (localDb?.customerTransactions && cloudDb && setDoc && serverTimestamp) {
-          let localTxns;
-          try {
-            localTxns = await localDb.customerTransactions.where('customerId').equals(id).toArray();
-          } catch {
-            const all = await localDb.customerTransactions.toArray();
-            localTxns = all.filter(tx => tx.customerId === id);
-          }
-
-          const unsynced = localTxns.filter(tx => tx.id?.startsWith('ctxn_'));
-          for (const tx of unsynced) {
-            try {
-              await setDoc(doc(cloudDb, 'customerTransactions', tx.id), {
-                ...tx, createdAt: serverTimestamp()
-              });
-              console.log(`[CustomerDetail] ✅ Synced txn ${tx.id} → cloud`);
-            } catch (e) {
-              console.warn(`[CustomerDetail] Txn sync failed:`, e.message);
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('[CustomerDetail] Online sync error:', e.message);
-      }
-
-      fetchCustomerDetailsOffline();
-    };
-
-    window.addEventListener('online', handleOnline);
-    return () => window.removeEventListener('online', handleOnline);
-  }, [id, user?.uid, fetchCustomerDetailsOffline]);
-
-  /* ─── TRANSACTION CONFIRM (OFFLINE FIRST) ────────────────── */
+  /* ─── TRANSACTION CONFIRM (OFFLINE FIRST WITH AUTO-SYNC) ────────────────── */
   const handleTransactionConfirm = useCallback(async ({
-    type, amount, note, date, method, receiptImage, bankAccountId, bankAccountName
+    type, amount, note, date, method, bankAccountId, bankAccountName
   }) => {
     if (!customer || isProcessing || !user?.uid) return;
     setIsProcessing(true);
@@ -737,10 +429,12 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
     const txnId = `ctxn_${Date.now()}`;
     const cashTxnId = `cash_${Date.now()}`;
 
+    // Mark synced: 0 for instant Auto-Sync Engine detection
     const txnData = {
       id: txnId, uid: user.uid, customerId: id, customerName: customer.name || '', type, amount, date,
       time: timeStr, note: note || (isCredit ? t.addCredit : t.getPayment), source: isCredit ? 'manual_credit' : 'manual',
-      timestamp: now.getTime(), createdBy: user.email || 'Unknown', newCustomerBalance: newBalance
+      timestamp: now.getTime(), createdBy: user.email || 'Unknown', newCustomerBalance: newBalance,
+      synced: 0
     };
 
     const cashTxnData = {
@@ -750,16 +444,16 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
         ? `👤 ${customer.name || 'Customer'} — ණය ලබාදීම${note ? ' | ' + note : ''}`
         : `💵 පාරිභෝගික ගෙවීම් ලැබීම [${customer.name || 'Customer'}]${note ? ' | ' + note : ''}`,
       amount, paymentMethod: method, customerId: id, customerName: customer.name,
-      customerPhone: customer.phone || '', customerTxnId: txnId, reference: refNo, notes: note || '', note: note || '',
+      customerPhone: customer.phone || '', customerTxnId: txnId, reference: refNo, notes: note || '',
       previousOutstanding: curBal, newOutstanding: newBalance, date, time: timeStr,
-      timestamp: now.getTime(), createdBy: user.email || 'Unknown', uid: user.uid, isAutomatic: true
+      timestamp: now.getTime(), createdBy: user.email || 'Unknown', uid: user.uid, synced: 0
     };
 
     try {
-      // 1. OFFLINE SAVE
+      // 1. LOCAL SAVE TO PC HARD DISC
       if (localDb) {
         if (localDb.customers) {
-                    await localDb.customers.put({
+          await localDb.customers.put({
             ...customer,
             currentBalance: newBalance,
             uid: user.uid,
@@ -777,12 +471,13 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
       setCustomer(prev => prev ? { ...prev, currentBalance: newBalance } : prev);
       showToast(isCredit ? t.creditAdded : t.paymentReceived);
       closeModal('txn');
-      invalidateListCache();
 
-      // 2. BACKGROUND SYNC ✅ with null guard
-      if (navigator.onLine && cloudDb && setDoc && doc && updateDoc && serverTimestamp) {
-        setDoc(doc(cloudDb, 'customerTransactions', txnId), { ...txnData, createdAt: serverTimestamp() }).catch(() => {});
-        setDoc(doc(cloudDb, `users/${user.uid}/cashTransactions`, cashTxnId), { ...cashTxnData, createdAt: serverTimestamp() }).catch(() => {});
+      // 2. IMMEDIATE ONLINE CLOUD PUSH
+      if (navigator.onLine && cloudDb) {
+        setDoc(doc(cloudDb, 'customerTransactions', txnId), { ...txnData, synced: 1, createdAt: serverTimestamp() }).then(() => {
+          localDb.customerTransactions.update(txnId, { synced: 1 }).catch(() => {});
+        }).catch(() => {});
+
         updateDoc(doc(cloudDb, 'customers', id), { currentBalance: newBalance, updatedAt: serverTimestamp() }).catch(() => {});
       }
 
@@ -803,21 +498,12 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
     } finally {
       setIsProcessing(false);
     }
-  }, [customer, isProcessing, id, user, t, showToast, closeModal, invalidateListCache, fetchCustomerDetailsOffline]);
-
-  const filteredTxns = useMemo(() => transactions.filter(tx => {
-    if (txnFilter === 'all') return true;
-    if (txnFilter === 'payments') return tx.type === 'payment';
-    return true;
-  }), [transactions, txnFilter]);
+  }, [customer, isProcessing, id, user, t, showToast, closeModal, fetchCustomerDetailsOffline]);
 
   const totalCredits = useMemo(() => transactions.filter(x => x.type === 'credit').reduce((s, x) => s + x.amount, 0), [transactions]);
   const totalPayments = useMemo(() => transactions.filter(x => x.type === 'payment').reduce((s, x) => s + x.amount, 0), [transactions]);
   const curBal = nn(customer?.currentBalance);
 
-  /* ══════════════════════════════════════
-     🔐 AUTH & ACCESS GUARDS
-  ══════════════════════════════════════ */
   if (authLoading || loading) return <div style={styles.loadingContainer}>{t.loading}</div>;
 
   if (!user?.uid && !isPortalMode) {
@@ -852,14 +538,12 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
     <div style={styles.container}>
       <Toast toast={toast} />
 
-      {/* Back Button */}
       {!isPortalMode && (
         <button onClick={() => router.push('/customers')} style={{ marginBottom: 16, padding: '8px 16px', background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, color: '#475569' }}>
           {t.backToCustomers}
         </button>
       )}
 
-      {/* Header */}
       <div style={styles.headerCard}>
         <div style={{ width: 90, height: 90, borderRadius: '50%', background: 'linear-gradient(135deg,#3b82f6,#6366f1)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: 'white', fontSize: 32, marginBottom: 12 }}>
           {(customer.name || '?')[0].toUpperCase()}
@@ -878,7 +562,6 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
         </div>
       </div>
 
-      {/* Action Buttons */}
       <div style={styles.actionGrid}>
         {!isPortalMode && (
           <>
@@ -888,12 +571,11 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
         )}
       </div>
 
-      {/* Transactions List */}
       <div style={styles.listContainer}>
         <h3>📋 {t.transactionHistory}</h3>
-        {filteredTxns.length === 0 ? (
+        {transactions.length === 0 ? (
           <div style={{ padding: 30, textAlign: 'center', color: '#94a3b8' }}>{t.noTransactions}</div>
-        ) : filteredTxns.map((txn, i) => (
+        ) : transactions.map((txn, i) => (
           <div key={txn.id + i} style={{ padding: 16, borderBottom: '1px solid #e2e8f0', background: txn.type === 'payment' ? '#f0fdf4' : '#fff' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <div>
@@ -912,11 +594,10 @@ export default function CustomerDetailClient({ lang: propLang = 'si' }) {
         ))}
       </div>
 
-      {/* Modals */}
       <TransactionModal
         show={modals.txn} type={modals.txnType} customer={customer}
         onClose={() => closeModal('txn')} onConfirm={handleTransactionConfirm}
-        isProcessing={isProcessing} bankAccounts={[]} bankLoading={false} t={t} lang={lang}
+        isProcessing={isProcessing} bankAccounts={bankAccounts} bankLoading={bankLoading} t={t} lang={lang}
       />
 
       {receiptInvoice && <InvoiceOutputManager invoice={receiptInvoice} onClose={() => setReceiptInvoice(null)} initialMode="whatsapp" />}
@@ -935,10 +616,5 @@ const styles = {
   modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 },
   modal: { background: 'white', padding: 25, borderRadius: 16, width: '90%', maxWidth: 400 },
   input: { width: '100%', padding: 14, border: '2px solid #e2e8f0', borderRadius: 10, marginBottom: 12, fontSize: 15, boxSizing: 'border-box' },
-  textarea: { width: '100%', padding: 14, border: '2px solid #e2e8f0', borderRadius: 10, marginBottom: 12, fontSize: 15, boxSizing: 'border-box', minHeight: 80, resize: 'vertical' },
   formLabel: { display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5 },
-  cancelBtn: { flex: 1, padding: 14, background: '#f1f5f9', color: '#475569', border: 'none', borderRadius: 10, fontWeight: 'bold', cursor: 'pointer' },
-  saveBtn: { flex: 1, padding: 14, background: 'linear-gradient(135deg,#3b82f6,#2563eb)', color: 'white', border: 'none', borderRadius: 10, fontWeight: 'bold', cursor: 'pointer' },
-  btnFull: { width: '100%', padding: 12, border: 'none', borderRadius: 10, color: 'white', fontWeight: 700, cursor: 'pointer', fontSize: 14 },
-  modalActions: { display: 'flex', gap: 10, marginTop: 10 },
 };

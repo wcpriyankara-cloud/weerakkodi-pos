@@ -1,10 +1,10 @@
 'use client';
 
-// components/Customers.jsx  ·  v5 (Data Isolation + Offline Crash Fix)
-// ✅ UID-filtered local & cloud queries (Data Isolation)
+// components/Customers.jsx  ·  v5.1 (Data Isolation + Offline Sync Engine Integration)
+// ✅ Canonical @/lib/firebase import
+// ✅ Explicit synced: 0 flag on offline updates for instant SyncButton pickup
 // ✅ Per-user backup files: customers_<uid>.json
-// ✅ Firebase db null guards (Offline crash prevention)
-// ✅ Auth guard UI (Login prompt when no user)
+// ✅ UID-filtered local & cloud queries (Data Isolation)
 // ✅ Integrated with separate Customer Loan Management system
 // ✅ Real InvoiceOutputManager import
 // ✅ Portal payment support + Loan Quick Status Link
@@ -12,12 +12,13 @@
 // 🚀 Mobile contacts integration (Contact Picker API)
 // 🚀 OFFLINE-FIRST: Auto Dexie DB sync, disk backup, background cloud migration
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
 // ✅ Safe Firebase import with null fallback
 let db = null;
 let collection, query, where, addDoc, updateDoc, doc, getDocs, getDoc, setDoc;
 let serverTimestamp, increment, onSnapshot, Timestamp, getFirestore;
+
 try {
   const firestore = require('firebase/firestore');
   collection = firestore.collection;
@@ -35,9 +36,9 @@ try {
   Timestamp = firestore.Timestamp;
   getFirestore = firestore.getFirestore;
 
-  // Step 1: Try named export from firebase-config
+  // Step 1: Try named export from @/lib/firebase
   try {
-    const fb = require('@/firebaseConfig');
+    const fb = require('@/lib/firebase');
     db = fb.db || (fb.default && fb.default.db) || null;
   } catch {}
 
@@ -66,7 +67,6 @@ try {
   console.warn('Firebase SDK not reachable. Customers running in offline mode.', e);
 }
 
-
 // Safe db check - handles CJS/ESM interop
 const isValidDb = () => {
   if (!db) return false;
@@ -80,8 +80,8 @@ const isValidDb = () => {
 const canUseCloud = () => navigator.onLine && isValidDb() && collection && query;
 
 import { useUserAuth } from '@/context/UserContext';
-import { localDb } from '../lib/localDb';
-import { normalizeDate } from '../lib/utils';
+import { localDb } from '@/lib/localDb';
+import { normalizeDate } from '@/lib/utils';
 import InvoiceOutputManager from './InvoiceOutputManager';
 
 /* ════════════════════════════════════════
@@ -151,7 +151,7 @@ const T = {
     contactPickerNotSupported: '⚠️ ඔබගේ දුරකථනය මෙම පහසුකම සපයන්නේ නැත.',
   },
   en: {
-    title: 'Customers', addNew: 'New Customer', refresh: '🔄 Refresh',
+    title: 'Customers', addNew: 'New Customer', refresh: 'Refresh',
     search: 'Search Name / Mobile...', showCredit: 'Credit Only',
     name: 'Name', mobile: 'Mobile', address: 'Address', balance: 'Balance', action: 'Action',
     loading: 'Loading...', noData: 'No customers found',
@@ -204,7 +204,7 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
           if (bal > 0) setAmount((Number(bal) || 0).toFixed(2));
         }
 
-                if (canUseCloud() && getDoc && doc) {
+        if (canUseCloud() && getDoc && doc) {
           const snap = await getDoc(doc(db, 'customers', customer.id));
           if (!active) return;
           if (snap.exists()) {
@@ -241,19 +241,41 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
       const timeStr  = nowHHMM24();
       const nowTs    = Timestamp ? Timestamp.now() : null;
       const now      = new Date();
+      let cusTxnId   = `txn_${Date.now()}`;
 
+      // Update Dexie local storage with synced: 0 for instant SyncButton pickup
       await localDb.customers.update(customer.id, {
         currentBalance: newBal,
-        updatedAt: now.toISOString()
+        updatedAt: now.toISOString(),
+        synced: 0
       });
+
+      if (localDb.customerTransactions) {
+        await localDb.customerTransactions.put({
+          id: cusTxnId,
+          uid: user.uid,
+          customerId: customer.id,
+          customerName: customer.name || '',
+          customerPhone: customer.phone || '',
+          type: 'payment',
+          amount: payAmt,
+          method,
+          note: note || '',
+          status: 'confirmed',
+          refNo,
+          createdAt: now.toISOString(),
+          date: dateStr,
+          time: timeStr,
+          synced: 0
+        });
+      }
 
       if (window.electronAPI?.saveLocalData) {
         const userCus = await localDb.customers.where('uid').equals(user.uid).toArray();
         await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
       }
 
-      let cusTxnId = `txn_${Date.now()}`;
-            if (canUseCloud() && addDoc && updateDoc && doc) {
+      if (canUseCloud() && addDoc && updateDoc && doc) {
         try {
           const cusTxnRef = await addDoc(collection(db, 'customerTransactions'), {
             uid: user.uid,
@@ -303,6 +325,8 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
             uid: user.uid,
             isAutomatic: true,
           });
+
+          await localDb.customers.update(customer.id, { synced: 1 });
         } catch (cloudErr) {
           console.warn("Deferred cloud payment registration:", cloudErr.message);
         }
@@ -463,7 +487,7 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
           setFreshBal(nn(localRecord.currentBalance));
         }
 
-                if (canUseCloud() && getDoc && doc) {
+        if (canUseCloud() && getDoc && doc) {
           const snap = await getDoc(doc(db, 'customers', customer.id));
           if (!active) return;
           const bal = snap.exists() ? nn(snap.data().currentBalance) : nn(customer.currentBalance);
@@ -497,19 +521,41 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
       const timeStr = nowHHMM24();
       const nowTs   = Timestamp ? Timestamp.now() : null;
       const now     = new Date();
+      let cusTxnId  = `txn_${Date.now()}`;
 
+      // Update Dexie with synced: 0 for instant auto-syncpickup
       await localDb.customers.update(customer.id, {
         currentBalance: newBal,
-        updatedAt: now.toISOString()
+        updatedAt: now.toISOString(),
+        synced: 0
       });
+
+      if (localDb.customerTransactions) {
+        await localDb.customerTransactions.put({
+          id: cusTxnId,
+          uid: user.uid,
+          customerId: customer.id,
+          customerName: customer.name || '',
+          customerPhone: customer.phone || '',
+          type: 'credit',
+          amount: creditAmt,
+          note: note || t.addCreditTitle,
+          status: 'confirmed',
+          source: 'manual_credit',
+          refNo,
+          createdAt: now.toISOString(),
+          date: dateStr,
+          time: timeStr,
+          synced: 0
+        });
+      }
 
       if (window.electronAPI?.saveLocalData) {
         const userCus = await localDb.customers.where('uid').equals(user.uid).toArray();
         await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
       }
 
-      let cusTxnId = `txn_${Date.now()}`;
-            if (canUseCloud() && addDoc && updateDoc && doc) {
+      if (canUseCloud() && addDoc && updateDoc && doc) {
         try {
           const cusTxnRef = await addDoc(collection(db, 'customerTransactions'), {
             uid: user.uid,
@@ -547,6 +593,8 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
             createdAt: serverTimestamp(), createdBy: user?.email || '',
             uid: user.uid, isAutomatic: true,
           });
+
+          await localDb.customers.update(customer.id, { synced: 1 });
         } catch (cloudErr) {
           console.warn("Deferred cloud credit registration:", cloudErr.message);
         }
@@ -767,7 +815,7 @@ export default function Customers({ lang = 'si' }) {
       setCustomers(sortedLocal);
       setLastFetchTs(Date.now());
 
-            if (canUseCloud() && where && getDocs) {
+      if (canUseCloud() && where && getDocs) {
         try {
           const snap = await getDocs(query(collection(db, 'customers'), where('uid', '==', user.uid)));
           const cloudList = snap.docs.map(d => ({
@@ -776,10 +824,10 @@ export default function Customers({ lang = 'si' }) {
             synced: true
           }));
 
-                    for (const cloudCust of cloudList) {
+          for (const cloudCust of cloudList) {
             const existing = await localDb.customers.get(cloudCust.id);
             if (!existing) {
-              await localDb.customers.put(cloudCust);
+              await localDb.customers.put({ ...cloudCust, synced: 1 });
             } else {
               const localBal = nn(existing.currentBalance);
               const cloudBal = nn(cloudCust.currentBalance);
@@ -797,7 +845,7 @@ export default function Customers({ lang = 'si' }) {
                       currentBalance: localBal,
                       updatedAt: serverTimestamp(),
                     });
-                    await localDb.customers.update(cloudCust.id, { synced: true });
+                    await localDb.customers.update(cloudCust.id, { synced: 1 });
                     console.log(`[Sync] ✅ Pushed Rs.${localBal} → cloud for ${existing.name}`);
                   } catch (pushErr) {
                     console.warn(`[Sync] Push failed for ${existing.name}:`, pushErr.message);
@@ -805,9 +853,8 @@ export default function Customers({ lang = 'si' }) {
                 }
               } else if (cloudTime > localTime) {
                 // Cloud is newer — update local
-                await localDb.customers.put(cloudCust);
+                await localDb.customers.put({ ...cloudCust, synced: 1 });
               }
-              // If equal timestamps & balances match → do nothing
             }
           }
 
@@ -845,7 +892,8 @@ export default function Customers({ lang = 'si' }) {
       setLoading(false);
     }
   }, [user?.uid, t.quotaMsg, t.offlineMsg]);
-    /* ── Sync pending local balances to cloud (runs on reconnect) ── */
+
+  /* ── Sync pending local balances to cloud (runs on reconnect) ── */
   const syncBalancesToCloud = useCallback(async () => {
     if (!navigator.onLine || !user?.uid || !isValidDb() || !updateDoc || !doc || !serverTimestamp || !getDocs || !collection || !query || !where) return;
 
@@ -863,12 +911,11 @@ export default function Customers({ lang = 'si' }) {
       const cloudMap = new Map(cloudSnap.docs.map(d => [d.id, d.data()]));
 
       let syncCount = 0;
-            for (const local of localCustomers) {
+      for (const local of localCustomers) {
         const cloud = cloudMap.get(local.id);
 
-        // ✅ NEW: Push offline-added customers to cloud
         if (!cloud) {
-          if (local.synced === false && navigator.onLine && db && setDoc && doc && serverTimestamp) {
+          if ((local.synced === 0 || local.synced === false) && navigator.onLine && db && setDoc && doc && serverTimestamp) {
             try {
               await setDoc(doc(db, 'customers', local.id), {
                 ...local,
@@ -876,7 +923,7 @@ export default function Customers({ lang = 'si' }) {
                 createdAt: serverTimestamp(),
                 updatedAt: serverTimestamp(),
               });
-              await localDb.customers.update(local.id, { synced: true });
+              await localDb.customers.update(local.id, { synced: 1 });
               syncCount++;
               console.log(`[BalanceSync] ✅ New customer pushed: ${local.name}`);
             } catch (e) {
@@ -902,7 +949,7 @@ export default function Customers({ lang = 'si' }) {
                 currentBalance: localBal,
                 updatedAt: serverTimestamp(),
               });
-              await localDb.customers.update(local.id, { synced: true });
+              await localDb.customers.update(local.id, { synced: 1 });
               syncCount++;
               console.log(`[BalanceSync] ${local.name}: Rs.${cloudBal} → Rs.${localBal}`);
             } catch (e) {
@@ -948,7 +995,7 @@ export default function Customers({ lang = 'si' }) {
       setTimeout(() => {
         syncBalancesToCloud();
         fetchCustomers(true);
-      }, 3000); // 3s wait for Firebase to reconnect
+      }, 3000);
     };
 
     window.addEventListener('online', handleOnline);
@@ -978,7 +1025,7 @@ export default function Customers({ lang = 'si' }) {
       profilePicture: newCust.profilePicture || '',
       currentBalance: 0,
       portalAccessKey: makePortalKey(newCust.name),
-      synced: false,
+      synced: 0, // Explicit numeric flag for auto-sync engine lookup
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -1001,7 +1048,7 @@ export default function Customers({ lang = 'si' }) {
         await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
       }
 
-            if (canUseCloud() && setDoc && doc && serverTimestamp) {
+      if (canUseCloud() && setDoc && doc && serverTimestamp) {
         try {
           await setDoc(doc(db, 'customers', customerId), {
             ...newCustomerObj,
@@ -1009,8 +1056,8 @@ export default function Customers({ lang = 'si' }) {
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp()
           });
-          await localDb.customers.update(customerId, { synced: true });
-          setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, synced: true } : c));
+          await localDb.customers.update(customerId, { synced: 1 });
+          setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, synced: 1 } : c));
         } catch (firebaseErr) {
           console.warn("Deferred cloud synchronization:", firebaseErr.message);
         }
@@ -1244,6 +1291,7 @@ export default function Customers({ lang = 'si' }) {
                 </td></tr>
               ) : paged.map((cus, idx) => {
                 const activeLoan = getCustomerActiveLoan(cus.phone);
+                const isUnsynced = cus.synced === 0 || cus.synced === false;
                 return (
                   <tr key={cus.id} style={{ borderBottom: '1px solid #f1f5f9', transition: 'background 0.15s' }}
                     onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
@@ -1266,7 +1314,7 @@ export default function Customers({ lang = 'si' }) {
                             style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #86efac', padding: '2px 6px', borderRadius: 6, fontSize: 10, fontWeight: 800, cursor: 'pointer' }}
                             title={`Remaining: Rs.${fmt(activeLoan.remainingBalance)}`}>{t.activeLoan}</span>
                         )}
-                        {cus.synced === false && (
+                        {isUnsynced && (
                           <span style={{ background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a', padding: '2px 6px', borderRadius: 6, fontSize: 10, fontWeight: 800 }}>Offline Only</span>
                         )}
                       </div>
@@ -1304,6 +1352,7 @@ export default function Customers({ lang = 'si' }) {
             </div>
           ) : paged.map(cus => {
             const activeLoan = getCustomerActiveLoan(cus.phone);
+            const isUnsynced = cus.synced === 0 || cus.synced === false;
             return (
               <div key={cus.id} style={{ background: 'white', borderRadius: 14, padding: 16, border: '1px solid #e2e8f0', borderLeft: `5px solid ${nn(cus.currentBalance) > 0.01 ? '#dc2626' : nn(cus.currentBalance) < -0.01 ? '#2563eb' : '#16a34a'}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, cursor: 'pointer' }}
@@ -1318,7 +1367,7 @@ export default function Customers({ lang = 'si' }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <div style={{ fontWeight: 700, fontSize: 16, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cus.name}</div>
-                      {cus.synced === false && (
+                      {isUnsynced && (
                         <span style={{ fontSize: 9, background: '#fffbeb', color: '#b45309', padding: '1px 4px', borderRadius: 4, fontWeight: 800 }}>Offline</span>
                       )}
                     </div>
