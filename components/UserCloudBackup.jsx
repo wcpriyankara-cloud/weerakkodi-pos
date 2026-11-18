@@ -43,14 +43,24 @@ export default function UserCloudBackup() {
     }
   }, []);
 
-  // 1. Load Local PC Hard Disc Stats
+  // 1. Load Local PC Hard Disc Stats (Filtered by Current User UID)
   const loadStats = useCallback(async () => {
     try {
+      const uid = user?.uid;
       const tables = ['invoices', 'customers', 'items', 'purchases', 'suppliers'];
       const s = { invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, _total: 0 };
+      
       for (const t of tables) {
         try {
-          s[t] = localDb && localDb[t] ? await localDb[t].count() : 0;
+          if (localDb && localDb[t]) {
+            if (uid) {
+              s[t] = await localDb[t].filter(item => item.uid === uid || item.userId === uid).count();
+            } else {
+              s[t] = await localDb[t].count();
+            }
+          } else {
+            s[t] = 0;
+          }
         } catch {
           s[t] = 0;
         }
@@ -58,44 +68,49 @@ export default function UserCloudBackup() {
       s._total = Object.values(s).reduce((a, b) => a + b, 0);
       setStats(s);
     } catch (e) {}
-  }, []);
+  }, [user]);
 
-  // 2. Fetch Real-time Cloud Counts (Firebase Firestore)
+  // 2. Fetch Real-time Cloud Counts Filtered by Current User UID (Firebase Firestore)
   const loadFirebaseCounts = useCallback(async () => {
     if (!user?.uid) return;
     setLoadingCloud(true);
     try {
       const counts = { invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, _total: 0 };
 
-      // Invoices
+      // Invoices & Drafts for Logged-in User
       for (const col of INVOICE_COLLECTIONS) {
         try {
-          const snap = await getDocs(collection(db, col));
+          const q = query(collection(db, col), where('uid', '==', user.uid));
+          const snap = await getDocs(q);
           counts.invoices += snap.size;
         } catch (e) {}
       }
 
-      // Customers
+      // Customers for Logged-in User
       try {
-        const csnap = await getDocs(collection(db, 'customers'));
+        const cq = query(collection(db, 'customers'), where('uid', '==', user.uid));
+        const csnap = await getDocs(cq);
         counts.customers = csnap.size;
       } catch (e) {}
 
-      // Items
+      // Items for Logged-in User
       try {
-        const isnap = await getDocs(collection(db, 'items'));
+        const iq = query(collection(db, 'items'), where('uid', '==', user.uid));
+        const isnap = await getDocs(iq);
         counts.items = isnap.size;
       } catch (e) {}
 
-      // Purchases
+      // Purchases for Logged-in User
       try {
-        const psnap = await getDocs(collection(db, 'purchases'));
+        const pq = query(collection(db, 'purchases'), where('uid', '==', user.uid));
+        const psnap = await getDocs(pq);
         counts.purchases = psnap.size;
       } catch (e) {}
 
-      // Suppliers
+      // Suppliers for Logged-in User
       try {
-        const ssnap = await getDocs(collection(db, 'suppliers'));
+        const sq = query(collection(db, 'suppliers'), where('uid', '==', user.uid));
+        const ssnap = await getDocs(sq);
         counts.suppliers = ssnap.size;
       } catch (e) {}
 
