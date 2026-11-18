@@ -1870,8 +1870,8 @@ unsubs.push(onSnapshot(
     };
   }, [user?.uid, autoSync, loadPendingSyncCount, handleSyncPendingInvoices]);
 
-  /* ── Process and save invoice ── */
-  // ✅ FIX 4: After Firestore success, mark deducted items as _synced: true in Dexie
+/* ── Process and save invoice ── */
+  // ✅ FIX: Fixed ReferenceError: isOffline is not defined by checking navigator.onLine directly
   const handleSaveInvoice = useCallback(async (actionType) => {
     if (!safeInvoiceItems.length || savingRef.current) return;
     savingRef.current = true;
@@ -1884,11 +1884,22 @@ unsubs.push(onSnapshot(
     let customerBalanceBefore = 0;
     if (isPersistedCustomer(selectedCustomer)) {
       try {
-        const isOnline = navigator.onLine; let custSnap = null; if (isOnline) { try { custSnap = await Promise.race([getDoc(doc(db, 'customers', selectedCustomer.id)), new Promise((_,rej) => setTimeout(() => rej(new Error('getDoc timeout')), 3000))]); } catch(e) { console.warn('[Offline] getDoc skipped'); } }
-                if (custSnap && custSnap.exists()) {
+        const isOnline = typeof navigator !== 'undefined' && navigator.onLine;
+        let custSnap = null;
+        if (isOnline) {
+          try {
+            custSnap = await Promise.race([
+              getDoc(doc(db, 'customers', selectedCustomer.id)),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('getDoc timeout')), 3000))
+            ]);
+          } catch(e) {
+            console.warn('[Offline] getDoc skipped');
+          }
+        }
+        if (custSnap && custSnap.exists()) {
           customerBalanceBefore = R2(custSnap.data().currentBalance || 0);
         } else {
-          // 🔑 FIX: Offline fallback — use selectedCustomer state (which has Dexie value)
+          // 🔑 Offline fallback — use selectedCustomer state (which has Dexie value)
           customerBalanceBefore = R2(selectedCustomer.currentBalance || 0);
         }
       } catch (e) {
@@ -1918,7 +1929,7 @@ unsubs.push(onSnapshot(
       newOutstanding:      customerBalanceAfter
     });
 
-        // STEP 1: Dexie local save FIRST (always works offline)
+    // STEP 1: Dexie local save FIRST (always works offline)
     let dexieSaved = false;
     try {
       await localDb.invoices.put({
@@ -1980,64 +1991,71 @@ unsubs.push(onSnapshot(
       console.error('[Dexie] Save failed:', dexErr);
     }
 
-        // STEP 2: Try Firestore (may fail offline)
+    // STEP 2: Try Firestore (may fail offline)
     let firestoreOk = false;
-    if (navigator.onLine && !isOffline()) {
-    try {
-      const fbBatch = writeBatch(db);
-      fbBatch.set(invRef, invoicePayload);
-      if (actionType !== 'draft') {
-        console.log('[DEBUG] snap.items:', snap.items.map(i => ({ itemId: i.itemId, id: i.id, name: i.name, qty: i.qty })));
-        const deductions = buildDeductionMap(snap.items);
-        console.log('[DEBUG] deductions:', deductions);
-        Object.entries(deductions).forEach(([id, qty]) => {
-          fbBatch.update(doc(db, 'items', id), { stock: increment(-qty), currentStock: increment(-qty), 'stocks.Main_Store': increment(-qty) });
-        });
-        await applyBatchSourceUpdates(fbBatch, buildBatchUpdateMap(snap.items));
-                if (isPersistedCustomer(snap.customer)) {
-          const balanceDelta = R2(customerBalanceAfter - customerBalanceBefore);
-          if (balanceDelta !== 0) {
-            fbBatch.update(doc(db, 'customers', snap.customer.id), {
-              currentBalance: increment(balanceDelta),
-              outstanding: increment(balanceDelta),
-            });
-          }
-        }    if (snap.paymentMethod === 'etransfer' && snap.bankAccountId && snap.bankAccount) {
-          fbBatch.update(doc(db, `users/${user.uid}/bankAccounts`, snap.bankAccountId), { currentBalance: increment(R2(snap.payAmount)), updatedAt: new Date().toISOString() });
-          fbBatch.set(doc(collection(db, `users/${user.uid}/bankTransactions`)), { type: 'deposit', accountId: snap.bankAccountId, amount: R2(snap.payAmount), date: new Date().toISOString(), description: `Invoice - ${snap.customer.name}`, createdAt: new Date().toISOString(), source: 'pos-invoice', invoiceId });
-        }
-        if (snap.netAmount > 0) {
-          fbBatch.set(doc(collection(db, `users/${user.uid}/cashTransactions`)), buildCashTransactionPayload({ user, snap, invoiceId, invoiceNo, mode, actualCashReceived, totalSellingRevenue, totalCost, hasCost, isCreditSale, creditAmount, isFullCredit }));
-        }
-      }
-            await Promise.race([fbBatch.commit(), new Promise((_, rej) => setTimeout(() => rej(new Error("Firestore timeout")), 5000))]);
-      firestoreOk = true;
-      if (dexieSaved) { try { await localDb.invoices.update(invoiceId, { _synced: true }); } catch(e2) {} }
+    const isOnline = typeof navigator !== 'undefined' && navigator.onLine;
 
-      // ✅ FIX 4: Mark deducted items as synced in Dexie so onSnapshot won't overwrite Firestore stock
-      if (actionType !== 'draft') {
-        try {
-          const deductionIds = Object.keys(buildDeductionMap(snap.items));
-          for (const itemId of deductionIds) {
-            await localDb.items.update(itemId, { _synced: true, _deductedAt: null });
-          }
-          // Also mark customer as synced
+    if (isOnline) {
+      try {
+        const fbBatch = writeBatch(db);
+        fbBatch.set(invRef, invoicePayload);
+        if (actionType !== 'draft') {
+          console.log('[DEBUG] snap.items:', snap.items.map(i => ({ itemId: i.itemId, id: i.id, name: i.name, qty: i.qty })));
+          const deductions = buildDeductionMap(snap.items);
+          console.log('[DEBUG] deductions:', deductions);
+          Object.entries(deductions).forEach(([id, qty]) => {
+            fbBatch.update(doc(db, 'items', id), {
+              stock: increment(-qty),
+              currentStock: increment(-qty),
+              'stocks.Main_Store': increment(-qty)
+            });
+          });
+          await applyBatchSourceUpdates(fbBatch, buildBatchUpdateMap(snap.items));
           if (isPersistedCustomer(snap.customer)) {
-            try { await localDb.customers.update(snap.customer.id, { _synced: true }); } catch(e3) {}
+            const balanceDelta = R2(customerBalanceAfter - customerBalanceBefore);
+            if (balanceDelta !== 0) {
+              fbBatch.update(doc(db, 'customers', snap.customer.id), {
+                currentBalance: increment(balanceDelta),
+                outstanding: increment(balanceDelta),
+              });
+            }
           }
-          console.log('[Sync] Dexie items marked _synced: true for', deductionIds.length, 'items');
-        } catch (e) {
-          console.warn('[Sync] Failed to mark items synced:', e.message);
+          if (snap.paymentMethod === 'etransfer' && snap.bankAccountId && snap.bankAccount) {
+            fbBatch.update(doc(db, `users/${user.uid}/bankAccounts`, snap.bankAccountId), { currentBalance: increment(R2(snap.payAmount)), updatedAt: new Date().toISOString() });
+            fbBatch.set(doc(collection(db, `users/${user.uid}/bankTransactions`)), { type: 'deposit', accountId: snap.bankAccountId, amount: R2(snap.payAmount), date: new Date().toISOString(), description: `Invoice - ${snap.customer.name}`, createdAt: new Date().toISOString(), source: 'pos-invoice', invoiceId });
+          }
+          if (snap.netAmount > 0) {
+            fbBatch.set(doc(collection(db, `users/${user.uid}/cashTransactions`)), buildCashTransactionPayload({ user, snap, invoiceId, invoiceNo, mode, actualCashReceived, totalSellingRevenue, totalCost, hasCost, isCreditSale, creditAmount, isFullCredit }));
+          }
         }
+        await Promise.race([fbBatch.commit(), new Promise((_, rej) => setTimeout(() => rej(new Error("Firestore timeout")), 5000))]);
+        firestoreOk = true;
+        if (dexieSaved) { try { await localDb.invoices.update(invoiceId, { _synced: true }); } catch(e2) {} }
+
+        // ✅ Mark deducted items as synced in Dexie so onSnapshot won't overwrite Firestore stock
+        if (actionType !== 'draft') {
+          try {
+            const deductionIds = Object.keys(buildDeductionMap(snap.items));
+            for (const itemId of deductionIds) {
+              await localDb.items.update(itemId, { _synced: true, _deductedAt: null });
+            }
+            // Also mark customer as synced
+            if (isPersistedCustomer(snap.customer)) {
+              try { await localDb.customers.update(snap.customer.id, { _synced: true }); } catch(e3) {}
+            }
+            console.log('[Sync] Dexie items marked _synced: true for', deductionIds.length, 'items');
+          } catch (e) {
+            console.warn('[Sync] Failed to mark items synced:', e.message);
+          }
+        }
+      } catch (fsErr) {
+        console.warn('[Offline] Firestore skipped:', fsErr.message);
       }
-        } catch (fsErr) {
-      console.warn('[Offline] Firestore skipped:', fsErr.message);
-    }
     } else {
       console.log('[Offline] Skipping Firestore write — will sync when online');
     }
 
-            // STEP 3: Result
+    // STEP 3: Result
     if (!isMountedRef.current) { savingRef.current = false; return; }
 
     // 🔑 Always refresh from Dexie after save (online OR offline)
@@ -2068,72 +2086,6 @@ unsubs.push(onSnapshot(
     savingRef.current = false;
     setSaving(false);
   }, [safeInvoiceItems, paymentMethod, selectedBankAccountId, selectedCustomer, isFullyPaid, finalNetAmount, payAmount, balance, subTotal, billDiscountPercent, billDiscount, exchangeAmount, totalDiscount, invoiceRemark, selectedBankAccount, user, mode, clearForm, ensurePortalKey, showToast, t]);
-
-  useEffect(() => {
-    const h = (e) => {
-      if (showNewCustomerModal || outputInvoice) return;
-      const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName);
-      if (e.key === 'F1') { e.preventDefault(); if (itemSearchInputRef.current) { itemSearchInputRef.current.focus(); itemSearchInputRef.current.select(); } return; }
-      if (e.key === 'F2') { e.preventDefault(); if (selectedCustomer) { setSelectedCustomer(null); setTimeout(() => { if (customerSearchInputRef.current) customerSearchInputRef.current.focus(); }, 100); } else if (customerSearchInputRef.current) { customerSearchInputRef.current.focus(); customerSearchInputRef.current.select(); } return; }
-      if (e.key === 'F3') { e.preventDefault(); const methods = ['cash', 'card', 'etransfer', 'cheque']; setPaymentMethod(prev => { const idx = methods.indexOf(prev); return prev === methods[methods.length - 1] ? methods[0] : methods[idx + 1]; }); return; }
-      if (e.key === 'F4') { e.preventDefault(); if (payAmountInputRef.current) { payAmountInputRef.current.focus(); payAmountInputRef.current.select(); } return; }
-      if (e.key === 'F5') { e.preventDefault(); setPayAmount(finalNetAmount); showToast(`💵 ${t.fullPay}: Rs.${fmt(finalNetAmount)}`); return; }
-      if (e.key === 'F6') { e.preventDefault(); setShowScanner(prev => !prev); return; }
-      if (e.key === 'F7') { e.preventDefault(); if (safeInvoiceItems.length > 0) handleSaveInvoice('draft'); return; }
-      if (e.key === 'F8') { e.preventDefault(); if (safeInvoiceItems.length > 0) handleSaveInvoice('save'); return; }
-      if (e.key === 'F9') { e.preventDefault(); if (safeInvoiceItems.length > 0) handleSaveInvoice('link'); return; }
-      if (e.key === 'F10') { e.preventDefault(); if (safeInvoiceItems.length > 0) handleSaveInvoice('print'); return; }
-      if (e.key === 'F12') { e.preventDefault(); if (safeInvoiceItems.length > 0) { clearForm(); showToast(`🗑️ ${t.invoiceCleared}`); } return; }
-      if (e.key === 'Delete' && !isInput) { e.preventDefault(); if (safeInvoiceItems.length > 0) { const last = safeInvoiceItems[safeInvoiceItems.length - 1]; removeItem(last.lineId || last.itemId); showToast(`🗑️ "${last.name}" ${t.removed}`); } return; }
-      if (e.key === 'Escape') { if (showItemDropdown) { setShowItemDropdown(false); return; } if (showCustomerDropdown) { setShowCustomerDropdown(false); return; } if (isInput) { e.target.blur(); } }
-    };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, [showNewCustomerModal, outputInvoice, selectedCustomer, safeInvoiceItems, finalNetAmount, showItemDropdown, showCustomerDropdown, clearForm, removeItem, showToast, handleSaveInvoice, t]);
-
-  const handleItemSearchKeyDown = useCallback((e) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); if (!showItemDropdown && itemSearch) { setShowItemDropdown(true); setActiveItemIdx(0); return; } setActiveItemIdx(prev => Math.min(prev + 1, filteredItems.length - 1)); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); setActiveItemIdx(prev => Math.max(prev - 1, 0)); return; }
-    if (e.key === 'Enter') { e.preventDefault(); if (showItemDropdown && filteredItems.length > 0) { addItemToInvoice(filteredItems[Math.max(0, activeItemIdx < filteredItems.length ? activeItemIdx : 0)]); setActiveItemIdx(-1); } else if (itemSearch) { const sv = itemSearch.trim().toLowerCase(); const em = allItems.find(i => i.barcode?.trim().toLowerCase() === sv || i.itemCode?.trim().toLowerCase() === sv); if (em) addItemToInvoice(em); else if (filteredItems.length === 1) addItemToInvoice(filteredItems[0]); } return; }
-    if (e.key === 'Escape') { setShowItemDropdown(false); setActiveItemIdx(-1); }
-  }, [showItemDropdown, filteredItems, activeItemIdx, itemSearch, allItems, addItemToInvoice]);
-
-  const handleCustSearchKeyDown = useCallback((e) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); if (!showCustomerDropdown) { setShowCustomerDropdown(true); setActiveCustIdx(0); return; } setActiveCustIdx(prev => Math.min(prev + 1, filteredCustomers.length - 1)); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); setActiveCustIdx(prev => Math.max(prev - 1, 0)); return; }
-    if (e.key === 'Enter') { e.preventDefault(); if (showCustomerDropdown && filteredCustomers.length > 0) { const idx = activeCustIdx >= 0 && activeCustIdx < filteredCustomers.length ? activeCustIdx : 0; setSelectedCustomer(filteredCustomers[idx]); setShowCustomerDropdown(false); setCustomerSearch(''); setTimeout(() => { if (payAmountInputRef.current) payAmountInputRef.current.focus(); }, 100); } return; }
-    if (e.key === 'Escape') { setShowCustomerDropdown(false); setActiveCustIdx(-1); }
-  }, [showCustomerDropdown, filteredCustomers, activeCustIdx]);
-
-  const handleQtyKeyDown = useCallback((e, itemKey, currentIdx) => {
-    if (e.key === 'Enter') { e.preventDefault(); if (itemSearchInputRef.current) { itemSearchInputRef.current.focus(); itemSearchInputRef.current.select(); } return; }
-    if (e.key === 'u' || e.key === 'U') {
-      e.preventDefault(); const item = safeInvoiceItems[currentIdx]; if (!item) return;
-      const baseUom = item.uomName || getBaseUnit(item.originalItem) || 'unit';
-      const units = item.availableUnits || getItemAvailableUnits(item.originalItem) || [];
-      if (units.length === 0) { showToast(t.noOtherUnits); return; }
-      const allUoms = [baseUom, ...units.map(u => u.toUnitName)];
-      const ci = allUoms.indexOf(item.uom || baseUom);
-      updateItemField(itemKey, 'uom', allUoms[(ci + 1) % allUoms.length]); return;
-    }
-    if (e.key === 'Tab' && !e.shiftKey) { const keys = safeInvoiceItems.map(i => i.lineId || i.itemId); const ni = currentIdx + 1; if (ni < keys.length && qtyInputRefs.current[keys[ni]]) { e.preventDefault(); qtyInputRefs.current[keys[ni]].focus(); } }
-    if (e.key === 'Delete' && e.ctrlKey) { e.preventDefault(); removeItem(itemKey); showToast(`🗑️ ${t.removed}`); setTimeout(() => { if (itemSearchInputRef.current) itemSearchInputRef.current.focus(); }, 100); }
-  }, [safeInvoiceItems, removeItem, showToast, updateItemField, t]);
-
-  const handlePayAmountKeyDown = useCallback((e) => {
-    if (e.key === 'Enter') { e.preventDefault(); if (safeInvoiceItems.length > 0) handleSaveInvoice('print'); }
-  }, [safeInvoiceItems, handleSaveInvoice]);
-
-  useEffect(() => { setActiveItemIdx(0); }, [itemSearch]);
-  useEffect(() => { setActiveCustIdx(0); }, [customerSearch]);
-  useEffect(() => { if (activeItemRef.current) activeItemRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [activeItemIdx]);
-  useEffect(() => { if (activeCustRef.current) activeCustRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [activeCustIdx]);
-
-  /* ── Dropdown styles ── */
-  const dropdownStyle = { position: 'absolute', width: '100%', background: 'white', border: '1px solid #cbd5e1', borderRadius: 8, zIndex: 100, maxHeight: '55vh', overflowY: 'auto', overflowX: 'hidden', boxShadow: '0 4px 20px rgba(0,0,0,0.15)', WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' };
-  const stickyHeaderStyle = { position: 'sticky', top: 0, zIndex: 2, padding: '6px 12px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', fontSize: 12, color: '#64748b', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
-  const dropdownRowStyle = { padding: '12px 12px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, minHeight: 56, userSelect: 'none', WebkitUserSelect: 'none', WebkitTapHighlightColor: 'rgba(59,130,246,0.1)' };
-
   /* ══════════════════════════════════════════════════════════════
      RENDER LAYOUT
   ══════════════════════════════════════════════════════════════ */
