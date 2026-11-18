@@ -2,9 +2,6 @@ import './globals.css';
 import { UserAuthContextProvider } from '@/context/UserContext';
 import SyncButton from '@/components/SyncButton';
 
-/* ═══════════════════════════════════════
-   METADATA (server metadata)
-═══════════════════════════════════════ */
 export const metadata = {
   metadataBase: new URL(
     process.env.NEXT_PUBLIC_APP_URL || 'https://weerakkodi-pos-app.vercel.app'
@@ -30,12 +27,6 @@ export const metadata = {
       { url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' },
     ],
     shortcut: ['/favicon.ico'],
-  },
-
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: 'black-translucent',
-    title: 'Weerakkodi POS',
   },
 
   other: {
@@ -65,9 +56,6 @@ export const metadata = {
   },
 };
 
-/* ═══════════════════════════════════════
-   VIEWPORT (Next.js 14+ requirement)
-═══════════════════════════════════════ */
 export const viewport = {
   themeColor: '#1e3a8a',
   width: 'device-width',
