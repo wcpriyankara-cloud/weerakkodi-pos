@@ -1821,9 +1821,9 @@ unsubs.push(onSnapshot(
     }
   }, [syncingCloud, user?.uid, showToast, setAllItems, setAllCustomers]);
 
-  ══════════════════════════════════════════════════════════════
-   🔄 AUTO-SYNC: Load + Online + Periodic
-══════════════════════════════════════════════════════════════ */
+  /* ══════════════════════════════════════════════
+     🔄 AUTO-SYNC: Load + Online + Periodic
+  ══════════════════════════════════════════════ */
   useEffect(() => {
     if (!user?.uid) return;
     loadPendingSyncCount();
@@ -2139,7 +2139,7 @@ unsubs.push(onSnapshot(
           <input ref={itemSearchInputRef} placeholder={`${t.searchItem} [F1]`} value={itemSearch}
             onChange={e => { setItemSearch(e.target.value); setShowItemDropdown(true); setActiveItemIdx(0); }}
             onFocus={() => { if (itemSearch) setShowItemDropdown(true); }}
-            onKeyDown={handleItemSearchKeyDown}
+            onKeyDown={(e) => typeof handleItemSearchKeyDown === 'function' ? handleItemSearchKeyDown(e) : null}
             style={{ width: '100%', padding: 14, paddingRight: 50, borderRadius: 8, border: '2px solid #3b82f6', fontSize: 16, boxSizing: 'border-box' }} />
           <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 10, color: '#94a3b8', fontWeight: 800, background: '#f1f5f9', padding: '2px 6px', borderRadius: 4, border: '1px solid #e2e8f0' }}>F1</span>
         </div>
