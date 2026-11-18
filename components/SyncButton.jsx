@@ -11,7 +11,6 @@ import {
   limit,
   startAfter,
   onSnapshot,
-  serverTimestamp,
 } from 'firebase/firestore';
 import { localDb } from '@/lib/localDb';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -28,6 +27,10 @@ const sanitizeForFirestore = (val) => {
   }
   if (val instanceof Date) {
     return val.toISOString();
+  }
+  // Preserve Firestore FieldValue objects safely
+  if (val && typeof val === 'object' && (val.constructor?.name === 'FieldValue' || val._delegate)) {
+    return val;
   }
   if (Array.isArray(val)) {
     return val
@@ -125,6 +128,17 @@ export default function SyncButton() {
     return !item.synced && item._synced !== true;
   };
 
+  // Safe table fetcher
+  const getSafeDocs = async (table) => {
+    if (!table) return [];
+    try {
+      return await table.toArray();
+    } catch (err) {
+      console.warn(`[Sync] Error reading table:`, err?.message || err);
+      return [];
+    }
+  };
+
   // ══ 1. Auto-Upload Local -> Cloud (All 5 Core Collections) ══
   const autoUploadLocalToCloud = useCallback(async () => {
     const activeUser = fbUser || auth.currentUser;
@@ -139,55 +153,53 @@ export default function SyncButton() {
         { table: localDb.suppliers, col: 'suppliers', idKey: 'id' },
       ];
 
+      const nowIso = new Date().toISOString();
+
       for (const target of syncTargets) {
         if (!target.table) continue;
-        const allLocal = await target.table.toArray();
+        const allLocal = await getSafeDocs(target.table);
         const unsynced = allLocal.filter(isItemUnsynced);
 
         for (const item of unsynced) {
           try {
             const rawId = item[target.idKey] || item.docId || Date.now();
             const docId = String(rawId).replace(/[/\\#?]/g, '_');
-            const cleanDoc = sanitizeForFirestore({
+
+            const syncedRecord = {
               ...item,
               id: docId,
               synced: 1,
               _synced: true,
               _localSaved: false,
-              syncedAt: new Date().toISOString(),
-              updatedAt: serverTimestamp(),
-            });
+              syncedAt: nowIso,
+              updatedAt: item.updatedAt || nowIso,
+            };
+
+            const cleanDoc = sanitizeForFirestore(syncedRecord);
 
             await setDoc(doc(db, target.col, docId), cleanDoc, { merge: true });
-            await target.table.put({
-              ...item,
-              id: docId,
-              synced: 1,
-              _synced: true,
-              _localSaved: false,
-            });
+            await target.table.put(syncedRecord);
           } catch (e) {
-            console.warn(`[Auto-Upload] Error uploading ${target.col} ${item.id}:`, e);
+            console.warn(`[Auto-Upload] Error uploading ${target.col} ${item.id}:`, e?.message || e);
           }
         }
       }
 
-      // Compute total remaining pending records across all tables
+      // Compute total remaining pending records
       let remaining = 0;
       for (const target of syncTargets) {
         if (target.table) {
-          const allDocs = await target.table.toArray();
-          const count = allDocs.filter(isItemUnsynced).length;
-          remaining += count;
+          const allDocs = await getSafeDocs(target.table);
+          remaining += allDocs.filter(isItemUnsynced).length;
         }
       }
       setPendingCount(remaining);
     } catch (e) {
-      console.warn('[Auto-Upload] Global error:', e);
+      console.warn('[Auto-Upload] Global error:', e?.message || e);
     }
   }, [fbUser]);
 
-  // ══ 2. Real-time Cloud -> PC Hard Disc Listeners (Auto-Download for All Collections) ══
+  // ══ 2. Real-time Cloud -> Local Listeners ══
   useEffect(() => {
     if (isDuplicate || !navigator.onLine) return;
     const activeUser = fbUser || auth.currentUser;
@@ -198,32 +210,46 @@ export default function SyncButton() {
     const setupListener = (colName, localTable, customMapping) => {
       if (!localTable) return;
       try {
-        const unsub = onSnapshot(collection(db, colName), (snapshot) => {
-          const docsToPut = [];
-          snapshot.docChanges().forEach((change) => {
-            if (change.type === 'added' || change.type === 'modified') {
-              const data = change.doc.data();
-              docsToPut.push(customMapping ? customMapping(change.doc.id, data) : {
-                id: change.doc.id,
-                ...data,
-                synced: 1,
-                _synced: true,
-                _localSaved: false
-              });
+        const unsub = onSnapshot(
+          collection(db, colName),
+          (snapshot) => {
+            const docsToPut = [];
+            snapshot.docChanges().forEach((change) => {
+              if (change.type === 'added' || change.type === 'modified') {
+                const data = change.doc.data();
+                docsToPut.push(
+                  customMapping
+                    ? customMapping(change.doc.id, data)
+                    : {
+                        id: change.doc.id,
+                        ...data,
+                        synced: 1,
+                        _synced: true,
+                        _localSaved: false,
+                      }
+                );
+              }
+            });
+            if (docsToPut.length > 0) {
+              localTable.bulkPut(docsToPut).catch(() => {});
             }
-          });
-          if (docsToPut.length > 0) {
-            localTable.bulkPut(docsToPut).catch(() => {});
-          }
-        }, (err) => console.warn(`[Snapshot] ${colName} error:`, err.message));
+          },
+          (err) => console.warn(`[Snapshot] ${colName} error:`, err?.message || err)
+        );
         unsubs.push(unsub);
       } catch (err) {
-        console.warn(`[Snapshot Setup] ${colName} error:`, err.message);
+        console.warn(`[Snapshot Setup] ${colName} error:`, err?.message || err);
       }
     };
 
-    setupListener('invoices', localDb.invoices, (id, data) => ({ id, docId: id, ...data, synced: 1, _synced: true, _localSaved: false }));
-    setupListener('customerTransactions', localDb.invoices, (id, data) => ({ id, docId: id, ...data, synced: 1, _synced: true, _localSaved: false }));
+    setupListener('invoices', localDb.invoices, (id, data) => ({
+      id,
+      docId: id,
+      ...data,
+      synced: 1,
+      _synced: true,
+      _localSaved: false,
+    }));
     setupListener('customers', localDb.customers);
     setupListener('items', localDb.items, (id, data) => ({
       id,
@@ -232,7 +258,7 @@ export default function SyncButton() {
       currentStock: data.currentStock ?? data.stock ?? 0,
       synced: 1,
       _synced: true,
-      _localSaved: false
+      _localSaved: false,
     }));
     setupListener('purchases', localDb.purchases);
     setupListener('suppliers', localDb.suppliers);
@@ -279,7 +305,11 @@ export default function SyncButton() {
       return;
     }
 
-    if (!confirm('Cloud හි ඇති සියලුම Records (Invoices, Customers, Items, Purchases, Suppliers) PC Hard Disc එකට Save කර File Location එකක් තෝරාගැනීමට අවශ්‍යද?')) {
+    if (
+      !confirm(
+        'Cloud හි ඇති සියලුම Records (Invoices, Customers, Items, Purchases, Suppliers) PC Hard Disc එකට Save කර File Location එකක් තෝරාගැනීමට අවශ්‍යද?'
+      )
+    ) {
       return;
     }
 
@@ -325,7 +355,7 @@ export default function SyncButton() {
               ...data,
               synced: 1,
               _synced: true,
-              _localSaved: false
+              _localSaved: false,
             };
 
             if (colDef.name === 'items') {
@@ -379,7 +409,7 @@ export default function SyncButton() {
         URL.revokeObjectURL(url);
       }
     } catch (e) {
-      alert('Download දෝෂයක්: ' + e.message);
+      alert('Download දෝෂයක්: ' + (e?.message || e));
     } finally {
       setSyncing(false);
     }

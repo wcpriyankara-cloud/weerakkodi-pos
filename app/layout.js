@@ -38,6 +38,10 @@ export const metadata = {
     title: 'Weerakkodi POS',
   },
 
+  other: {
+    'mobile-web-app-capable': 'yes',
+  },
+
   openGraph: {
     title: 'Weerakkodi POS',
     description: 'POS & Inventory Management System',
