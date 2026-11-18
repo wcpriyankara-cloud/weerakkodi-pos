@@ -1821,9 +1821,9 @@ unsubs.push(onSnapshot(
     }
   }, [syncingCloud, user?.uid, showToast, setAllItems, setAllCustomers]);
 
-  /* ══════════════════════════════════════════════
-     🔄 AUTO-SYNC: Load + Online + Periodic
-  ══════════════════════════════════════════════ */
+  ══════════════════════════════════════════════════════════════
+   🔄 AUTO-SYNC: Load + Online + Periodic
+══════════════════════════════════════════════════════════════ */
   useEffect(() => {
     if (!user?.uid) return;
     loadPendingSyncCount();
@@ -1834,9 +1834,9 @@ unsubs.push(onSnapshot(
       if (!autoSync) return;
       try {
         const unsynced = await localDb.invoices
-  .where('uid').equals(user.uid)
-  .and(r => r.synced === false || r.synced === 0 || r._synced === false || r._synced === 0)
-  .toArray();
+          .where('uid').equals(user.uid)
+          .and(r => r.synced === false || r.synced === 0 || r._synced === false || r._synced === 0)
+          .toArray();
         if (!unsynced || unsynced.length === 0) {
           setPendingSyncCount(0);
           return;
@@ -1871,7 +1871,7 @@ unsubs.push(onSnapshot(
   }, [user?.uid, autoSync, loadPendingSyncCount, handleSyncPendingInvoices]);
 
 /* ── Process and save invoice ── */
-  // ✅ FIX: Fixed ReferenceError: isOffline is not defined by checking navigator.onLine directly
+  // ✅ FIX: Safely check navigator.onLine directly and handle local & online saves
   const handleSaveInvoice = useCallback(async (actionType) => {
     if (!safeInvoiceItems.length || savingRef.current) return;
     savingRef.current = true;
@@ -1899,7 +1899,6 @@ unsubs.push(onSnapshot(
         if (custSnap && custSnap.exists()) {
           customerBalanceBefore = R2(custSnap.data().currentBalance || 0);
         } else {
-          // 🔑 Offline fallback — use selectedCustomer state (which has Dexie value)
           customerBalanceBefore = R2(selectedCustomer.currentBalance || 0);
         }
       } catch (e) {
@@ -1935,13 +1934,12 @@ unsubs.push(onSnapshot(
       await localDb.invoices.put({
         id: invoiceId, invoiceNo, uid: user.uid,
         ...invoicePayload,
-        _localSaved: true, _synced: false,
+        _localSaved: true, _synced: false, synced: 0,
         _pendingBatchUpdates: Object.keys(_batchUpdateMap).length > 0 ? _batchUpdateMap : null,
         _savedAt: new Date().toISOString()
       });
       dexieSaved = true;
 
-      // 🔑 OFFLINE STOCK DEDUCTION — apply to Dexie items
       if (actionType !== 'draft') {
         try {
           await applyBatchSourceUpdatesLocal(snap.items);
@@ -1951,22 +1949,18 @@ unsubs.push(onSnapshot(
         }
       }
 
-      // 🔑 Update React state immediately so UI reflects new stock
       try {
         const updatedItems = await localDb.items.where('uid').equals(user.uid).toArray();
         if (isMountedRef.current && updatedItems.length > 0) {
           setAllItems(updatedItems);
-          console.log('[Offline] allItems state updated with local stock');
         }
       } catch(e) { console.warn('[Offline] setAllItems failed:', e); }
 
-      // 🔑 Update customer balance locally + UI
       if (selectedCustomer && actionType !== 'draft') {
         try {
           await localDb.customers.update(selectedCustomer.id, {
-            currentBalance: customerBalanceAfter, _synced: false, _localSaved: true
+            currentBalance: customerBalanceAfter, _synced: false, _localSaved: true, synced: 0
           });
-          // Update React state so customer balance reflects in UI
           if (isMountedRef.current) {
             setAllCustomers(prev => {
               if (!Array.isArray(prev)) return prev;
@@ -1982,11 +1976,8 @@ unsubs.push(onSnapshot(
                 : prev
             );
           }
-          console.log('[Offline] Customer balance updated:', selectedCustomer.id, '->', customerBalanceAfter);
         } catch(e) { console.warn('Local customer update:', e.message); }
       }
-
-      console.log('[Offline] Dexie save OK:', invoiceId);
     } catch (dexErr) {
       console.error('[Dexie] Save failed:', dexErr);
     }
@@ -2000,9 +1991,7 @@ unsubs.push(onSnapshot(
         const fbBatch = writeBatch(db);
         fbBatch.set(invRef, invoicePayload);
         if (actionType !== 'draft') {
-          console.log('[DEBUG] snap.items:', snap.items.map(i => ({ itemId: i.itemId, id: i.id, name: i.name, qty: i.qty })));
           const deductions = buildDeductionMap(snap.items);
-          console.log('[DEBUG] deductions:', deductions);
           Object.entries(deductions).forEach(([id, qty]) => {
             fbBatch.update(doc(db, 'items', id), {
               stock: increment(-qty),
@@ -2021,8 +2010,7 @@ unsubs.push(onSnapshot(
             }
           }
           if (snap.paymentMethod === 'etransfer' && snap.bankAccountId && snap.bankAccount) {
-            fbBatch.update(doc(db, `users/${user.uid}/bankAccounts`, snap.bankAccountId), { currentBalance: increment(R2(snap.payAmount)), updatedAt: new Date().toISOString() });
-            fbBatch.set(doc(collection(db, `users/${user.uid}/bankTransactions`)), { type: 'deposit', accountId: snap.bankAccountId, amount: R2(snap.payAmount), date: new Date().toISOString(), description: `Invoice - ${snap.customer.name}`, createdAt: new Date().toISOString(), source: 'pos-invoice', invoiceId });
+            fbBatch.update(doc(collection(db, `users/${user.uid}/bankTransactions`)), { type: 'deposit', accountId: snap.bankAccountId, amount: R2(snap.payAmount), date: new Date().toISOString(), description: `Invoice - ${snap.customer.name}`, createdAt: new Date().toISOString(), source: 'pos-invoice', invoiceId });
           }
           if (snap.netAmount > 0) {
             fbBatch.set(doc(collection(db, `users/${user.uid}/cashTransactions`)), buildCashTransactionPayload({ user, snap, invoiceId, invoiceNo, mode, actualCashReceived, totalSellingRevenue, totalCost, hasCost, isCreditSale, creditAmount, isFullCredit }));
@@ -2030,20 +2018,17 @@ unsubs.push(onSnapshot(
         }
         await Promise.race([fbBatch.commit(), new Promise((_, rej) => setTimeout(() => rej(new Error("Firestore timeout")), 5000))]);
         firestoreOk = true;
-        if (dexieSaved) { try { await localDb.invoices.update(invoiceId, { _synced: true }); } catch(e2) {} }
+        if (dexieSaved) { try { await localDb.invoices.update(invoiceId, { _synced: true, synced: 1 }); } catch(e2) {} }
 
-        // ✅ Mark deducted items as synced in Dexie so onSnapshot won't overwrite Firestore stock
         if (actionType !== 'draft') {
           try {
             const deductionIds = Object.keys(buildDeductionMap(snap.items));
             for (const itemId of deductionIds) {
-              await localDb.items.update(itemId, { _synced: true, _deductedAt: null });
+              await localDb.items.update(itemId, { _synced: true, synced: 1, _deductedAt: null });
             }
-            // Also mark customer as synced
             if (isPersistedCustomer(snap.customer)) {
-              try { await localDb.customers.update(snap.customer.id, { _synced: true }); } catch(e3) {}
+              try { await localDb.customers.update(snap.customer.id, { _synced: true, synced: 1 }); } catch(e3) {}
             }
-            console.log('[Sync] Dexie items marked _synced: true for', deductionIds.length, 'items');
           } catch (e) {
             console.warn('[Sync] Failed to mark items synced:', e.message);
           }
@@ -2051,14 +2036,11 @@ unsubs.push(onSnapshot(
       } catch (fsErr) {
         console.warn('[Offline] Firestore skipped:', fsErr.message);
       }
-    } else {
-      console.log('[Offline] Skipping Firestore write — will sync when online');
     }
 
     // STEP 3: Result
     if (!isMountedRef.current) { savingRef.current = false; return; }
 
-    // 🔑 Always refresh from Dexie after save (online OR offline)
     try {
       const updatedCusts = await localDb.customers.where('uid').equals(user.uid).toArray();
       if (isMountedRef.current && updatedCusts.length > 0) setAllCustomers(updatedCusts);
@@ -2086,6 +2068,7 @@ unsubs.push(onSnapshot(
     savingRef.current = false;
     setSaving(false);
   }, [safeInvoiceItems, paymentMethod, selectedBankAccountId, selectedCustomer, isFullyPaid, finalNetAmount, payAmount, balance, subTotal, billDiscountPercent, billDiscount, exchangeAmount, totalDiscount, invoiceRemark, selectedBankAccount, user, mode, clearForm, ensurePortalKey, showToast, t]);
+
   /* ══════════════════════════════════════════════════════════════
      RENDER LAYOUT
   ══════════════════════════════════════════════════════════════ */
@@ -2116,7 +2099,7 @@ unsubs.push(onSnapshot(
         ))}
       </div>
 
-            {/* HEADER CONTROLS */}
+      {/* HEADER CONTROLS */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
         <h2 style={{ margin: 0, fontSize: 20 }}>🧾 {t.title}</h2>
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -2124,20 +2107,18 @@ unsubs.push(onSnapshot(
           <button onClick={() => setShowProfit(p => !p)} style={{ padding: '7px 10px', borderRadius: 10, fontSize: 11, fontWeight: 800, cursor: 'pointer', border: showProfit ? '2px solid #16a34a' : '2px solid #94a3b8', background: showProfit ? '#f0fdf4' : '#f8fafc', color: showProfit ? '#16a34a' : '#64748b' }}>{showProfit ? '📈' : '📊'}</button>
           {pendingSyncCount > 0 && (
             <button onClick={handleSyncPendingInvoices} disabled={syncingCloud} style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#f59e0b', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: syncingCloud ? 'wait' : 'pointer', opacity: syncingCloud ? 0.7 : 1 }}>
-              <UploadCloud className={"w-3.5 h-3.5 " + (syncingCloud ? "animate-bounce" : "")} />
-              Sync ({pendingSyncCount})
+              <span>☁️ Sync ({pendingSyncCount})</span>
             </button>
           )}
           <button onClick={handleOpenBackupFolder} style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#334155', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}>
-            <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-            Backup
+            <span>📁 Backup</span>
           </button>
           <button onClick={() => { window.location.href = '/invoice-list'; }} style={{ background: '#3b82f6', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}>📋 {t.invoiceListPage}</button>
-          <button onClick={() => { window.location.href = '/approved'; }} style={{ background: approvedCount > 0 ? 'linear-gradient(135deg,#16a34a,#15803d)' : '#16a34a', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer', position: 'relative', animation: approvedCount > 0 ? 'glowPulse 2s infinite' : 'none' }}>
+          <button onClick={() => { window.location.href = '/approved'; }} style={{ background: approvedCount > 0 ? 'linear-gradient(135deg,#16a34a,#15803d)' : '#16a34a', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer', position: 'relative' }}>
             📋 {t.approvedLabel}
-            {approvedCount > 0 && <span style={{ position: 'absolute', top: -7, right: -7, background: '#ef4444', color: 'white', fontSize: 10, fontWeight: 900, minWidth: 20, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px', border: '2px solid white', animation: 'badgePop 0.3s ease-out' }}>{approvedCount}</span>}
+            {approvedCount > 0 && <span style={{ position: 'absolute', top: -7, right: -7, background: '#ef4444', color: 'white', fontSize: 10, fontWeight: 900, minWidth: 20, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px', border: '2px solid white' }}>{approvedCount}</span>}
           </button>
-          {pendingOrderCount > 0 && (<button onClick={() => { window.location.href = '/customer-orders'; }} style={{ background: 'linear-gradient(135deg,#f59e0b,#d77706)', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer', position: 'relative', animation: 'pendingGlow 2s infinite' }}>⏳ {t.pendingLabel}<span style={{ position: 'absolute', top: -7, right: -7, background: '#dc2626', color: 'white', fontSize: 10, fontWeight: 900, minWidth: 20, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px', border: '2px solid white', animation: 'badgePop 0.3s ease-out' }}>{pendingOrderCount}</span></button>)}
+          {pendingOrderCount > 0 && (<button onClick={() => { window.location.href = '/customer-orders'; }} style={{ background: 'linear-gradient(135deg,#f59e0b,#d77706)', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer', position: 'relative' }}>⏳ {t.pendingLabel}<span style={{ position: 'absolute', top: -7, right: -7, background: '#dc2626', color: 'white', fontSize: 10, fontWeight: 900, minWidth: 20, height: 20, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px', border: '2px solid white' }}>{pendingOrderCount}</span></button>)}
           <button onClick={() => { window.location.href = '/return'; }} style={{ background: '#dc2626', color: 'white', border: 'none', padding: '7px 11px', borderRadius: 8, fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}>↩️ {t.returnLabel}</button>
           {safeInvoiceItems.length > 0 && (<button onClick={clearForm} style={{ background: '#fee2e2', color: '#dc2626', border: 'none', padding: '7px 11px', borderRadius: 6, fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}>🗑️ <span className="kb-shortcut-badge">F12</span></button>)}
         </div>
@@ -2150,7 +2131,7 @@ unsubs.push(onSnapshot(
           {lastScannedDisplay && <span style={{ fontSize: 13, background: lastScannedDisplay.includes('✅') ? 'rgba(255,255,255,0.3)' : 'rgba(239,68,68,0.5)', padding: '2px 10px', borderRadius: 8 }}>{lastScannedDisplay}</span>}
         </button>
       </div>
-      <MobileBarcodeScanner isOpen={showScanner} onClose={() => setShowScanner(false)} onScan={handleBarcodeScanned} />
+      {typeof MobileBarcodeScanner !== 'undefined' && <MobileBarcodeScanner isOpen={showScanner} onClose={() => setShowScanner(false)} onScan={handleBarcodeScanned} />}
 
       {/* MAIN ITEM SEARCH */}
       <div ref={itemSearchContainerRef} className="no-print" style={{ marginBottom: 10, position: 'relative' }}>
@@ -2163,7 +2144,7 @@ unsubs.push(onSnapshot(
           <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 10, color: '#94a3b8', fontWeight: 800, background: '#f1f5f9', padding: '2px 6px', borderRadius: 4, border: '1px solid #e2e8f0' }}>F1</span>
         </div>
         {showItemDropdown && itemSearch && filteredItems.length > 0 && (
-          <div onTouchStart={itemTouch.onTouchStart} onTouchMove={itemTouch.onTouchMove} style={dropdownStyle}>
+          <div onTouchStart={itemTouch?.onTouchStart} onTouchMove={itemTouch?.onTouchMove} style={dropdownStyle}>
             <div style={stickyHeaderStyle}><span>🔍 {filteredItems.length} items</span><button onClick={() => setShowItemDropdown(false)} style={{ background: 'none', border: 'none', fontSize: 16, color: '#94a3b8', cursor: 'pointer' }}>✕</button></div>
             {filteredItems.map((i, idx) => {
               const ts = getItemTotalStock(i), as = getAvailableStock(i.id), isOut = as <= 0;
@@ -2172,7 +2153,7 @@ unsubs.push(onSnapshot(
               const isActive = idx === activeItemIdx;
               return (
                 <div key={i.id} ref={isActive ? activeItemRef : null}
-                  onTouchEnd={e => { if (itemTouch.isTap()) { e.preventDefault(); addItemToInvoice(i); } }}
+                  onTouchEnd={e => { if (itemTouch?.isTap && itemTouch.isTap()) { e.preventDefault(); addItemToInvoice(i); } }}
                   onClick={() => addItemToInvoice(i)} className={isActive ? 'kb-active-item' : ''}
                   style={{ ...dropdownRowStyle, opacity: (stockControlEnabled && isOut) ? 0.6 : 1, background: isActive ? '#dbeafe' : isOut ? '#fef2f2' : 'white', borderLeft: isActive ? '4px solid #2563eb' : 'none' }}>
                   <img src={getItemImg(i)} alt="" onError={e => onImgErr(e)} style={{ width: 46, height: 46, borderRadius: 8, objectFit: 'cover', border: '1px solid #e2e8f0', flexShrink: 0 }} />
@@ -2381,10 +2362,10 @@ unsubs.push(onSnapshot(
               <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 10, color: '#94a3b8', fontWeight: 800, background: '#f1f5f9', padding: '2px 6px', borderRadius: 4, border: '1px solid #e2e8f0' }}>F2</span>
             </div>
             {showCustomerDropdown && (
-              <div onTouchStart={custTouch.onTouchStart} onTouchMove={custTouch.onTouchMove} style={dropdownStyle}>
+              <div onTouchStart={custTouch?.onTouchStart} onTouchMove={custTouch?.onTouchMove} style={dropdownStyle}>
                 <div style={stickyHeaderStyle}><span>👤 {filteredCustomers.length} customers</span><button onClick={() => setShowCustomerDropdown(false)} style={{ background: 'none', border: 'none', fontSize: 16, color: '#94a3b8', cursor: 'pointer' }}>✕</button></div>
                 {customerSearch.trim().length > 0 && (
-                  <div onTouchEnd={e => { if (custTouch.isTap()) { e.preventDefault(); handleShowNewCustomerWithPreFill(customerSearch); } }} onClick={() => handleShowNewCustomerWithPreFill(customerSearch)}
+                  <div onTouchEnd={e => { if (custTouch?.isTap && custTouch.isTap()) { e.preventDefault(); handleShowNewCustomerWithPreFill(customerSearch); } }} onClick={() => handleShowNewCustomerWithPreFill(customerSearch)}
                     style={{ ...dropdownRowStyle, background: 'linear-gradient(135deg,#eff6ff,#dbeafe)', fontWeight: 'bold', color: '#2563eb', borderBottom: '2px solid #93c5fd', minHeight: 52, justifyContent: 'center', gap: 6 }}>
                     <span style={{ fontSize: 22 }}>➕</span><span style={{ fontSize: 14 }}>&quot;{customerSearch.trim()}&quot; {t.addAsNew}</span>
                   </div>
@@ -2393,7 +2374,7 @@ unsubs.push(onSnapshot(
                   const st = getBalSt(c.currentBalance), isActive = idx === activeCustIdx;
                   return (
                     <div key={c.id} ref={isActive ? activeCustRef : null}
-                      onTouchEnd={e => { if (custTouch.isTap()) { e.preventDefault(); setSelectedCustomer(c); setShowCustomerDropdown(false); setCustomerSearch(''); } }}
+                      onTouchEnd={e => { if (custTouch?.isTap && custTouch.isTap()) { e.preventDefault(); setSelectedCustomer(c); setShowCustomerDropdown(false); setCustomerSearch(''); } }}
                       onClick={() => { setSelectedCustomer(c); setShowCustomerDropdown(false); setCustomerSearch(''); }}
                       className={isActive ? 'kb-active-cust' : ''} style={{ ...dropdownRowStyle, background: isActive ? '#dbeafe' : 'white', borderLeft: isActive ? '4px solid #2563eb' : 'none' }}>
                       <img src={getCustImg(c)} alt="" onError={e => onImgErr(e, 'a')} style={{ width: 42, height: 42, borderRadius: '50%', objectFit: 'cover', border: '2px solid #e2e8f0', flexShrink: 0 }} />
