@@ -128,12 +128,15 @@ export default function SyncButton() {
     return !item.synced && item._synced !== true;
   };
 
-  // Safe table fetcher
+  // Safe table fetcher (Handles transient IndexedDB transaction aborts during purging)
   const getSafeDocs = async (table) => {
     if (!table) return [];
     try {
       return await table.toArray();
     } catch (err) {
+      if (err?.name === 'AbortError' || err?.message?.includes('aborted')) {
+        return [];
+      }
       console.warn(`[Sync] Error reading table:`, err?.message || err);
       return [];
     }
@@ -195,7 +198,9 @@ export default function SyncButton() {
       }
       setPendingCount(remaining);
     } catch (e) {
-      console.warn('[Auto-Upload] Global error:', e?.message || e);
+      if (e?.name !== 'AbortError' && !e?.message?.includes('aborted')) {
+        console.warn('[Auto-Upload] Global error:', e?.message || e);
+      }
     }
   }, [fbUser]);
 
@@ -231,7 +236,11 @@ export default function SyncButton() {
               }
             });
             if (docsToPut.length > 0) {
-              localTable.bulkPut(docsToPut).catch(() => {});
+              localTable.bulkPut(docsToPut).catch((err) => {
+                if (err?.name !== 'AbortError' && !err?.message?.includes('aborted')) {
+                  console.warn(`[BulkPut] ${colName} error:`, err?.message || err);
+                }
+              });
             }
           },
           (err) => console.warn(`[Snapshot] ${colName} error:`, err?.message || err)
