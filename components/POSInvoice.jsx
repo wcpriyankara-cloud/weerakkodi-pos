@@ -1821,7 +1821,7 @@ unsubs.push(onSnapshot(
     }
   }, [syncingCloud, user?.uid, showToast, setAllItems, setAllCustomers]);
 
-  /* ══════════════════════════════════════════════
+ /* ══════════════════════════════════════════════
      🔄 AUTO-SYNC: Load + Online + Periodic
   ══════════════════════════════════════════════ */
   useEffect(() => {
@@ -1870,8 +1870,7 @@ unsubs.push(onSnapshot(
     };
   }, [user?.uid, autoSync, loadPendingSyncCount, handleSyncPendingInvoices]);
 
-/* ── Process and save invoice ── */
-  // ✅ FIX: Safely check navigator.onLine directly and handle local & online saves
+  /* ── Process and save invoice ── */
   const handleSaveInvoice = useCallback(async (actionType) => {
     if (!safeInvoiceItems.length || savingRef.current) return;
     savingRef.current = true;
@@ -2068,6 +2067,85 @@ unsubs.push(onSnapshot(
     savingRef.current = false;
     setSaving(false);
   }, [safeInvoiceItems, paymentMethod, selectedBankAccountId, selectedCustomer, isFullyPaid, finalNetAmount, payAmount, balance, subTotal, billDiscountPercent, billDiscount, exchangeAmount, totalDiscount, invoiceRemark, selectedBankAccount, user, mode, clearForm, ensurePortalKey, showToast, t]);
+
+  /* ══════════════════════════════════════════════
+     ⌨️ KEYBOARD SEARCH HANDLERS (Fix ReferenceErrors)
+  ══════════════════════════════════════════════ */
+
+  // Item Search Input KeyDown Handler
+  const handleItemSearchKeyDown = (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (filteredItems && filteredItems.length > 0) {
+        setActiveItemIdx((prev) => (prev + 1) % filteredItems.length);
+      }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (filteredItems && filteredItems.length > 0) {
+        setActiveItemIdx((prev) => (prev - 1 + filteredItems.length) % filteredItems.length);
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filteredItems && filteredItems.length > 0 && activeItemIdx >= 0 && activeItemIdx < filteredItems.length) {
+        addItemToInvoice(filteredItems[activeItemIdx]);
+        setItemSearch('');
+        setShowItemDropdown(false);
+      } else if (itemSearch && itemSearch.trim()) {
+        const match = items.find(
+          (i) =>
+            i.barcode?.toString() === itemSearch.trim() ||
+            i.code?.toString().toLowerCase() === itemSearch.trim().toLowerCase() ||
+            i.name?.toLowerCase().includes(itemSearch.trim().toLowerCase())
+        );
+        if (match) {
+          addItemToInvoice(match);
+          setItemSearch('');
+          setShowItemDropdown(false);
+        }
+      }
+    } else if (e.key === 'Escape') {
+      setShowItemDropdown(false);
+    }
+  };
+
+  // Customer Search Input KeyDown Handler
+  const handleCustSearchKeyDown = (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (filteredCustomers && filteredCustomers.length > 0) {
+        setActiveCustIdx((prev) => (prev + 1) % filteredCustomers.length);
+      }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (filteredCustomers && filteredCustomers.length > 0) {
+        setActiveCustIdx((prev) => (prev - 1 + filteredCustomers.length) % filteredCustomers.length);
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filteredCustomers && filteredCustomers.length > 0 && activeCustIdx >= 0 && activeCustIdx < filteredCustomers.length) {
+        setSelectedCustomer(filteredCustomers[activeCustIdx]);
+        setShowCustomerDropdown(false);
+        setCustomerSearch('');
+      } else if (customerSearch && customerSearch.trim()) {
+        const term = customerSearch.trim().toLowerCase();
+        const match = (customers || []).find(
+          (c) =>
+            c.phone?.toString().includes(term) ||
+            c.name?.toLowerCase().includes(term) ||
+            c.code?.toLowerCase().includes(term)
+        );
+        if (match) {
+          setSelectedCustomer(match);
+          setShowCustomerDropdown(false);
+          setCustomerSearch('');
+        } else if (typeof handleShowNewCustomerWithPreFill === 'function') {
+          handleShowNewCustomerWithPreFill(customerSearch);
+        }
+      }
+    } else if (e.key === 'Escape') {
+      setShowCustomerDropdown(false);
+    }
+  };
 
   /* ══════════════════════════════════════════════════════════════
      RENDER LAYOUT
@@ -2355,10 +2433,27 @@ unsubs.push(onSnapshot(
         ) : (
           <div ref={customerSearchContainerRef} style={{ position: 'relative' }}>
             <div style={{ position: 'relative' }}>
-              <input ref={customerSearchInputRef} placeholder={`${t.searchCustomer} [F2]`} value={customerSearch}
-                onChange={e => { setCustomerSearch(e.target.value); setShowCustomerDropdown(true); setActiveCustIdx(0); }}
-                onFocus={() => setShowCustomerDropdown(true)} onKeyDown={handleCustSearchKeyDown}
-                style={{ width: '100%', padding: 12, paddingRight: 50, borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 15, boxSizing: 'border-box' }} />
+              <input
+                ref={customerSearchInputRef}
+                placeholder={`${t.searchCustomer} [F2]`}
+                value={customerSearch}
+                onChange={(e) => {
+                  setCustomerSearch(e.target.value);
+                  setShowCustomerDropdown(true);
+                  setActiveCustIdx(0);
+                }}
+                onFocus={() => setShowCustomerDropdown(true)}
+                onKeyDown={(e) => (typeof handleCustSearchKeyDown === 'function' ? handleCustSearchKeyDown(e) : null)}
+                style={{
+                  width: '100%',
+                  padding: 12,
+                  paddingRight: 50,
+                  borderRadius: 8,
+                  border: '1px solid #cbd5e1',
+                  fontSize: 15,
+                  boxSizing: 'border-box',
+                }}
+              />
               <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 10, color: '#94a3b8', fontWeight: 800, background: '#f1f5f9', padding: '2px 6px', borderRadius: 4, border: '1px solid #e2e8f0' }}>F2</span>
             </div>
             {showCustomerDropdown && (
