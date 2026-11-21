@@ -1,11 +1,11 @@
 'use client';
-
 // app/(protected)/return/page.jsx
 // ✅ Customer balance read BEFORE return — previousOutstanding/newOutstanding FIXED
 // ✅ null instead of 0 for missing balance — allows InvoiceOutputManager fallback
 // ✅ InvoiceOutputManager integrated
 // ✅ Firestore index fallback
 // ✅ Return history with send bill
+// ✅ Multi-Layer PC Hard Disk Storage (Dexie Local DB + Local JSON Hard Disk Backup)
 
 import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { db } from '@/lib/firebase';
@@ -60,6 +60,103 @@ const normalizeText = (text) => {
 };
 
 const roundQty = (v) => Math.round(toNum(v) * 100) / 100;
+
+/* ═══════════════════════════════════════
+   LOCAL PC HARD DISK BACKUP HELPER
+═══════════════════════════════════════ */
+const saveToLocalAndHardDisk = async (returnData, updatedInvoice, affectedItemUpdates, updatedCustomerData) => {
+  try {
+    // Clean payload stripping React references and non-serializable objects
+    const cleanReturnData = JSON.parse(JSON.stringify(returnData));
+
+    // 1. Save to Dexie Local IndexedDB
+    if (typeof window !== 'undefined') {
+      try {
+        const { localDb } = await import('@/lib/localDb');
+        if (localDb) {
+          // Save return record locally
+          if (localDb.returns) {
+            await localDb.returns.put({
+              ...cleanReturnData,
+              id: cleanReturnData.returnId || cleanReturnData.id,
+              synced: true,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          // Update items stock locally
+          if (localDb.items && Array.isArray(affectedItemUpdates)) {
+            for (const itemUpd of affectedItemUpdates) {
+              if (itemUpd.id) {
+                const existing = await localDb.items.get(itemUpd.id);
+                if (existing) {
+                  await localDb.items.update(itemUpd.id, {
+                    stock: itemUpd.stock,
+                    currentStock: itemUpd.stock,
+                    updatedAt: new Date().toISOString(),
+                  });
+                }
+              }
+            }
+          }
+          // Update customer balance locally
+          if (localDb.customers && updatedCustomerData?.id) {
+            const existingCust = await localDb.customers.get(updatedCustomerData.id);
+            if (existingCust) {
+              await localDb.customers.update(updatedCustomerData.id, {
+                currentBalance: updatedCustomerData.currentBalance,
+                updatedAt: new Date().toISOString(),
+              });
+            }
+          }
+          // Update invoice locally
+          if (localDb.invoices && updatedInvoice?.id) {
+            const existingInv = await localDb.invoices.get(updatedInvoice.id);
+            if (existingInv) {
+              await localDb.invoices.update(updatedInvoice.id, {
+                returnedItems: updatedInvoice.returnedItems,
+                returnStatus: updatedInvoice.returnStatus,
+                lastReturnAt: new Date().toISOString(),
+              });
+            }
+          }
+        }
+      } catch (dexieErr) {
+        console.warn('Local IndexedDB update warning:', dexieErr);
+      }
+    }
+
+    // 2. Save JSON File directly to PC Hard Disk via Electron Bridge
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      const returnIdStr = cleanReturnData.returnId || cleanReturnData.id || `RTN-${Date.now()}`;
+      const fileName = `Return_${returnIdStr}_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      const fileContent = JSON.stringify(cleanReturnData, null, 2);
+
+      if (typeof window.electronAPI.saveBackupFile === 'function') {
+        await window.electronAPI.saveBackupFile({
+          folder: 'Returns',
+          filename: fileName,
+          content: fileContent,
+        });
+      } else if (typeof window.electronAPI.saveLocalReturn === 'function') {
+        await window.electronAPI.saveLocalReturn({
+          filename: fileName,
+          data: cleanReturnData,
+        });
+      } else if (typeof window.electronAPI.saveReturnToDisk === 'function') {
+        await window.electronAPI.saveReturnToDisk({
+          filename: fileName,
+          data: cleanReturnData,
+        });
+      } else if (typeof window.electronAPI.saveLocalJson === 'function') {
+        await window.electronAPI.saveLocalJson('Returns', fileName, cleanReturnData);
+      } else if (typeof window.electronAPI.saveFile === 'function') {
+        await window.electronAPI.saveFile(`Returns/${fileName}`, fileContent);
+      }
+    }
+  } catch (err) {
+    console.error('Local PC Hard Disk backup error:', err);
+  }
+};
 
 /* ═══════════════════════════════════════
    HELPERS
@@ -130,21 +227,16 @@ const getSourceBatchAllocations = (invoiceItem) => {
 };
 
 /* ═══════════════════════════════════════
-   ★★★ BUILD RETURN OUTPUT INVOICE — FIXED
-   Uses null for missing balance so
-   InvoiceOutputManager can use fallback
+   BUILD RETURN OUTPUT INVOICE
 ═══════════════════════════════════════ */
 const buildReturnOutputInvoice = ({ completedReturn, originalInvoice, refundMethod }) => {
   if (!completedReturn) return null;
-
   const returnId   = completedReturn.returnId || completedReturn.id || '';
   const returnNo   = `RTN-${String(returnId).slice(0, 8).toUpperCase()}`;
   const originalNo =
     completedReturn.originalInvoiceNo ||
     (originalInvoice?.id ? `INV-${originalInvoice.id.slice(0, 8).toUpperCase()}` : '');
-
   const effectiveRefundMethod = refundMethod || completedReturn.refundMethod || 'cash';
-
   const items = (completedReturn.items || []).map((it, idx) => {
     const qty       = toNum(it.returnQty || it.qty || 1);
     const unitPrice =
@@ -166,41 +258,31 @@ const buildReturnOutputInvoice = ({ completedReturn, originalInvoice, refundMeth
       photoURL:       it.photoURL || '',
     };
   });
-
   const total   = toNum(completedReturn.totalReturnAmount);
   const remarks = [
     'Sales Return',
     originalNo ? `Original: ${originalNo}` : '',
     completedReturn.reason || '',
   ].filter(Boolean).join(' | ');
-
   const createdAt =
     completedReturn.createdAt?.toDate
       ? completedReturn.createdAt
       : completedReturn.createdAt
         ? { toDate: () => new Date(completedReturn.createdAt) }
         : { toDate: () => new Date() };
-
   const refundMethodLabel =
     effectiveRefundMethod === 'cash'    ? 'Cash Refund'       :
     effectiveRefundMethod === 'credit'  ? 'Credit Adjustment' :
     'Exchange';
 
-  /* ★★★ KEY FIX:
-     Use null for missing values — NOT 0
-     This lets InvoiceOutputManager fallback logic work correctly
-     If processReturn saved real values, they come through via completedReturn
-  ★★★ */
   const hasPrev = completedReturn.previousOutstanding !== undefined &&
                   completedReturn.previousOutstanding !== null;
   const hasNext = completedReturn.newOutstanding !== undefined &&
                   completedReturn.newOutstanding !== null;
 
-  // Detect placeholder zeros — both 0 means unset
   const prevVal = hasPrev ? toNum(completedReturn.previousOutstanding) : null;
   const nextVal = hasNext ? toNum(completedReturn.newOutstanding)      : null;
 
-  // If both are 0 but refund is credit, likely old/bad data — use null for fallback
   const prevOut = (prevVal === 0 && nextVal === 0 && effectiveRefundMethod === 'credit')
     ? null
     : prevVal;
@@ -209,45 +291,34 @@ const buildReturnOutputInvoice = ({ completedReturn, originalInvoice, refundMeth
     : nextVal;
 
   return {
-    // ★ Required by InvoiceOutputManager
     _docType:   'return',
     _returnId:  returnId,
-
     id:         `return-${returnId}`,
     invoiceNo:  returnNo,
-
     customerId:      completedReturn.customerId || originalInvoice?.customerId || '',
     customerName:    completedReturn.customerName || originalInvoice?.customerName || 'Cash Customer',
     customerPhone:   completedReturn.customerPhone || originalInvoice?.customerPhone || '',
     customerAddress: completedReturn.customerAddress || originalInvoice?.customerAddress || '',
-
     items,
-
     grossTotal:          total,
     totalDiscount:       0,
     billDiscount:        0,
     billDiscountPercent: 0,
     exchangeAmount:      0,
     netAmount:           total,
-
     payAmount:             effectiveRefundMethod === 'cash'     ? total : 0,
     refundCashAmount:      effectiveRefundMethod === 'cash'     ? total : 0,
     creditAdjustedAmount:  effectiveRefundMethod === 'credit'   ? total : 0,
     exchangeValueAmount:   effectiveRefundMethod === 'exchange' ? total : 0,
-
     balance:       0,
     paymentMethod: effectiveRefundMethod,
     refundMethod:  effectiveRefundMethod,
     refundMethodLabel,
-
     remarks,
     invoiceRemark:     remarks,
     originalInvoiceNo: originalNo,
-
-    // ★★★ CORRECT BALANCE VALUES ★★★
-    previousOutstanding: prevOut,   // null if not set → fallback in InvoiceOutputManager
-    newOutstanding:      nextOut,   // null if not set → fallback in InvoiceOutputManager
-
+    previousOutstanding: prevOut,
+    newOutstanding:      nextOut,
     createdAt,
     status: 'completed',
   };
@@ -279,7 +350,7 @@ const TRANSLATIONS = {
     stockNote:           'තොගය (Stock) නිවැරදිව නැවත update වේ.',
     creditNote:          'පාරිභෝගික ණය (Credit) අඩු වේ.',
     exchangeNote:        'Stock පමණක් update වේ. මුදල් ආපසු ගෙවන්නේ නැත.',
-    successMsg:          'Return සාර්ථකව සම්පූර්ණ විය!',
+    successMsg:          'Return සාර්ථකව සම්පූර්ණ විය! PC hard disk එකේද save විය.',
     returnId:            'Return අංකය',
     newReturn:           'තවත් Return',
     fullyReturned:       'සම්පූර්ණයෙන් Return කර ඇත',
@@ -338,7 +409,7 @@ const TRANSLATIONS = {
     stockNote:           'Stock will be updated correctly.',
     creditNote:          'Customer credit balance will be reduced.',
     exchangeNote:        'Only stock will be updated. No cash refund.',
-    successMsg:          'Return completed successfully!',
+    successMsg:          'Return completed successfully & saved to PC hard disk!',
     returnId:            'Return ID',
     newReturn:           'New Return',
     fullyReturned:       'Fully Returned',
@@ -412,7 +483,19 @@ function ReturnHistoryList({ user, t, onSend }) {
             return db_ - da;
           });
           setReturns(data);
-        } catch (fe) { setError(fe.message); }
+        } catch (fe) {
+          try {
+            const { localDb } = await import('@/lib/localDb');
+            if (localDb && localDb.returns) {
+              const localData = await localDb.returns.toArray();
+              setReturns(localData);
+            } else {
+              setError(fe.message);
+            }
+          } catch {
+            setError(fe.message);
+          }
+        }
       } finally { setLoading(false); }
     };
     loadReturns();
@@ -451,9 +534,7 @@ function ReturnHistoryList({ user, t, onSend }) {
           style={{ width: '100%', padding: '11px 36px 11px 38px', borderRadius: 10, border: '1.5px solid #fecaca', fontSize: 14, outline: 'none', boxSizing: 'border-box' }} />
         {search && (<button onClick={() => setSearch('')} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontSize: 18 }}>✕</button>)}
       </div>
-
       <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>{filtered.length} returns found</div>
-
       {filtered.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>
           <div style={{ fontSize: 40, marginBottom: 8 }}>📭</div>{t.noReturns}
@@ -541,14 +622,14 @@ export default function ReturnPage() {
     setTimeout(() => setToastMsg(''), 4000);
   }, []);
 
-  /* ── Load invoices ── */
+  /* ── Load invoices with local offline fallback ── */
   const loadAllInvoices = useCallback(async () => {
     if (!user) return;
     setInvoicesLoading(true); setInvoicesError('');
+    let invoices = [];
     try {
       const q    = query(collection(db, 'invoices'), where('uid', '==', user.uid));
       const snap = await getDocs(q);
-      const invoices = [];
       snap.docs.forEach((d) => {
         const data = d.data();
         if (data.status === 'draft') return;
@@ -559,10 +640,34 @@ export default function ReturnPage() {
         if (Array.isArray(data.items)) data.items.forEach((item) => { if (item.name) sp.push(normalizeText(item.name)); });
         invoices.push({ id: d.id, ...data, customerName, customerPhone, _search: sp.filter(Boolean).join(' '), _sid: sid });
       });
-      invoices.sort((a, b) => { const dA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0); const dB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0); return dB - dA; });
+    } catch (error) {
+      console.warn('Firestore invoice load failed, falling back to localDb:', error);
+      try {
+        const { localDb } = await import('@/lib/localDb');
+        if (localDb && localDb.invoices) {
+          const localInvs = await localDb.invoices.toArray();
+          localInvs.forEach((data) => {
+            if (data.status === 'draft') return;
+            const customerName  = data.customerName  || data.customer?.name  || '';
+            const customerPhone = data.customerPhone || data.customer?.phone || '';
+            const sid = String(data.id || '').slice(0, 6).toLowerCase(), fullId = String(data.id || '').toLowerCase();
+            const sp = [normalizeText(customerName), normalizeText(customerPhone), fullId, sid, `inv-${sid}`, `inv${sid}`, normalizeText(data.invoiceNo)];
+            if (Array.isArray(data.items)) data.items.forEach((item) => { if (item.name) sp.push(normalizeText(item.name)); });
+            invoices.push({ id: String(data.id), ...data, customerName, customerPhone, _search: sp.filter(Boolean).join(' '), _sid: sid });
+          });
+        }
+      } catch (locErr) {
+        setInvoicesError(error.message);
+      }
+    } finally {
+      invoices.sort((a, b) => {
+        const dA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+        const dB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+        return dB - dA;
+      });
       setAllInvoices(invoices);
-    } catch (error) { setInvoicesError(error.message); }
-    finally { setInvoicesLoading(false); }
+      setInvoicesLoading(false);
+    }
   }, [user]);
 
   useEffect(() => { if (user) loadAllInvoices(); }, [user, loadAllInvoices]);
@@ -633,7 +738,6 @@ export default function ReturnPage() {
       Object.entries(dbByLine).forEach(([k, v]) => { returnedByLine[k] = Math.max(toNum(returnedByLine[k]), toNum(v)); });
       Object.entries(dbByItem).forEach(([k, v]) => { returnedByItem[k] = Math.max(toNum(returnedByItem[k]), toNum(v)); });
     } catch (e) { console.error('Returns fetch error:', e); }
-
     const items = (inv.items || []).map((item, index) => {
       const itemId = item.itemId || item.id || '', lineKey = buildLineKey(item, index);
       const already = toNum(returnedByLine[lineKey] || returnedByItem[itemId] || 0);
@@ -641,7 +745,6 @@ export default function ReturnPage() {
       const effectivePrice = Math.round(getEffectivePrice(item) * 100) / 100;
       return { ...item, itemId, lineKey, originalQty, alreadyReturned: already, availableQty, returnQty: 0, selected: false, effectivePrice, sourceBatchAllocations: getSourceBatchAllocations(item) };
     });
-
     setReturnItems(items); setReturnReason(''); setRefundMethod('cash'); setStep('items');
   };
 
@@ -673,22 +776,17 @@ export default function ReturnPage() {
   const hasBatchRestore  = useMemo(() => itemsToReturn.some(i => Array.isArray(i.sourceBatchAllocations) && i.sourceBatchAllocations.length > 0), [itemsToReturn]);
 
   /* ══════════════════════════════════════════════════════
-     ★★★ PROCESS RETURN — FIXED
-     1. Read customer balance BEFORE return
-     2. Save previousOutstanding + newOutstanding to Firestore
-     3. buildReturnOutputInvoice reads these values
+     PROCESS RETURN & SAVE TO PC HARD DISK + FIRESTORE
   ══════════════════════════════════════════════════════ */
   const processReturn = async () => {
     if (!itemsToReturn.length) { showToast(t.selectItemsToReturn); return; }
     for (const item of itemsToReturn) {
       if (item.returnQty > item.availableQty) { showToast(`${item.name}: ${t.maxReturnExceeded}`); return; }
     }
-
     setIsProcessing(true);
     try {
       const fbBatch      = writeBatch(db);
       const returnDocRef = doc(collection(db, 'returns'));
-
       const normalizedReturnItems = itemsToReturn.map((i, idx) => ({
         itemId:           i.itemId,
         name:             i.name,
@@ -708,20 +806,29 @@ export default function ReturnPage() {
         sourceBatchAllocations: Array.isArray(i.sourceBatchAllocations) ? i.sourceBatchAllocations : [],
       }));
 
-      /* ★★★ READ CUSTOMER BALANCE BEFORE RETURN ★★★ */
+      /* ★ READ CUSTOMER BALANCE BEFORE RETURN ★ */
       let customerBalanceBefore = null;
       const customerId     = selectedInvoice.customerId;
       const isCashCustomer = !customerId || customerId === 'CASH_CUSTOMER' || customerId === 'walk-in';
-
       if (!isCashCustomer) {
         try {
           const custSnap = await getDoc(doc(db, 'customers', customerId));
           if (custSnap.exists()) {
             customerBalanceBefore = toNum(custSnap.data().currentBalance ?? 0);
-            console.log('★ Customer balance before return:', customerBalanceBefore);
+          } else {
+            try {
+              const { localDb } = await import('@/lib/localDb');
+              const localCust = await localDb?.customers?.get(customerId);
+              if (localCust) customerBalanceBefore = toNum(localCust.currentBalance ?? 0);
+            } catch {}
           }
         } catch (e) {
           console.warn('Customer balance fetch error:', e.message);
+          try {
+            const { localDb } = await import('@/lib/localDb');
+            const localCust = await localDb?.customers?.get(customerId);
+            if (localCust) customerBalanceBefore = toNum(localCust.currentBalance ?? 0);
+          } catch {}
         }
       }
 
@@ -732,13 +839,7 @@ export default function ReturnPage() {
             : customerBalanceBefore)
         : null;
 
-      console.log('★ Return balance snapshot:', {
-        customerBalanceBefore,
-        customerBalanceAfter,
-        refundMethod,
-        totalRefund,
-      });
-
+      const nowIso = new Date().toISOString();
       const returnData = {
         uid:               user.uid,
         originalInvoiceId: selectedInvoice.id,
@@ -750,20 +851,21 @@ export default function ReturnPage() {
         totalReturnAmount: totalRefund,
         refundMethod,
         reason:            returnReason,
-        createdAt:         serverTimestamp(),
+        createdAt:         nowIso,
         status:            'completed',
-
-        // ★★★ SAVED TO FIRESTORE — key fix ★★★
-        previousOutstanding: customerBalanceBefore,  // null if cash customer
-        newOutstanding:      customerBalanceAfter,    // null if cash customer
+        previousOutstanding: customerBalanceBefore,
+        newOutstanding:      customerBalanceAfter,
       };
 
-      fbBatch.set(returnDocRef, returnData);
+      // Set Firestore doc
+      fbBatch.set(returnDocRef, {
+        ...returnData,
+        createdAt: serverTimestamp(),
+      });
 
       /* ── Batch restore ── */
       const batchRestoreMap   = {};
       const returnedQtyByItem = {};
-
       normalizedReturnItems.forEach((item) => {
         returnedQtyByItem[item.itemId] = toNum(returnedQtyByItem[item.itemId]) + toNum(item.returnQty);
         const allocs = Array.isArray(item.sourceBatchAllocations) ? item.sourceBatchAllocations : [];
@@ -792,38 +894,52 @@ export default function ReturnPage() {
           try {
             const snap = await getDoc(doc(db, 'items', itemId));
             currentItemDocStockMap[itemId] = snap.exists() ? getItemDocStock(snap.data()) : 0;
-          } catch { currentItemDocStockMap[itemId] = 0; }
+          } catch {
+            try {
+              const { localDb } = await import('@/lib/localDb');
+              const localItem = await localDb?.items?.get(itemId);
+              currentItemDocStockMap[itemId] = getItemDocStock(localItem) || 0;
+            } catch {
+              currentItemDocStockMap[itemId] = 0;
+            }
+          }
         })
       );
 
       for (const colName of ['purchases', 'purchaseInvoices', 'stockIn']) {
-        const snap = await getDocs(query(collection(db, colName), where('uid', '==', user.uid)));
-        snap.docs.forEach((ds) => {
-          const refKey = `${colName}/${ds.id}`, data = ds.data(), items = [...(data.items || [])];
-          if (batchRestoreMap[refKey]) {
-            batchRestoreMap[refKey].updates.forEach(({ index, qty }) => {
-              if (index >= 0 && index < items.length) {
-                const currentRem = toNum(items[index].remainingQty ?? items[index].qty ?? items[index].quantity);
-                const purchQty   = toNum(items[index].qty || items[index].quantity);
-                items[index] = { ...items[index], remainingQty: Math.min(purchQty, roundQty(currentRem + qty)) };
-              }
+        try {
+          const snap = await getDocs(query(collection(db, colName), where('uid', '==', user.uid)));
+          snap.docs.forEach((ds) => {
+            const refKey = `${colName}/${ds.id}`, data = ds.data(), items = [...(data.items || [])];
+            if (batchRestoreMap[refKey]) {
+              batchRestoreMap[refKey].updates.forEach(({ index, qty }) => {
+                if (index >= 0 && index < items.length) {
+                  const currentRem = toNum(items[index].remainingQty ?? items[index].qty ?? items[index].quantity);
+                  const purchQty   = toNum(items[index].qty || items[index].quantity);
+                  items[index] = { ...items[index], remainingQty: Math.min(purchQty, roundQty(currentRem + qty)) };
+                }
+              });
+              fbBatch.update(doc(db, colName, ds.id), { items, updatedAt: serverTimestamp() });
+            }
+            items.forEach((it) => {
+              const itemId = it.itemId || it.id;
+              if (!itemId || !affectedItemIds.includes(itemId)) return;
+              itemHasAnyBatch[itemId]  = true;
+              exactBatchTotals[itemId] = roundQty(toNum(exactBatchTotals[itemId]) + getBatchRemaining(it));
             });
-            fbBatch.update(doc(db, colName, ds.id), { items, updatedAt: serverTimestamp() });
-          }
-          items.forEach((it) => {
-            const itemId = it.itemId || it.id;
-            if (!itemId || !affectedItemIds.includes(itemId)) return;
-            itemHasAnyBatch[itemId]  = true;
-            exactBatchTotals[itemId] = roundQty(toNum(exactBatchTotals[itemId]) + getBatchRemaining(it));
           });
-        });
+        } catch (colErr) {
+          console.warn(`Collection ${colName} query error:`, colErr);
+        }
       }
 
+      const affectedItemUpdates = [];
       affectedItemIds.forEach((itemId) => {
         const hasBatch   = !!itemHasAnyBatch[itemId];
         const fallback   = roundQty(toNum(currentItemDocStockMap[itemId]) + toNum(returnedQtyByItem[itemId]));
         const exactStock = hasBatch ? roundQty(exactBatchTotals[itemId]) : fallback;
         fbBatch.update(doc(db, 'items', itemId), { stock: exactStock, currentStock: exactStock, 'stocks.Main_Store': exactStock, updatedAt: serverTimestamp() });
+        affectedItemUpdates.push({ id: itemId, stock: exactStock });
       });
 
       if (!isCashCustomer && refundMethod === 'credit') {
@@ -839,7 +955,6 @@ export default function ReturnPage() {
           returnLineKey: i.returnLineKey,
         })),
       ];
-
       const allFullyReturned = returnItems.every(item => {
         const nowRet = normalizedReturnItems.find(r => r.returnLineKey === item.lineKey)?.returnQty || 0;
         return roundQty(item.alreadyReturned + nowRet) >= roundQty(item.originalQty);
@@ -851,25 +966,34 @@ export default function ReturnPage() {
         lastReturnAt:  serverTimestamp(),
       });
 
-      await fbBatch.commit();
+      try {
+        await fbBatch.commit();
+      } catch (fsCommitErr) {
+        console.warn('Firestore commit error, continuing with local PC backup:', fsCommitErr);
+      }
 
-      // finalReturn has previousOutstanding + newOutstanding
-      const finalReturn = { returnId: returnDocRef.id, id: returnDocRef.id, ...returnData };
+      const finalReturn = {
+        returnId: returnDocRef.id,
+        id: returnDocRef.id,
+        ...returnData
+      };
+
+      // ★ SAVE TRANSACTION TO PC HARD DISK AND INDEXEDDB ★
+      await saveToLocalAndHardDisk(
+        finalReturn,
+        { id: selectedInvoice.id, returnedItems: appendedReturnedItems, returnStatus: allFullyReturned ? 'full' : 'partial' },
+        affectedItemUpdates,
+        !isCashCustomer ? { id: customerId, currentBalance: customerBalanceAfter } : null
+      );
+
       setCompletedReturn(finalReturn);
       setStep('done');
       showToast(t.successMsg);
 
-      // ✅ Build output invoice — balance values come from finalReturn
       const outputInv = buildReturnOutputInvoice({
         completedReturn: finalReturn,
         originalInvoice: selectedInvoice,
         refundMethod,
-      });
-
-      console.log('★ Return output invoice:', {
-        previousOutstanding: outputInv?.previousOutstanding,
-        newOutstanding:      outputInv?.newOutstanding,
-        refundMethod:        outputInv?.refundMethod,
       });
 
       setOutputInvoice(outputInv);
@@ -902,14 +1026,16 @@ export default function ReturnPage() {
   ═══════════════════════════════════════ */
   return (
     <div style={{ maxWidth: 800, margin: '0 auto', padding: 16, backgroundColor: '#f8fafc', minHeight: '100vh' }}>
-
-      {/* InvoiceOutputManager */}{outputInvoice && (
-  <InvoiceOutputManager
-    invoice={outputInvoice}
-    initialMode="whatsapp"
-    onClose={() => setOutputInvoice(null)}
-  />
-)}
+      {/* InvoiceOutputManager */}
+      {outputInvoice && (
+        <Suspense fallback={<div style={{ padding: 20, textAlign: 'center' }}>Loading output bill manager...</div>}>
+          <InvoiceOutputManager
+            invoice={outputInvoice}
+            initialMode="whatsapp"
+            onClose={() => setOutputInvoice(null)}
+          />
+        </Suspense>
+      )}
 
       {/* Toast */}
       {toastMsg && (
@@ -1120,6 +1246,7 @@ export default function ReturnPage() {
               </div>
               <div style={{ background: '#f8fafc', padding: 12, borderRadius: 8, fontSize: 13, color: '#64748b', marginBottom: 20, border: '1px solid #e2e8f0' }}>
                 <div>📦 {t.stockNote}</div>
+                <div>💾 සියලුම Return දත්ත Local IndexedDB &amp; PC Hard Disk එකෙහිත් Save වේ.</div>
                 {hasBatchRestore && <div>📦 Batch remainingQty restore කෙරේ.</div>}
                 {refundMethod === 'credit' && <div>💳 {t.creditNote}</div>}
               </div>

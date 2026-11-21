@@ -49,6 +49,78 @@ const sanitizeForFirestore = (val) => {
   return cleaned;
 };
 
+/* ═══════════════════════════════════════
+   SAFE DEXIE DATABASE HELPERS
+═══════════════════════════════════════ */
+const ensureDbOpen = async () => {
+  if (!localDb) return false;
+  try {
+    if (!localDb.isOpen()) {
+      await localDb.open();
+    }
+    return true;
+  } catch (err) {
+    console.warn('[Dexie] Auto-open warning:', err?.message || err);
+    return false;
+  }
+};
+
+const getSafeDocs = async (table) => {
+  if (!table || !localDb) return [];
+  try {
+    await ensureDbOpen();
+    return await table.toArray();
+  } catch (err) {
+    if (err?.name === 'AbortError' || err?.message?.includes('aborted')) {
+      return [];
+    }
+    // Attempt automatic database reopening and retry once
+    try {
+      if (localDb && typeof localDb.open === 'function') {
+        await localDb.open();
+        return await table.toArray();
+      }
+    } catch (retryErr) {
+      // Quiet fallback without triggering unhandled console rejection
+    }
+    return [];
+  }
+};
+
+const safePut = async (table, record) => {
+  if (!table) return;
+  try {
+    await ensureDbOpen();
+    await table.put(record);
+  } catch (err) {
+    try {
+      if (localDb && typeof localDb.open === 'function') {
+        await localDb.open();
+        await table.put(record);
+      }
+    } catch (e) {
+      console.warn('[Sync] safePut failed:', e?.message || e);
+    }
+  }
+};
+
+const safeBulkPut = async (table, records) => {
+  if (!table || !records || !records.length) return;
+  try {
+    await ensureDbOpen();
+    await table.bulkPut(records);
+  } catch (err) {
+    try {
+      if (localDb && typeof localDb.open === 'function') {
+        await localDb.open();
+        await table.bulkPut(records);
+      }
+    } catch (e) {
+      console.warn('[Sync] safeBulkPut failed:', e?.message || e);
+    }
+  }
+};
+
 export default function SyncButton() {
   const [isDuplicate, setIsDuplicate]   = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
@@ -57,7 +129,7 @@ export default function SyncButton() {
   const [statusMsg, setStatusMsg]       = useState('');
   const [showMenu, setShowMenu]         = useState(false);
 
-  // ★ NEW: Hidden file input ref (fallback for browsers without showOpenFilePicker)
+  // Hidden file input ref (fallback for browsers without showOpenFilePicker)
   const fileInputRef = useRef(null);
 
   // Prevent multiple buttons on screen
@@ -131,20 +203,6 @@ export default function SyncButton() {
     return !item.synced && item._synced !== true;
   };
 
-  // Safe table fetcher (Handles transient IndexedDB transaction aborts during purging)
-  const getSafeDocs = async (table) => {
-    if (!table) return [];
-    try {
-      return await table.toArray();
-    } catch (err) {
-      if (err?.name === 'AbortError' || err?.message?.includes('aborted')) {
-        return [];
-      }
-      console.warn(`[Sync] Error reading table:`, err?.message || err);
-      return [];
-    }
-  };
-
   // ══ 1. Auto-Upload Local -> Cloud (All 5 Core Collections) ══
   const autoUploadLocalToCloud = useCallback(async () => {
     const activeUser = fbUser || auth.currentUser;
@@ -184,7 +242,7 @@ export default function SyncButton() {
             const cleanDoc = sanitizeForFirestore(syncedRecord);
 
             await setDoc(doc(db, target.col, docId), cleanDoc, { merge: true });
-            await target.table.put(syncedRecord);
+            await safePut(target.table, syncedRecord);
           } catch (e) {
             console.warn(`[Auto-Upload] Error uploading ${target.col} ${item.id}:`, e?.message || e);
           }
@@ -239,11 +297,7 @@ export default function SyncButton() {
               }
             });
             if (docsToPut.length > 0) {
-              localTable.bulkPut(docsToPut).catch((err) => {
-                if (err?.name !== 'AbortError' && !err?.message?.includes('aborted')) {
-                  console.warn(`[BulkPut] ${colName} error:`, err?.message || err);
-                }
-              });
+              safeBulkPut(localTable, docsToPut);
             }
           },
           (err) => console.warn(`[Snapshot] ${colName} error:`, err?.message || err)
@@ -301,7 +355,7 @@ export default function SyncButton() {
   }, [autoUploadLocalToCloud, isDuplicate]);
 
   // ══════════════════════════════════════════════════════════════
-  // ★ NEW: Shared JSON File Save Helper (File Picker + Fallback)
+  // Shared JSON File Save Helper (File Picker + Fallback)
   // ══════════════════════════════════════════════════════════════
   const saveJsonFileWithPicker = async (fileName, jsonContent) => {
     if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
@@ -316,7 +370,6 @@ export default function SyncButton() {
         return true;
       } catch (saveErr) {
         if (saveErr?.name === 'AbortError') return false; // user cancelled
-        // Fall through to Blob method on other errors
       }
     }
     const blob = new Blob([jsonContent], { type: 'application/json' });
@@ -332,7 +385,7 @@ export default function SyncButton() {
   };
 
   // ══════════════════════════════════════════════════════════════
-  // ★ NEW: Export LOCAL Dexie Data → PC Hard Disc (Fast / Offline)
+  // Export LOCAL Dexie Data → PC Hard Disc (Fast / Offline)
   // ══════════════════════════════════════════════════════════════
   const handleExportLocalToFile = async () => {
     if (!localDb) {
@@ -381,7 +434,7 @@ export default function SyncButton() {
   };
 
   // ══════════════════════════════════════════════════════════════
-  // ★ NEW: RESTORE — JSON File එකක් තෝරා Local DB එකට ඉක්මනින් Load
+  // RESTORE — JSON File එකක් තෝරා Local DB එකට ඉක්මනින් Load
   // ══════════════════════════════════════════════════════════════
   const processRestoreFile = async (file) => {
     if (!file || !localDb) return;
@@ -407,22 +460,20 @@ export default function SyncButton() {
         { key: 'suppliers', table: localDb.suppliers, label: 'Suppliers' },
       ];
 
-      // Validate backup structure
       const hasAnyValidKey = restoreMap.some((r) => Array.isArray(parsed[r.key]));
       if (!hasAnyValidKey) {
         alert('⚠️ මෙය වලංගු POS Backup File එකක් නොවේ!\n(invoices/customers/items/purchases/suppliers සොයාගත නොහැක)');
         return;
       }
 
-      const CHUNK = 500; // Fast chunked loading — UI freeze නොවීමට
+      const CHUNK = 500;
       const summaryLines = [];
-      const restoredByTable = []; // { table, records } — optional cloud upload සඳහා
+      const restoredByTable = [];
 
       for (const r of restoreMap) {
         const records = Array.isArray(parsed[r.key]) ? parsed[r.key] : [];
         if (!records.length || !r.table) continue;
 
-        // Normalize records (id guarantees + synced flags)
         const normalized = records.map((rec, idx) => {
           const id = String(rec.id || rec.docId || rec.invoiceId || `${r.key}_${Date.now()}_${idx}`);
           return {
@@ -436,10 +487,10 @@ export default function SyncButton() {
         });
 
         for (let i = 0; i < normalized.length; i += CHUNK) {
-          await r.table.bulkPut(normalized.slice(i, i + CHUNK));
+          await safeBulkPut(r.table, normalized.slice(i, i + CHUNK));
           const done = Math.min(i + CHUNK, normalized.length);
           setStatusMsg(`⚡ ${r.label} Load වෙමින්: ${done}/${normalized.length}...`);
-          await new Promise((res) => setTimeout(res, 10)); // UI එකට හුස්මක්
+          await new Promise((res) => setTimeout(res, 10));
         }
 
         summaryLines.push(`✅ ${r.label}: ${normalized.length}`);
@@ -453,7 +504,6 @@ export default function SyncButton() {
         `🎉 Backup Restore සාර්ථකයි!\n\n${summaryLines.join('\n')}\n\n📦 මුළු Records: ${totalRestored}\n\nදැන් POS පිටුව Refresh කරන්න (F5).`
       );
 
-      // Optional: Cloud එකටත් Upload කිරීම
       if (totalRestored > 0 && confirm('Restore කළ Records Cloud (Firebase) එකටත් Upload කරන්නද?\n\nOK = Upload කරන්න\nCancel = Local පමණක් තබාගන්න')) {
         setStatusMsg('☁️ Cloud Upload සඳහා Records සූදානම් කරමින්...');
         for (const { table, records } of restoredByTable) {
@@ -464,7 +514,7 @@ export default function SyncButton() {
             _localSaved: true,
           }));
           for (let i = 0; i < flagged.length; i += CHUNK) {
-            await table.bulkPut(flagged.slice(i, i + CHUNK));
+            await safeBulkPut(table, flagged.slice(i, i + CHUNK));
             await new Promise((res) => setTimeout(res, 10));
           }
         }
@@ -484,7 +534,6 @@ export default function SyncButton() {
   const handleRestoreFromFile = async () => {
     if (syncing) return;
 
-    // Modern File System Access API (Chrome / Edge / Electron)
     if (typeof window !== 'undefined' && 'showOpenFilePicker' in window) {
       try {
         const [handle] = await window.showOpenFilePicker({
@@ -495,15 +544,13 @@ export default function SyncButton() {
         await processRestoreFile(file);
         return;
       } catch (err) {
-        if (err?.name === 'AbortError') return; // user cancelled picker
-        // Fall through to input fallback on other errors
+        if (err?.name === 'AbortError') return;
       }
     }
-    // Fallback: hidden <input type="file">
     fileInputRef.current?.click();
   };
 
-  // ★ NEW: Open Electron Backup Folder (POS invoice backups location)
+  // Open Electron Backup Folder (POS invoice backups location)
   const handleOpenBackupFolder = async () => {
     if (typeof window !== 'undefined' && window.electronAPI?.openBackupFolder) {
       try {
@@ -594,7 +641,7 @@ export default function SyncButton() {
             colDocs.push(record);
           });
 
-          await colDef.localTable.bulkPut(batchData);
+          await safeBulkPut(colDef.localTable, batchData);
           totalColDownloaded += batchData.length;
           lastDoc = snapshot.docs[snapshot.docs.length - 1];
           setStatusMsg(`${colDef.label} Save වෙමින්: ${totalColDownloaded}...`);
@@ -687,7 +734,7 @@ export default function SyncButton() {
         touchAction: 'none',
       }}
     >
-      {/* ★ Hidden File Input (Restore Fallback) */}
+      {/* Hidden File Input (Restore Fallback) */}
       <input
         ref={fileInputRef}
         type="file"
@@ -737,7 +784,7 @@ export default function SyncButton() {
             gap: '6px',
           }}
         >
-          {/* ★ NEW: Restore from JSON File — PC Hard Disc → Local DB (Fast) */}
+          {/* Restore from JSON File — PC Hard Disc → Local DB (Fast) */}
           <button
             onClick={() => { setShowMenu(false); handleRestoreFromFile(); }}
             disabled={syncing}
@@ -752,7 +799,7 @@ export default function SyncButton() {
               textAlign: 'left',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'space-between',
+              justify: 'space-between',
               fontSize: '13px',
             }}
           >
@@ -760,7 +807,7 @@ export default function SyncButton() {
             <small style={{ opacity: 0.85 }}>File → PC (Fast)</small>
           </button>
 
-          {/* ★ NEW: Export LOCAL Dexie → File (No Cloud Needed) */}
+          {/* Export LOCAL Dexie → File (No Cloud Needed) */}
           <button
             onClick={() => { setShowMenu(false); handleExportLocalToFile(); }}
             disabled={syncing}
@@ -775,7 +822,7 @@ export default function SyncButton() {
               textAlign: 'left',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'space-between',
+              justify: 'space-between',
               fontSize: '13px',
             }}
           >
@@ -783,7 +830,7 @@ export default function SyncButton() {
             <small style={{ opacity: 0.85 }}>PC → File (Offline)</small>
           </button>
 
-          {/* Existing: Upload Unsynced */}
+          {/* Upload Unsynced */}
           <button
             onClick={() => { setShowMenu(false); handleUploadPending(); }}
             disabled={syncing || !activeUser}
@@ -798,7 +845,7 @@ export default function SyncButton() {
               textAlign: 'left',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'space-between',
+              justify: 'space-between',
               fontSize: '13px',
             }}
           >
@@ -806,7 +853,7 @@ export default function SyncButton() {
             <small style={{ opacity: 0.8 }}>PC → Cloud</small>
           </button>
 
-          {/* Existing: Full Export from Cloud */}
+          {/* Full Export from Cloud */}
           <button
             onClick={() => { setShowMenu(false); handleDownloadAllToPC(); }}
             disabled={syncing || !activeUser}
@@ -821,7 +868,7 @@ export default function SyncButton() {
               textAlign: 'left',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'space-between',
+              justify: 'space-between',
               fontSize: '13px',
             }}
           >
@@ -829,7 +876,7 @@ export default function SyncButton() {
             <small style={{ opacity: 0.8 }}>Cloud → File</small>
           </button>
 
-          {/* ★ NEW: Open Electron Backup Folder (POS invoice JSON backups) */}
+          {/* Open Electron Backup Folder (POS invoice JSON backups) */}
           {isElectron && (
             <button
               onClick={() => { setShowMenu(false); handleOpenBackupFolder(); }}
@@ -845,7 +892,7 @@ export default function SyncButton() {
                 textAlign: 'left',
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'space-between',
+                justify: 'space-between',
                 fontSize: '13px',
               }}
             >
