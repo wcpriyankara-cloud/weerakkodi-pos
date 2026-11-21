@@ -1,26 +1,22 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import localDb, {
   setupBackupDirectory,
   manualBackupToDisk,
-  autoBackupToDisk,
   listBackupFiles,
   readBackupFile,
   restoreFromBackup,
   getBackupDirHandle,
 } from '@/lib/localDb';
-import { useUserAuth } from '@/context/UserContext';
-import { db } from '@/shared/firebase-config';
+import { db, auth } from '@/lib/firebase';
 import { collection, query, where, getDocs } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 
 const INVOICE_COLLECTIONS = ['customerTransactions', 'invoices', 'drafts'];
 
-export default function UserCloudBackup() {
-  const authContext = useUserAuth ? useUserAuth() : null;
-  const user = authContext?.user || null;
-  const userId = user?.uid || 'local_user';
-
+export default function UserCloudBackup({ user: propUser }) {
+  const [user, setUser] = useState(propUser || null);
   const [stats, setStats] = useState({ invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, _total: 0 });
   const [firebaseCounts, setFirebaseCounts] = useState(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
@@ -29,32 +25,43 @@ export default function UserCloudBackup() {
   const [backupPath, setBackupPath] = useState('Not selected');
   const [backupFiles, setBackupFiles] = useState([]);
   const [showFileList, setShowFileList] = useState(false);
-  const [autoBackupEnabled, setAutoBackupEnabled] = useState(false);
   const [restoring, setRestoring] = useState(false);
 
+  const fileInputRef = useRef(null);
+  const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
+
+  /* ── Auth State Listener ── */
+  useEffect(() => {
+    if (propUser) {
+      setUser(propUser);
+      return;
+    }
+    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+    return () => unsub();
+  }, [propUser]);
+
+  /* ── Load Saved Backup Path ── */
   useEffect(() => {
     if (typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('pos_backup_path');
         if (saved) setBackupPath(saved);
-        const autoEnabled = localStorage.getItem('pos_auto_backup');
-        if (autoEnabled === 'true') setAutoBackupEnabled(true);
       } catch (e) {}
     }
   }, []);
 
-  // 1. Load Local PC Hard Disc Stats (Filtered by Current User UID)
+  /* ── 1. Load Local PC Hard Disc Stats ── */
   const loadStats = useCallback(async () => {
     try {
       const uid = user?.uid;
       const tables = ['invoices', 'customers', 'items', 'purchases', 'suppliers'];
       const s = { invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, _total: 0 };
-      
+
       for (const t of tables) {
         try {
           if (localDb && localDb[t]) {
             if (uid) {
-              s[t] = await localDb[t].filter(item => item.uid === uid || item.userId === uid).count();
+              s[t] = await localDb[t].filter((item) => item.uid === uid || item.userId === uid).count();
             } else {
               s[t] = await localDb[t].count();
             }
@@ -67,17 +74,19 @@ export default function UserCloudBackup() {
       }
       s._total = Object.values(s).reduce((a, b) => a + b, 0);
       setStats(s);
-    } catch (e) {}
+    } catch (e) {
+      console.warn('Error loading local stats:', e);
+    }
   }, [user]);
 
-  // 2. Fetch Real-time Cloud Counts Filtered by Current User UID (Firebase Firestore)
+  /* ── 2. Load Real-time Cloud Counts (Firestore) ── */
   const loadFirebaseCounts = useCallback(async () => {
     if (!user?.uid) return;
     setLoadingCloud(true);
     try {
       const counts = { invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, _total: 0 };
 
-      // Invoices & Drafts for Logged-in User
+      // Invoices & Drafts
       for (const col of INVOICE_COLLECTIONS) {
         try {
           const q = query(collection(db, col), where('uid', '==', user.uid));
@@ -86,28 +95,28 @@ export default function UserCloudBackup() {
         } catch (e) {}
       }
 
-      // Customers for Logged-in User
+      // Customers
       try {
         const cq = query(collection(db, 'customers'), where('uid', '==', user.uid));
         const csnap = await getDocs(cq);
         counts.customers = csnap.size;
       } catch (e) {}
 
-      // Items for Logged-in User
+      // Items
       try {
         const iq = query(collection(db, 'items'), where('uid', '==', user.uid));
         const isnap = await getDocs(iq);
         counts.items = isnap.size;
       } catch (e) {}
 
-      // Purchases for Logged-in User
+      // Purchases
       try {
         const pq = query(collection(db, 'purchases'), where('uid', '==', user.uid));
         const psnap = await getDocs(pq);
         counts.purchases = psnap.size;
       } catch (e) {}
 
-      // Suppliers for Logged-in User
+      // Suppliers
       try {
         const sq = query(collection(db, 'suppliers'), where('uid', '==', user.uid));
         const ssnap = await getDocs(sq);
@@ -128,11 +137,12 @@ export default function UserCloudBackup() {
     loadFirebaseCounts();
   }, [loadStats, loadFirebaseCounts]);
 
+  /* ── Select Backup Folder ── */
   const handleSelectBackupPath = async () => {
     try {
-      if (typeof window !== 'undefined' && window.electronAPI?.selectBackupFolder) {
+      if (isElectron && window.electronAPI?.selectBackupFolder) {
         const result = await window.electronAPI.selectBackupFolder();
-        const selectedPath = typeof result === 'string' ? result : (result?.path || '');
+        const selectedPath = typeof result === 'string' ? result : result?.path || '';
         if (selectedPath) {
           setBackupPath(selectedPath);
           localStorage.setItem('pos_backup_path', selectedPath);
@@ -160,10 +170,12 @@ export default function UserCloudBackup() {
     }
   };
 
+  /* ── Manual Export ── */
   const handleExport = async () => {
     setStatus('exporting');
     setStatusMessage('📦 Backup file generate කරමින්...');
     try {
+      const userId = user?.uid || 'local_user';
       const fileName = await manualBackupToDisk(userId, 'manual');
       if (fileName) {
         setStatus('success');
@@ -180,6 +192,7 @@ export default function UserCloudBackup() {
     }
   };
 
+  /* ── View Saved Backup Files ── */
   const loadBackupFiles = useCallback(async () => {
     try {
       const files = await listBackupFiles();
@@ -191,6 +204,7 @@ export default function UserCloudBackup() {
     }
   }, []);
 
+  /* ── Restore File Handler ── */
   const handleRestore = async (fileName) => {
     if (!window.confirm(`⚠️ "${fileName}" restore කරන්නද? local data overwrite වේ!`)) return;
     setRestoring(true);
@@ -207,34 +221,67 @@ export default function UserCloudBackup() {
     }
   };
 
-  const [isElectron, setIsElectron] = useState(false);
-  useEffect(() => {
-    setIsElectron(typeof window !== 'undefined' && !!window.electronAPI);
-  }, []);
+  /* ── Restore Directly from Custom Local File Input ── */
+  const handleDirectFileRestore = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!window.confirm(`⚠️ "${file.name}" Backup file එකෙන් Data Restore කරන්නද?`)) return;
+
+    setRestoring(true);
+    setStatusMessage('📂 File කියවමින්...');
+
+    try {
+      const text = await file.text();
+      const backupData = JSON.parse(text);
+      if (await restoreFromBackup(backupData)) {
+        alert('🎉 Direct Restore සාර්ථකයි!');
+        window.location.reload();
+      } else {
+        alert('⚠️ Restore කිරීමට නොහැකි විය. File structure එක පරීක්ෂා කරන්න.');
+      }
+    } catch (err) {
+      alert('❌ File Restore error: ' + err.message);
+    } finally {
+      setRestoring(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
   return (
-    <div style={{ background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)', borderRadius: '16px', padding: '24px', color: '#ffffff' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+    <div style={{ background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)', borderRadius: '16px', padding: '24px', color: '#ffffff', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
+      
+      {/* Hidden File Input for Direct File Restore */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        onChange={handleDirectFileRestore}
+      />
+
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span style={{ fontSize: '24px' }}>☁️</span>
           <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700' }}>Cloud & PC Hard Disc Backup Comparison</h2>
         </div>
         <button
           onClick={() => { loadStats(); loadFirebaseCounts(); }}
-          style={{ padding: '6px 12px', background: '#38bdf8', color: '#000', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
+          style={{ padding: '6px 14px', background: '#38bdf8', color: '#000', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
         >
           🔄 Refresh Counts
         </button>
       </div>
 
-      {/* ══ Side-by-Side Dual Comparison Cards ══ */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+      {/* ══ Dual Comparison Cards ══ */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px', marginBottom: '20px' }}>
         
         {/* Card 1: PC Hard Disc (Local) */}
         <div style={{ background: 'rgba(255, 255, 255, 0.08)', borderRadius: '12px', padding: '16px', border: '1px solid rgba(255, 255, 255, 0.15)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
             <span style={{ fontWeight: '700', color: '#38bdf8', fontSize: '14px' }}>💻 PC Hard Disc (Local)</span>
-            <strong style={{ fontSize: '16px' }}>{stats._total} Records</strong>
+            <strong style={{ fontSize: '16px', color: '#38bdf8' }}>{stats._total} Records</strong>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: '#cbd5e1' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>📄 Invoices:</span><strong>{stats.invoices}</strong></div>
@@ -249,7 +296,7 @@ export default function UserCloudBackup() {
         <div style={{ background: 'rgba(255, 255, 255, 0.08)', borderRadius: '12px', padding: '16px', border: '1px solid rgba(255, 255, 255, 0.15)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
             <span style={{ fontWeight: '700', color: '#22c55e', fontSize: '14px' }}>☁️ Cloud (Firebase)</span>
-            <strong style={{ fontSize: '16px' }}>{loadingCloud ? '⏳ Loading...' : `${firebaseCounts?._total || 0} Records`}</strong>
+            <strong style={{ fontSize: '16px', color: '#22c55e' }}>{loadingCloud ? '⏳ Loading...' : `${firebaseCounts?._total || 0} Records`}</strong>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: '#cbd5e1' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>📄 Invoices:</span><strong>{firebaseCounts?.invoices || 0}</strong></div>
@@ -263,7 +310,7 @@ export default function UserCloudBackup() {
       </div>
 
       {/* Action Buttons */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '16px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', marginBottom: '16px' }}>
         <button
           onClick={handleExport}
           disabled={status === 'exporting'}
@@ -277,14 +324,21 @@ export default function UserCloudBackup() {
         >
           📋 View Saved Backup Files
         </button>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={restoring}
+          style={{ padding: '12px', borderRadius: '10px', border: 'none', background: '#f97316', color: 'white', fontWeight: '700', cursor: 'pointer' }}
+        >
+          📂 Browse & Restore JSON File
+        </button>
       </div>
 
-      {/* Backup Path Selection */}
+      {/* Target Backup Folder Path */}
       <div style={{ padding: '16px', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '12px', border: '1px dashed rgba(255, 255, 255, 0.2)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
           <div>
             <div style={{ fontSize: '13px', fontWeight: '700', color: '#fbbf24' }}>🏠 Target Backup Folder</div>
-            <div style={{ fontSize: '11px', color: '#cbd5e1', marginTop: '2px' }}>{backupPath}</div>
+            <div style={{ fontSize: '11px', color: '#cbd5e1', marginTop: '2px', wordBreak: 'break-all' }}>{backupPath}</div>
           </div>
           <button
             onClick={handleSelectBackupPath}
@@ -295,27 +349,39 @@ export default function UserCloudBackup() {
         </div>
       </div>
 
-      {/* Backup Files List Modal / View */}
+      {/* Backup Files Modal / List */}
       {showFileList && (
-        <div style={{ marginTop: '16px', padding: '16px', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '12px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-            <h3 style={{ margin: 0, fontSize: '14px' }}>📁 Backup Files ({backupFiles.length})</h3>
-            <button onClick={() => setShowFileList(false)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>✕</button>
+        <div style={{ marginTop: '16px', padding: '16px', background: 'rgba(0, 0, 0, 0.3)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', alignItems: 'center' }}>
+            <h3 style={{ margin: 0, fontSize: '14px', color: '#38bdf8' }}>📁 Saved Backup Files ({backupFiles.length})</h3>
+            <button onClick={() => setShowFileList(false)} style={{ background: 'none', border: 'none', color: '#fff', fontSize: '16px', cursor: 'pointer' }}>✕</button>
           </div>
-          {backupFiles.map((file, idx) => (
-            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', background: 'rgba(255,255,255,0.05)', marginBottom: '4px', borderRadius: '6px', fontSize: '12px' }}>
-              <span>📄 {file.name}</span>
-              <button onClick={() => handleRestore(file.name)} style={{ background: '#6366f1', color: '#fff', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>Restore</button>
-            </div>
-          ))}
+          {backupFiles.length === 0 ? (
+            <div style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'center', padding: '10px' }}>කිසිදු Backup File එකක් සොයාගත නොහැක.</div>
+          ) : (
+            backupFiles.map((file, idx) => (
+              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'rgba(255,255,255,0.05)', marginBottom: '6px', borderRadius: '6px', fontSize: '12px' }}>
+                <span style={{ wordBreak: 'break-all' }}>📄 {file.name}</span>
+                <button
+                  onClick={() => handleRestore(file.name)}
+                  disabled={restoring}
+                  style={{ background: '#6366f1', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+                >
+                  {restoring ? '⏳' : 'Restore'}
+                </button>
+              </div>
+            ))
+          )}
         </div>
       )}
 
+      {/* Status Alert Message */}
       {statusMessage && (
-        <div style={{ marginTop: '12px', padding: '10px', background: 'rgba(16, 185, 129, 0.2)', borderRadius: '8px', fontSize: '12px' }}>
+        <div style={{ marginTop: '12px', padding: '10px 14px', background: status === 'error' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)', border: `1px solid ${status === 'error' ? '#ef4444' : '#10b981'}`, borderRadius: '8px', fontSize: '12px' }}>
           {statusMessage}
         </div>
       )}
+
     </div>
   );
 }

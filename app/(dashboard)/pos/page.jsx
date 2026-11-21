@@ -5,9 +5,9 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { useUserAuth } from '@/context/UserContext';
 import { startAutoSync, forceSyncAndBackup, purgeOtherUsers } from '@/lib/syncService';
-import { goOfflineMode } from '@/firebase-config';
 import { localDb } from '@/lib/localDb';
 
+// POSInvoice Component එක Dynamic ලෙස SSR නැතිව Load කිරීම (Electron / Next.js Hydration Mismatch වැළැක්වීමට)
 const POSInvoice = dynamic(() => import('@/components/POSInvoice'), {
   ssr: false,
   loading: () => (
@@ -36,16 +36,19 @@ export default function POSPage() {
   const [dataPurged, setDataPurged] = useState(false);
   const prevUidRef = useRef(null);
 
-  // Online/Offline
+  // 1. Online / Offline සජීවීව පරීක්ෂා කිරීම
   useEffect(() => {
     const go = () => setIsOnline(true);
     const off = () => setIsOnline(false);
     window.addEventListener('online', go);
     window.addEventListener('offline', off);
-    return () => { window.removeEventListener('online', go); window.removeEventListener('offline', off); };
+    return () => {
+      window.removeEventListener('online', go);
+      window.removeEventListener('offline', off);
+    };
   }, []);
 
-  // ✅ CRITICAL: Purge stale data BEFORE rendering POS
+  // 2. CRITICAL: POS එක පෙන්වීමට පෙර පෙර පරිශීලකයාගේ Local Data ආරක්ෂිතව Purge කිරීම
   useEffect(() => {
     if (loading || !user?.uid) {
       setDataPurged(false);
@@ -54,7 +57,7 @@ export default function POSPage() {
 
     const uid = user.uid;
 
-    // User switch → force re-purge
+    // User මාරු වුවහොත් re-purge එකක් සක්‍රීය කරයි
     if (prevUidRef.current && prevUidRef.current !== uid) {
       setDataPurged(false);
     }
@@ -62,40 +65,69 @@ export default function POSPage() {
 
     if (dataPurged) return;
 
+    let isSubscribed = true;
+
     const prepare = async () => {
       try {
         await purgeOtherUsers(uid);
-        // Double-check orphans
+        // UID එකක් නොමැති අනාථ (Orphan) Item දත්ත ඇත්නම් ඒවා ඉවත් කිරීම
         const orphans = await localDb.items.filter((r) => !r.uid).count().catch(() => 0);
-        if (orphans > 0) await localDb.items.filter((r) => !r.uid).delete();
-        setDataPurged(true);
-      } catch {
-        setDataPurged(true);
+        if (orphans > 0) {
+          await localDb.items.filter((r) => !r.uid).delete().catch(() => {});
+        }
+      } catch (err) {
+        console.warn("දත්ත පිරිසිදු කිරීමේ සටහන:", err);
+      } finally {
+        if (isSubscribed) {
+          setDataPurged(true);
+        }
       }
     };
-    prepare();
-  }, [user?.uid, loading]);
 
-  // ✅ Auto-sync ONLY after purge complete
+    prepare();
+
+    return () => {
+      isSubscribed = false;
+    };
+  }, [user?.uid, loading, dataPurged]);
+
+  // 3. Purge එක සාර්ථක වූ පසු පමණක් Auto-Sync සක්‍රීය කිරීම
   useEffect(() => {
     if (!user?.uid || !dataPurged) return;
     let cleanup;
-    try { cleanup = startAutoSync(); } catch {}
-    return () => { if (typeof cleanup === 'function') cleanup(); };
+    try {
+      cleanup = startAutoSync();
+    } catch (err) {
+      console.warn("Auto-sync ආරම්භ කිරීමේ සටහන:", err);
+    }
+    return () => {
+      if (typeof cleanup === 'function') {
+        try { cleanup(); } catch {}
+      }
+    };
   }, [user?.uid, dataPurged]);
 
-  // Auth guard — Firebase ONLY, NO local fallback
+  // 4. Auth Guard - Login වී නොමැති නම් ආරක්ෂිතව Redirect කිරීම
   useEffect(() => {
-    if (!loading && !user?.uid) router.replace('/');
+    if (!loading && !user?.uid) {
+      router.replace('/');
+    }
   }, [loading, user?.uid, router]);
 
+  // 5. Manual Sync බොත්තම ක්‍රියා කරවීම
   const handleManualSync = async () => {
     if (syncing || !user?.uid) return;
     setSyncing(true);
-    try { await forceSyncAndBackup(); } catch {}
-    finally { setSyncing(false); }
+    try {
+      await forceSyncAndBackup();
+    } catch (err) {
+      console.error("Manual sync දෝෂය:", err);
+    } finally {
+      setSyncing(false);
+    }
   };
 
+  // Loading Screen
   if (loading || !user?.uid || !dataPurged) {
     return (
       <div style={{
@@ -117,6 +149,7 @@ export default function POSPage() {
 
   return (
     <>
+      {/* තිරයේ ඉහළ දකුණු පස ඇති Sync / Online Status Indicator එක (Invoice Print කිරීමේදී පෙනෙන්නේ නැත - 'no-print') */}
       <div className="no-print" style={{
         position: 'fixed', top: 10, right: 12, zIndex: 9998,
         display: 'flex', alignItems: 'center', gap: 6,
@@ -125,6 +158,7 @@ export default function POSPage() {
           padding: '5px 12px', borderRadius: 999, fontSize: 11, fontWeight: 800,
           background: isOnline ? 'linear-gradient(135deg,#16a34a,#15803d)' : 'linear-gradient(135deg,#d97706,#b45309)',
           color: 'white', display: 'flex', alignItems: 'center', gap: 6,
+          boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
         }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'white', animation: 'pulse 1.8s infinite', display: 'inline-block' }} />
           <span>{isOnline ? 'Online • Cloud Sync' : 'Offline • Disk Backup'}</span>
@@ -134,6 +168,7 @@ export default function POSPage() {
           <button onClick={handleManualSync} disabled={syncing} style={{
             background: '#1e293b', border: '1px solid #334155', color: '#94a3b8',
             padding: '5px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700, cursor: 'pointer',
+            transition: 'all 0.2s ease',
           }}>
             {syncing ? '⏳ Sync...' : '🔄 Sync'}
           </button>
@@ -145,8 +180,8 @@ export default function POSPage() {
           <p>POS පූරණය වෙමින්...</p>
         </div>
       }>
-        {/* ✅ CRITICAL: key={user.uid} forces FULL REMOUNT on user change */}
-        <POSInvoice key={user.uid} lang="si" />
+        {/* key={user.uid} මගින් User මාරු වන විට POSInvoice Component එක සම්පූර්ණයෙන්ම Remount වී පැරණි State ඉවත් වේ */}
+        <POSInvoice key={user.uid} user={user} lang="si" />
       </Suspense>
     </>
   );

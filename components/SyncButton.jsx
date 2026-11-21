@@ -57,6 +57,9 @@ export default function SyncButton() {
   const [statusMsg, setStatusMsg]       = useState('');
   const [showMenu, setShowMenu]         = useState(false);
 
+  // ★ NEW: Hidden file input ref (fallback for browsers without showOpenFilePicker)
+  const fileInputRef = useRef(null);
+
   // Prevent multiple buttons on screen
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -297,6 +300,222 @@ export default function SyncButton() {
     };
   }, [autoUploadLocalToCloud, isDuplicate]);
 
+  // ══════════════════════════════════════════════════════════════
+  // ★ NEW: Shared JSON File Save Helper (File Picker + Fallback)
+  // ══════════════════════════════════════════════════════════════
+  const saveJsonFileWithPicker = async (fileName, jsonContent) => {
+    if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: fileName,
+          types: [{ description: 'JSON Full System Backup', accept: { 'application/json': ['.json'] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(jsonContent);
+        await writable.close();
+        return true;
+      } catch (saveErr) {
+        if (saveErr?.name === 'AbortError') return false; // user cancelled
+        // Fall through to Blob method on other errors
+      }
+    }
+    const blob = new Blob([jsonContent], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return true;
+  };
+
+  // ══════════════════════════════════════════════════════════════
+  // ★ NEW: Export LOCAL Dexie Data → PC Hard Disc (Fast / Offline)
+  // ══════════════════════════════════════════════════════════════
+  const handleExportLocalToFile = async () => {
+    if (!localDb) {
+      alert('Local Database සොයාගත නොහැක.');
+      return;
+    }
+
+    setSyncing(true);
+    try {
+      const localExport = {};
+      const tables = [
+        { name: 'invoices', table: localDb.invoices, label: 'Invoices' },
+        { name: 'customers', table: localDb.customers, label: 'Customers' },
+        { name: 'items', table: localDb.items, label: 'Items' },
+        { name: 'purchases', table: localDb.purchases, label: 'Purchases' },
+        { name: 'suppliers', table: localDb.suppliers, label: 'Suppliers' },
+      ];
+
+      let totalRecords = 0;
+      for (const t of tables) {
+        if (!t.table) continue;
+        setStatusMsg(`💾 Local ${t.label} කියවමින්...`);
+        const docs = await getSafeDocs(t.table);
+        localExport[t.name] = docs;
+        totalRecords += docs.length;
+      }
+
+      if (totalRecords === 0) {
+        alert('⚠️ Local Database එකේ Records නොමැත.');
+        return;
+      }
+
+      const fileName = `Weerakkodi_POS_LocalBackup_${new Date().toISOString().slice(0, 10)}_${Date.now().toString(36)}.json`;
+      const saved = await saveJsonFileWithPicker(fileName, JSON.stringify(localExport, null, 2));
+
+      if (saved) {
+        setStatusMsg(`🎉 Local Records ${totalRecords}ක් File එකට Save විය!`);
+        alert(`🎉 Local Backup සාර්ථකයි!\n\n📦 මුළු Records: ${totalRecords}\n📄 File: ${fileName}`);
+      }
+    } catch (e) {
+      alert('Local Export දෝෂයක්: ' + (e?.message || e));
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setStatusMsg(''), 3000);
+    }
+  };
+
+  // ══════════════════════════════════════════════════════════════
+  // ★ NEW: RESTORE — JSON File එකක් තෝරා Local DB එකට ඉක්මනින් Load
+  // ══════════════════════════════════════════════════════════════
+  const processRestoreFile = async (file) => {
+    if (!file || !localDb) return;
+
+    setSyncing(true);
+    setStatusMsg('📂 Backup File කියවමින්...');
+
+    try {
+      const text = await file.text();
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        alert('⚠️ මෙය වලංගු JSON File එකක් නොවේ!');
+        return;
+      }
+
+      const restoreMap = [
+        { key: 'invoices', table: localDb.invoices, label: 'Invoices' },
+        { key: 'customers', table: localDb.customers, label: 'Customers' },
+        { key: 'items', table: localDb.items, label: 'Items' },
+        { key: 'purchases', table: localDb.purchases, label: 'Purchases' },
+        { key: 'suppliers', table: localDb.suppliers, label: 'Suppliers' },
+      ];
+
+      // Validate backup structure
+      const hasAnyValidKey = restoreMap.some((r) => Array.isArray(parsed[r.key]));
+      if (!hasAnyValidKey) {
+        alert('⚠️ මෙය වලංගු POS Backup File එකක් නොවේ!\n(invoices/customers/items/purchases/suppliers සොයාගත නොහැක)');
+        return;
+      }
+
+      const CHUNK = 500; // Fast chunked loading — UI freeze නොවීමට
+      const summaryLines = [];
+      const restoredByTable = []; // { table, records } — optional cloud upload සඳහා
+
+      for (const r of restoreMap) {
+        const records = Array.isArray(parsed[r.key]) ? parsed[r.key] : [];
+        if (!records.length || !r.table) continue;
+
+        // Normalize records (id guarantees + synced flags)
+        const normalized = records.map((rec, idx) => {
+          const id = String(rec.id || rec.docId || rec.invoiceId || `${r.key}_${Date.now()}_${idx}`);
+          return {
+            ...rec,
+            id,
+            docId: id,
+            synced: rec.synced ?? 1,
+            _synced: rec._synced ?? true,
+            _localSaved: false,
+          };
+        });
+
+        for (let i = 0; i < normalized.length; i += CHUNK) {
+          await r.table.bulkPut(normalized.slice(i, i + CHUNK));
+          const done = Math.min(i + CHUNK, normalized.length);
+          setStatusMsg(`⚡ ${r.label} Load වෙමින්: ${done}/${normalized.length}...`);
+          await new Promise((res) => setTimeout(res, 10)); // UI එකට හුස්මක්
+        }
+
+        summaryLines.push(`✅ ${r.label}: ${normalized.length}`);
+        restoredByTable.push({ table: r.table, records: normalized });
+      }
+
+      setStatusMsg('🎉 Restore සාර්ථකයි!');
+
+      const totalRestored = restoredByTable.reduce((s, x) => s + x.records.length, 0);
+      alert(
+        `🎉 Backup Restore සාර්ථකයි!\n\n${summaryLines.join('\n')}\n\n📦 මුළු Records: ${totalRestored}\n\nදැන් POS පිටුව Refresh කරන්න (F5).`
+      );
+
+      // Optional: Cloud එකටත් Upload කිරීම
+      if (totalRestored > 0 && confirm('Restore කළ Records Cloud (Firebase) එකටත් Upload කරන්නද?\n\nOK = Upload කරන්න\nCancel = Local පමණක් තබාගන්න')) {
+        setStatusMsg('☁️ Cloud Upload සඳහා Records සූදානම් කරමින්...');
+        for (const { table, records } of restoredByTable) {
+          const flagged = records.map((r) => ({
+            ...r,
+            synced: 0,
+            _synced: false,
+            _localSaved: true,
+          }));
+          for (let i = 0; i < flagged.length; i += CHUNK) {
+            await table.bulkPut(flagged.slice(i, i + CHUNK));
+            await new Promise((res) => setTimeout(res, 10));
+          }
+        }
+        setStatusMsg('☁️ Cloud Upload ආරම්භ විය...');
+        await autoUploadLocalToCloud();
+        setStatusMsg('✅ Cloud Upload සම්පූර්ණයි!');
+      }
+    } catch (e) {
+      console.error('[Restore] Error:', e);
+      alert('Restore දෝෂයක්: ' + (e?.message || e));
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setStatusMsg(''), 4000);
+    }
+  };
+
+  const handleRestoreFromFile = async () => {
+    if (syncing) return;
+
+    // Modern File System Access API (Chrome / Edge / Electron)
+    if (typeof window !== 'undefined' && 'showOpenFilePicker' in window) {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: 'POS JSON Backup', accept: { 'application/json': ['.json'] } }],
+          multiple: false,
+        });
+        const file = await handle.getFile();
+        await processRestoreFile(file);
+        return;
+      } catch (err) {
+        if (err?.name === 'AbortError') return; // user cancelled picker
+        // Fall through to input fallback on other errors
+      }
+    }
+    // Fallback: hidden <input type="file">
+    fileInputRef.current?.click();
+  };
+
+  // ★ NEW: Open Electron Backup Folder (POS invoice backups location)
+  const handleOpenBackupFolder = async () => {
+    if (typeof window !== 'undefined' && window.electronAPI?.openBackupFolder) {
+      try {
+        await window.electronAPI.openBackupFolder();
+      } catch (e) {
+        alert('Backup Folder විවෘත කිරීමට නොහැක: ' + (e?.message || e));
+      }
+    } else {
+      alert('මෙම විශේෂාංගය Electron Desktop App එකේ පමණක් ක්‍රියාත්මකයි.');
+    }
+  };
+
   // Manual Trigger Functions
   const handleUploadPending = async () => {
     setSyncing(true);
@@ -394,28 +613,10 @@ export default function SyncButton() {
 
       const fileName = `Weerakkodi_POS_FullSystem_Backup_${new Date().toISOString().slice(0, 10)}.json`;
       const jsonContent = JSON.stringify(fullBackupExport, null, 2);
+      const saved = await saveJsonFileWithPicker(fileName, jsonContent);
 
-      if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
-        try {
-          const handle = await window.showSaveFilePicker({
-            suggestedName: fileName,
-            types: [{ description: 'JSON Full System Backup', accept: { 'application/json': ['.json'] } }],
-          });
-          const writable = await handle.createWritable();
-          await writable.write(jsonContent);
-          await writable.close();
-          alert('🎉 සියලුම Records ඔබ තෝරාගත් PC Location එකේ Save කරන ලදී!');
-        } catch (saveErr) {}
-      } else {
-        const blob = new Blob([jsonContent], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+      if (saved) {
+        alert('🎉 සියලුම Records ඔබ තෝරාගත් PC Location එකේ Save කරන ලදී!');
       }
     } catch (e) {
       alert('Download දෝෂයක්: ' + (e?.message || e));
@@ -473,6 +674,7 @@ export default function SyncButton() {
 
   const activeUser = fbUser || auth.currentUser;
   const isTopHalf = position.y < (typeof window !== 'undefined' ? window.innerHeight / 2 : 400);
+  const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
 
   return (
     <div
@@ -485,6 +687,19 @@ export default function SyncButton() {
         touchAction: 'none',
       }}
     >
+      {/* ★ Hidden File Input (Restore Fallback) */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) await processRestoreFile(file);
+        }}
+      />
+
       {statusMsg && (
         <div
           style={{
@@ -516,12 +731,59 @@ export default function SyncButton() {
             boxShadow: '0 10px 25px rgba(0,0,0,0.2)',
             border: '1px solid #e2e8f0',
             padding: '8px',
-            minWidth: '240px',
+            minWidth: '260px',
             display: 'flex',
             flexDirection: 'column',
             gap: '6px',
           }}
         >
+          {/* ★ NEW: Restore from JSON File — PC Hard Disc → Local DB (Fast) */}
+          <button
+            onClick={() => { setShowMenu(false); handleRestoreFromFile(); }}
+            disabled={syncing}
+            style={{
+              padding: '10px 14px',
+              backgroundColor: '#f97316',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              fontWeight: '700',
+              cursor: 'pointer',
+              textAlign: 'left',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '13px',
+            }}
+          >
+            <span>📂 Restore from JSON File</span>
+            <small style={{ opacity: 0.85 }}>File → PC (Fast)</small>
+          </button>
+
+          {/* ★ NEW: Export LOCAL Dexie → File (No Cloud Needed) */}
+          <button
+            onClick={() => { setShowMenu(false); handleExportLocalToFile(); }}
+            disabled={syncing}
+            style={{
+              padding: '10px 14px',
+              backgroundColor: '#8b5cf6',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              textAlign: 'left',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '13px',
+            }}
+          >
+            <span>💾 Export Local Data</span>
+            <small style={{ opacity: 0.85 }}>PC → File (Offline)</small>
+          </button>
+
+          {/* Existing: Upload Unsynced */}
           <button
             onClick={() => { setShowMenu(false); handleUploadPending(); }}
             disabled={syncing || !activeUser}
@@ -544,6 +806,7 @@ export default function SyncButton() {
             <small style={{ opacity: 0.8 }}>PC → Cloud</small>
           </button>
 
+          {/* Existing: Full Export from Cloud */}
           <button
             onClick={() => { setShowMenu(false); handleDownloadAllToPC(); }}
             disabled={syncing || !activeUser}
@@ -565,6 +828,31 @@ export default function SyncButton() {
             <span>⬇️ Full Export to File</span>
             <small style={{ opacity: 0.8 }}>Cloud → File</small>
           </button>
+
+          {/* ★ NEW: Open Electron Backup Folder (POS invoice JSON backups) */}
+          {isElectron && (
+            <button
+              onClick={() => { setShowMenu(false); handleOpenBackupFolder(); }}
+              disabled={syncing}
+              style={{
+                padding: '10px 14px',
+                backgroundColor: '#0ea5e9',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '8px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                textAlign: 'left',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                fontSize: '13px',
+              }}
+            >
+              <span>📁 Open Backup Folder</span>
+              <small style={{ opacity: 0.85 }}>D:\...Backups</small>
+            </button>
+          )}
         </div>
       )}
 

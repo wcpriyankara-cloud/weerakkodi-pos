@@ -33,3 +33,8 @@ Thumbs.db
 .env*
 
 serviceAccountKey.json
+
+/dist
+/.next
+/out
+node_modules
