@@ -1,5 +1,4 @@
 'use client';
-
 // app/(protected)/stock-adjustment/page.jsx
 // ✅ Synced with POS & ItemForm Canonical Database Fields
 // ✅ Real-time Purchased Batches (තොග) viewer (Array Guard Added)
@@ -11,6 +10,7 @@
 // ✅ Full Real-time Sync for Stock Adjustments History
 // ✅ Expanded Batch Editor to Edit Retail, Wholesale & Loose Prices and Discounts directly!
 // ✅ FIXED: Virtual Deficit Batch injection to view and adjust POS Negative Stock directly!
+// ✅ Offline Capable: Works 100% without Internet using Dexie IndexedDB & Auto Syncs to Firestore on Reconnection
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { db } from '@/lib/firebase';
@@ -19,8 +19,58 @@ import {
   addDoc, doc, updateDoc, getDoc, serverTimestamp,
   writeBatch
 } from 'firebase/firestore';
+import { localDb } from '@/lib/dexieDb';
 import { useUserAuth } from '@/context/UserContext';
 import { useLang } from '@/hooks/useLang';
+
+/* ═══════════════════════════════════════
+   DEXIE HELPER FUNCTIONS FOR OFFLINE SUPPORT
+═══════════════════════════════════════ */
+const getTable = (tableName) => {
+  if (!localDb) return null;
+  if (localDb[tableName]) return localDb[tableName];
+  if (tableName === 'stockAdjustments' && localDb.adjustments) return localDb.adjustments;
+  if (tableName === 'stockAdjustments' && localDb.stock_adjustments) return localDb.stock_adjustments;
+  return null;
+};
+
+const safePutLocal = async (tableName, item) => {
+  try {
+    const table = getTable(tableName);
+    if (table) {
+      await table.put(item);
+    }
+  } catch (err) {
+    console.warn(`[Dexie] Put error on '${tableName}':`, err);
+  }
+};
+
+const safeBulkPutLocal = async (tableName, itemsArray) => {
+  try {
+    const table = getTable(tableName);
+    if (table && Array.isArray(itemsArray) && itemsArray.length > 0) {
+      await table.bulkPut(itemsArray);
+    }
+  } catch (err) {
+    console.warn(`[Dexie] BulkPut error on '${tableName}':`, err);
+  }
+};
+
+const safeGetAllLocal = async (tableName, uid) => {
+  try {
+    const table = getTable(tableName);
+    if (table) {
+      const all = await table.toArray();
+      if (uid) {
+        return all.filter(x => !x.uid || x.uid === uid);
+      }
+      return all;
+    }
+  } catch (err) {
+    console.warn(`[Dexie] GetAll error on '${tableName}':`, err);
+  }
+  return [];
+};
 
 /* ═══════════════════════════════════════
    TRANSLATIONS
@@ -87,6 +137,8 @@ const TEXT = {
     batchAdjustSuccess: 'තොග විස්තර, මිල ගණන් සහ භාණ්ඩයේ මුළු ප්‍රමාණය සාර්ථකව යාවත්කාලීන කරන ලදී!',
     cancelBtn:        'අවලංගු',
     saveBtn:          'සුරකින්න',
+    offlineNotice:    'නොබැඳි මාදිලිය (Local Save)',
+    syncedToast:      '🌐 Offline සිදුකළ සියලුම වෙනස්කම් Firestore වෙත සාර්ථකව Upload විය!',
   },
   en: {
     pageTitle:        '📦 Stock & Price Adjustment',
@@ -149,6 +201,8 @@ const TEXT = {
     batchAdjustSuccess: 'Batch quantities, pricing and total item stock updated successfully!',
     cancelBtn:        'Cancel',
     saveBtn:          'Save',
+    offlineNotice:    'Offline Mode (Local Save)',
+    syncedToast:      '🌐 Offline changes successfully synced to Firestore!',
   },
 };
 
@@ -160,7 +214,6 @@ function Toast({ message, type, onClose }) {
     const timer = setTimeout(onClose, 3000);
     return () => clearTimeout(timer);
   }, [onClose]);
-
   return (
     <div style={{
       position: 'fixed', top: 20, left: '50%',
@@ -253,15 +306,14 @@ export default function StockAdjustmentPage() {
   const [items,       setItems]       = useState([]);
   const [adjustments, setAdjustments] = useState([]);
   const [loading,     setLoading]     = useState(true);
+  const [isOnline,    setIsOnline]    = useState(true);
 
   // Batches / Purchase history state
   const [purchaseSources, setPurchaseSources] = useState({ purchases: [], purchaseInvoices: [], stockIn: [] });
-
   const [searchText,     setSearchText]     = useState('');
   const [selectedItem,   setSelectedItem]   = useState('');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
-
   const [editData,      setEditData]      = useState(null);
   const [originalData,  setOriginalData]  = useState(null);
   const [isStockDirty,  setIsStockDirty]  = useState(false);
@@ -282,7 +334,6 @@ export default function StockAdjustmentPage() {
     looseDiscount: ''
   });
   const [isSavingBatch, setIsSavingBatch] = useState(false);
-
   const [toast,   setToast]   = useState(null);
   const [confirm, setConfirm] = useState(null);
 
@@ -313,7 +364,14 @@ export default function StockAdjustmentPage() {
 
   /* ── Helpers ── */
   const sortByDate = useCallback((data) =>
-    data.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)), []);
+    data.sort((a, b) => {
+      const getSec = (x) => {
+        if (!x) return 0;
+        if (typeof x === 'string') return new Date(x).getTime() / 1000;
+        return x.seconds || (x.toDate ? x.toDate().getTime() / 1000 : 0);
+      };
+      return getSec(b.createdAt || b.date) - getSec(a.createdAt || a.date);
+    }), []);
 
   const calcYourPrice = useCallback((price, discount) => {
     const p = parseFloat(price)    || 0;
@@ -347,7 +405,6 @@ export default function StockAdjustmentPage() {
   useEffect(() => {
     if (!liveSelectedItem || !editData || isStockDirty) return;
     const liveStock = getActualStock(liveSelectedItem);
-
     if (editData.stock !== liveStock) {
       setEditData(prev => ({ ...prev, stock: liveStock }));
       setOriginalData(prev => ({ ...prev, stock: liveStock, _stock: liveStock }));
@@ -359,7 +416,6 @@ export default function StockAdjustmentPage() {
     if (!bi) return { remaining: 0, isTracked: false };
     const p = R2(bi.qty || bi.quantity || 0);
     if (bi.remainingQty !== undefined && bi.remainingQty !== null && bi.remainingQty !== '') {
-      // ✅ Removed Math.max(0, ...) so negative stock balances from POS show correctly
       return { remaining: R2(bi.remainingQty), isTracked: true };
     }
     return { remaining: p, isTracked: false };
@@ -416,8 +472,6 @@ export default function StockAdjustmentPage() {
     if (parentItem) {
       const parentStock = getActualStock(parentItem);
       const totalBatchStock = res.reduce((sum, b) => sum + parseFloat(b.remainingQty || 0), 0);
-
-      // ✅ POS එකෙන් 0 ට වඩා අඩුවෙන් විකුණා ඇති විට, එම සෘණ තොගය (Virtual Deficit Batch) එකක් ලෙස ඉහලින්ම එක් කරයි.
       if (parentStock < totalBatchStock) {
         const deficit = R2(parentStock - totalBatchStock);
         res.unshift({
@@ -454,17 +508,14 @@ export default function StockAdjustmentPage() {
       expiryDate:                item.expiryDate                ?? '',
       racks:                     item.racks ?? item.rackName    ?? '',
       stock:                     actualStock,
-
       sellingPriceRetail:        item.sellingPriceRetail ?? item.retailSellingPrice ?? item.sellingPrice ?? item.price ?? '',
       retailDiscount:            item.retailDiscount ?? item.retailSellingDiscount ?? '',
       retailYourPrice:           item.retailYourPrice
         ?? calcYourPrice(item.sellingPriceRetail ?? item.retailSellingPrice, item.retailDiscount ?? item.retailSellingDiscount),
-
       sellingPriceWholesale:     item.sellingPriceWholesale ?? item.wholesaleSellingPrice ?? item.wholesalePrice ?? '',
       wholesaleDiscount:         item.wholesaleDiscount ?? item.wholesaleSellingDiscount ?? '',
       wholesaleYourPrice:        item.wholesaleYourPrice
         ?? calcYourPrice(item.sellingPriceWholesale ?? item.wholesaleSellingPrice, item.wholesaleDiscount ?? item.wholesaleSellingDiscount),
-
       sellingPriceLoose:         item.sellingPriceLoose ?? item.retailSellingPriceLoose ?? item.loosePrice ?? '',
       looseDiscount:             item.looseDiscount ?? item.retailSellingLooseDiscount ?? '',
       looseYourPrice:            item.looseYourPrice
@@ -489,33 +540,174 @@ export default function StockAdjustmentPage() {
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
-  /* ── Load items, History, & Purchase streams real-time ── */
+  /* ── Sync Worker Function for Reconnection ── */
+  const syncOfflineChanges = useCallback(async () => {
+    if (!navigator.onLine || !user) return;
+    let syncedCount = 0;
+    try {
+      // 1. Sync un-uploaded Stock Adjustments
+      const localAdjustments = await safeGetAllLocal('stockAdjustments', user.uid);
+      const pendingAdjustments = localAdjustments.filter(a => a.synced === false || a.offlinePending === true);
+
+      if (pendingAdjustments.length > 0) {
+        for (const adj of pendingAdjustments) {
+          try {
+            const { synced, offlinePending, ...cleanAdj } = adj;
+            const docRef = await addDoc(collection(db, 'stockAdjustments'), {
+              ...cleanAdj,
+              createdAt: serverTimestamp(),
+            });
+            await safePutLocal('stockAdjustments', {
+              ...adj,
+              id: docRef.id,
+              synced: true,
+              offlinePending: false,
+            });
+            syncedCount++;
+          } catch (e) {
+            console.warn("Individual adjustment sync failed:", e);
+          }
+        }
+      }
+
+      // 2. Sync un-uploaded Item changes
+      const localItems = await safeGetAllLocal('items', user.uid);
+      const pendingItems = localItems.filter(i => i.offlineUpdated === true || i.pendingSync === true);
+
+      if (pendingItems.length > 0) {
+        for (const item of pendingItems) {
+          try {
+            const { offlineUpdated, pendingSync, ...cleanItem } = item;
+            const itemRef = doc(db, 'items', item.id);
+            const { id, ...itemData } = cleanItem;
+            await updateDoc(itemRef, itemData);
+            await safePutLocal('items', {
+              ...item,
+              offlineUpdated: false,
+              pendingSync: false,
+            });
+            syncedCount++;
+          } catch (e) {
+            console.warn("Individual item sync failed:", e);
+          }
+        }
+      }
+
+      // 3. Sync un-uploaded Purchase Batch docs
+      for (const col of ['purchases', 'purchaseInvoices', 'stockIn']) {
+        const localDocs = await safeGetAllLocal(col, user.uid);
+        const pendingDocs = localDocs.filter(d => d.offlineUpdated === true);
+        for (const pDoc of pendingDocs) {
+          try {
+            const { offlineUpdated, ...cleanDoc } = pDoc;
+            const docRef = doc(db, col, pDoc.id);
+            const { id, ...docData } = cleanDoc;
+            await updateDoc(docRef, docData);
+            await safePutLocal(col, { ...pDoc, offlineUpdated: false });
+            syncedCount++;
+          } catch (e) {
+            console.warn(`Batch invoice ${col} sync failed:`, e);
+          }
+        }
+      }
+
+      if (syncedCount > 0) {
+        showToast(t.syncedToast);
+      }
+    } catch (err) {
+      console.warn("Offline auto-sync error:", err);
+    }
+  }, [user, showToast, t]);
+
+  /* ── Network Connection Listener ── */
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      syncOfflineChanges();
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
+
+    if (typeof window !== 'undefined') {
+      setIsOnline(navigator.onLine);
+      window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
+    }
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+      }
+    };
+  }, [syncOfflineChanges]);
+
+  /* ── Load items, History, & Purchase streams real-time + Dexie Offline Cache ── */
   useEffect(() => {
     if (!user) return;
 
+    // Load from local IndexedDB cache first
+    const loadOfflineData = async () => {
+      try {
+        const localItems = await safeGetAllLocal('items', user.uid);
+        if (localItems && localItems.length > 0) {
+          setItems(localItems);
+        }
+
+        const localAdjustments = await safeGetAllLocal('stockAdjustments', user.uid);
+        if (localAdjustments && localAdjustments.length > 0) {
+          sortByDate(localAdjustments);
+          setAdjustments(localAdjustments);
+        }
+
+        const localPurchases = await safeGetAllLocal('purchases', user.uid);
+        const localPurchaseInvoices = await safeGetAllLocal('purchaseInvoices', user.uid);
+        const localStockIn = await safeGetAllLocal('stockIn', user.uid);
+
+        if (localPurchases.length || localPurchaseInvoices.length || localStockIn.length) {
+          setPurchaseSources({
+            purchases: localPurchases,
+            purchaseInvoices: localPurchaseInvoices,
+            stockIn: localStockIn,
+          });
+        }
+      } catch (e) {
+        console.warn('Error loading offline fallback data:', e);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadOfflineData();
+
+    // Firestore Live Listeners
     const unsubItems = onSnapshot(
       query(collection(db, 'items'), where('uid', '==', user.uid)),
-      (snap) => setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
-    ,
-    (error) => {
-      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
-      if (error?.code === "resource-exhausted") {
-        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
+      async (snap) => {
+        const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setItems(docs);
+        await safeBulkPutLocal('items', docs);
+        setLoading(false);
+      },
+      (error) => {
+        console.warn("⚠️ Firestore items listener error:", error?.code, error?.message);
+        loadOfflineData();
       }
-    }
-  );
+    );
 
     const unsubHistory = onSnapshot(
       query(collection(db, 'stockAdjustments'), where('uid', '==', user.uid)),
-      (snap) => {
+      async (snap) => {
         const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         sortByDate(data);
         setAdjustments(data);
+        await safeBulkPutLocal('stockAdjustments', data);
         setLoading(false);
       },
       (err) => {
-        console.error('History load error:', err);
-        setLoading(false);
+        console.warn('History load error:', err);
+        loadOfflineData();
       }
     );
 
@@ -523,20 +715,16 @@ export default function StockAdjustmentPage() {
     const unsubsBatches = ['purchases', 'purchaseInvoices', 'stockIn'].map(col => {
       return onSnapshot(
         query(collection(db, col), where('uid', '==', user.uid)),
-        (snap) => {
-          setPurchaseSources(prev => ({
-            ...prev,
-            [col]: snap.docs.map(d => ({ id: d.id, ...d.data() }))
-          }));
+        async (snap) => {
+          const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          setPurchaseSources(prev => ({ ...prev, [col]: docs }));
+          await safeBulkPutLocal(col, docs);
+        },
+        (error) => {
+          console.warn(`⚠️ Firestore ${col} listener error:`, error?.code, error?.message);
+          loadOfflineData();
         }
-      ,
-    (error) => {
-      console.warn("⚠️ Firestore listener error:", error?.code, error?.message);
-      if (error?.code === "resource-exhausted") {
-        console.warn("📊 Quota exceeded — offline data පමණක් භාවිතා වේ");
-      }
-    }
-  );
+      );
     });
 
     return () => {
@@ -583,53 +771,44 @@ export default function StockAdjustmentPage() {
     if (field === 'stock') {
       setIsStockDirty(true);
     }
-
     setEditData((prev) => {
       const updated = { ...prev, [field]: value };
-
       if (field === 'sellingPriceRetail' || field === 'retailDiscount') {
         updated.retailYourPrice = calcYourPrice(
           field === 'sellingPriceRetail' ? value : prev.sellingPriceRetail,
           field === 'retailDiscount' ? value : prev.retailDiscount
         );
       }
-
       if (field === 'sellingPriceWholesale' || field === 'wholesaleDiscount') {
         updated.wholesaleYourPrice = calcYourPrice(
           field === 'sellingPriceWholesale' ? value : prev.sellingPriceWholesale,
           field === 'wholesaleDiscount' ? value : prev.wholesaleDiscount
         );
       }
-
       if (field === 'sellingPriceLoose' || field === 'looseDiscount') {
         updated.looseYourPrice = calcYourPrice(
           field === 'sellingPriceLoose' ? value : prev.sellingPriceLoose,
           field === 'looseDiscount' ? value : prev.looseDiscount
         );
       }
-
       return updated;
     });
   };
 
-  /* ── Save canonical item fields ── */
+  /* ── Save canonical item fields (Offline Safe) ── */
   const handleSaveEdit = async () => {
     if (!selectedItem || !editData) {
       showToast(t.selectItemError, 'error');
       return;
     }
-
     setIsSaving(true);
     try {
-      const item    = items.find((i) => i.id === selectedItem);
-      const itemRef = doc(db, 'items', selectedItem);
-
+      const item = items.find((i) => i.id === selectedItem);
       const toNum = (val) =>
         val !== '' && val !== undefined && val !== null ? parseFloat(val) : '';
+      const newStock = parseFloat(editData.stock) || 0;
 
-      const newStock = parseFloat(editData.stock) || 0; // Negative raw allowed
-
-      const updateData = {
+      const updateFields = {
         discountReceived:         toNum(editData.discountReceived),
         buyingPrice:              toNum(editData.buyingPrice),
         costPrice:                toNum(editData.buyingPrice), 
@@ -639,52 +818,90 @@ export default function StockAdjustmentPage() {
         stock:                    newStock,
         currentStock:             newStock,
         'stocks.Main_Store':      newStock,
-
         sellingPriceRetail:       toNum(editData.sellingPriceRetail),
         retailDiscount:           toNum(editData.retailDiscount),
         retailYourPrice:          toNum(editData.retailYourPrice),
         sellingPrice:             toNum(editData.sellingPriceRetail), 
         price:                    toNum(editData.sellingPriceRetail), 
-
         retailSellingPrice:       toNum(editData.sellingPriceRetail),
         retailSellingDiscount:    toNum(editData.retailDiscount),
-
         sellingPriceWholesale:    toNum(editData.sellingPriceWholesale),
         wholesaleDiscount:        toNum(editData.wholesaleDiscount),
         wholesaleYourPrice:       toNum(editData.wholesaleYourPrice),
         wholesalePrice:           toNum(editData.sellingPriceWholesale), 
-
         wholesaleSellingPrice:    toNum(editData.sellingPriceWholesale),
         wholesaleSellingDiscount: toNum(editData.wholesaleDiscount),
       };
 
       if (hasLoosePrice) {
-        updateData.sellingPriceLoose         = toNum(editData.sellingPriceLoose);
-        updateData.looseDiscount             = toNum(editData.looseDiscount);
-        updateData.looseYourPrice            = toNum(editData.looseYourPrice);
-        updateData.loosePrice                = toNum(editData.sellingPriceLoose); 
-
-        updateData.retailSellingPriceLoose    = toNum(editData.sellingPriceLoose);
-        updateData.retailSellingLooseDiscount = toNum(editData.looseDiscount);
-        updateData.retailYourLoosePrice       = toNum(editData.looseYourPrice);
+        updateFields.sellingPriceLoose         = toNum(editData.sellingPriceLoose);
+        updateFields.looseDiscount             = toNum(editData.looseDiscount);
+        updateFields.looseYourPrice            = toNum(editData.looseYourPrice);
+        updateFields.loosePrice                = toNum(editData.sellingPriceLoose); 
+        updateFields.retailSellingPriceLoose    = toNum(editData.sellingPriceLoose);
+        updateFields.retailSellingLooseDiscount = toNum(editData.looseDiscount);
+        updateFields.retailYourLoosePrice       = toNum(editData.looseYourPrice);
       }
 
-      await updateDoc(itemRef, updateData);
+      const isOfflineNow = !navigator.onLine;
+      const updatedItem = {
+        ...item,
+        ...updateFields,
+        offlineUpdated: isOfflineNow,
+        pendingSync: isOfflineNow,
+      };
 
+      // 1. Instant save to Dexie local DB & update React state
+      await safePutLocal('items', updatedItem);
+      setItems(prev => prev.map(i => i.id === selectedItem ? updatedItem : i));
+
+      // 2. Adjustment history record creation
       const oldStock = originalData?._stock || 0;
-      const diff     = newStock - oldStock;
+      const diff = newStock - oldStock;
+      let newAdjRecord = null;
 
       if (diff !== 0) {
-        await addDoc(collection(db, 'stockAdjustments'), {
-          uid:       user.uid,
-          itemId:    selectedItem,
-          itemName:  item?.name || 'Unknown',
-          type:      diff > 0 ? 'add' : 'reduce',
-          qty:       Math.abs(diff),
-          reason:    'Direct Edit (Stock Adjusted)',
-          date:      new Date().toISOString().split('T')[0],
-          createdAt: serverTimestamp(),
+        const adjId = doc(collection(db, 'stockAdjustments')).id;
+        newAdjRecord = {
+          id: adjId,
+          uid: user.uid,
+          itemId: selectedItem,
+          itemName: item?.name || 'Unknown',
+          type: diff > 0 ? 'add' : 'reduce',
+          qty: Math.abs(diff),
+          reason: 'Direct Edit (Stock Adjusted)',
+          date: new Date().toISOString().split('T')[0],
+          createdAt: new Date().toISOString(),
+          synced: !isOfflineNow,
+          offlinePending: isOfflineNow,
+        };
+
+        await safePutLocal('stockAdjustments', newAdjRecord);
+        setAdjustments(prev => {
+          const next = [newAdjRecord, ...prev];
+          sortByDate(next);
+          return next;
         });
+      }
+
+      // 3. Sync to Firestore if online
+      if (navigator.onLine) {
+        try {
+          const itemRef = doc(db, 'items', selectedItem);
+          await updateDoc(itemRef, updateFields);
+          await safePutLocal('items', { ...updatedItem, offlineUpdated: false, pendingSync: false });
+
+          if (newAdjRecord) {
+            const { id, synced, offlinePending, ...firestoreAdjData } = newAdjRecord;
+            await addDoc(collection(db, 'stockAdjustments'), {
+              ...firestoreAdjData,
+              createdAt: serverTimestamp(),
+            });
+            await safePutLocal('stockAdjustments', { ...newAdjRecord, synced: true, offlinePending: false });
+          }
+        } catch (e) {
+          console.warn('Firestore write failed (queued offline):', e);
+        }
       }
 
       setIsStockDirty(false);
@@ -697,70 +914,108 @@ export default function StockAdjustmentPage() {
     }
   };
 
-  /* ── Batch Qty & Price Editor Save Handler with Deficit Fix ── */
+  /* ── Batch Qty & Price Editor Save Handler (Offline Safe) ── */
   const handleSaveBatchEdit = async (b) => {
     setIsSavingBatch(true);
     try {
       const parentItem = items.find(i => i.id === selectedItem);
-      
-      // ✅ අතථ්‍ය සෘණ තොගය (Virtual Deficit) වෙනස් කළ විට සෘජුවම Parent Item එක යාවත්කාලීන කරයි
-      if (b.isVirtualDeficit) {
-        const nextRemaining = parseFloat(batchEditData.remainingQty) || 0; // user සෘණ තොගය 0 කළ විට
+      const isOfflineNow = !navigator.onLine;
 
+      // ✅ Virtual Deficit Batch Adjustment
+      if (b.isVirtualDeficit) {
+        const nextRemaining = parseFloat(batchEditData.remainingQty) || 0;
         const otherBatchesSum = selectedItemBatches
           .filter(x => x.batchId !== b.batchId)
           .reduce((sum, x) => sum + parseFloat(x.remainingQty || 0), 0);
-        
-        const newTotalStock = otherBatchesSum + nextRemaining;
 
-        const itemRef = doc(db, 'items', selectedItem);
-        const writeBt = writeBatch(db);
-        
-        writeBt.update(itemRef, {
+        const newTotalStock = otherBatchesSum + nextRemaining;
+        const updatedItem = {
+          ...parentItem,
           stock: newTotalStock,
           currentStock: newTotalStock,
-          'stocks.Main_Store': newTotalStock
-        });
+          'stocks.Main_Store': newTotalStock,
+          offlineUpdated: isOfflineNow,
+          pendingSync: isOfflineNow,
+        };
+
+        await safePutLocal('items', updatedItem);
+        setItems(prev => prev.map(i => i.id === selectedItem ? updatedItem : i));
 
         const diff = nextRemaining - b.remainingQty;
+        let newAdjRecord = null;
         if (diff !== 0) {
-          const adjRef = doc(collection(db, 'stockAdjustments'));
-          writeBt.set(adjRef, {
-            uid:       user.uid,
-            itemId:    selectedItem,
-            itemName:  parentItem?.name || 'Unknown',
-            type:      diff > 0 ? 'add' : 'reduce',
-            qty:       Math.abs(diff),
-            reason:    `Adjusted POS Overdrawn Deficit Stock`,
-            date:      new Date().toISOString().split('T')[0],
-            createdAt: serverTimestamp(),
+          const adjId = doc(collection(db, 'stockAdjustments')).id;
+          newAdjRecord = {
+            id: adjId,
+            uid: user.uid,
+            itemId: selectedItem,
+            itemName: parentItem?.name || 'Unknown',
+            type: diff > 0 ? 'add' : 'reduce',
+            qty: Math.abs(diff),
+            reason: 'Adjusted POS Overdrawn Deficit Stock',
+            date: new Date().toISOString().split('T')[0],
+            createdAt: new Date().toISOString(),
+            synced: !isOfflineNow,
+            offlinePending: isOfflineNow,
+          };
+
+          await safePutLocal('stockAdjustments', newAdjRecord);
+          setAdjustments(prev => {
+            const next = [newAdjRecord, ...prev];
+            sortByDate(next);
+            return next;
           });
         }
 
-        await writeBt.commit();
+        if (navigator.onLine) {
+          try {
+            const writeBt = writeBatch(db);
+            const itemRef = doc(db, 'items', selectedItem);
+            writeBt.update(itemRef, {
+              stock: newTotalStock,
+              currentStock: newTotalStock,
+              'stocks.Main_Store': newTotalStock
+            });
+            if (newAdjRecord) {
+              const adjRef = doc(collection(db, 'stockAdjustments'));
+              const { id, synced, offlinePending, ...cleanAdj } = newAdjRecord;
+              writeBt.set(adjRef, {
+                ...cleanAdj,
+                createdAt: serverTimestamp(),
+              });
+            }
+            await writeBt.commit();
+            await safePutLocal('items', { ...updatedItem, offlineUpdated: false, pendingSync: false });
+            if (newAdjRecord) {
+              await safePutLocal('stockAdjustments', { ...newAdjRecord, synced: true, offlinePending: false });
+            }
+          } catch (e) {
+            console.warn("Firestore batch edit commit failed (queued offline):", e);
+          }
+        }
+
         showToast(t.batchAdjustSuccess);
         setEditingBatchId(null);
         return;
       }
 
-      // සාමාන්‍ය Batch වෙනස් කිරීමේ පියවර
-      const docRef = doc(db, b.invoiceCollection, b.invoiceId);
-      const docSnap = await getDoc(docRef);
+      // Regular Batch Adjustment
+      const invoiceCollection = b.invoiceCollection;
+      const invoiceId = b.invoiceId;
+      const invList = purchaseSources[invoiceCollection] || [];
+      const invDoc = invList.find(x => x.id === invoiceId);
 
-      if (!docSnap.exists()) {
-        throw new Error('Invoice document not found in ' + b.invoiceCollection);
+      if (!invDoc) {
+        throw new Error('Invoice document not found in ' + invoiceCollection);
       }
 
-      const invoiceData = docSnap.data();
-      const itemsArray = [...(invoiceData.items || [])];
-
+      const itemsArray = [...(invDoc.items || [])];
       if (b.itemIndex >= 0 && b.itemIndex < itemsArray.length) {
         const targetItem = { ...itemsArray[b.itemIndex] };
-        
         const currentRemaining = targetItem.remainingQty !== undefined ? parseFloat(targetItem.remainingQty) : parseFloat(targetItem.qty || targetItem.quantity || 0);
         const nextRemaining = parseFloat(batchEditData.remainingQty) || 0;
         const nextNetPrice = parseFloat(batchEditData.buyingNetPrice) || 0;
-        
+
         const nextRetailPrice = parseFloat(batchEditData.retailPrice) || 0;
         const nextRetailDiscount = parseFloat(batchEditData.retailDiscount) || 0;
         const nextWholesalePrice = parseFloat(batchEditData.wholesalePrice) || 0;
@@ -768,64 +1023,112 @@ export default function StockAdjustmentPage() {
         const nextLoosePrice = parseFloat(batchEditData.loosePrice) || 0;
         const nextLooseDiscount = parseFloat(batchEditData.looseDiscount) || 0;
 
-        // Apply Qty & Cost changes
         targetItem.remainingQty = nextRemaining;
         targetItem.buyingNetPrice = nextNetPrice;
         if (targetItem.netPrice !== undefined) targetItem.netPrice = nextNetPrice;
         if (targetItem.unitPrice !== undefined) targetItem.unitPrice = nextNetPrice;
         if (targetItem.qty !== undefined && targetItem.remainingQty === undefined) targetItem.qty = nextRemaining;
 
-        // Apply Pricing Changes to Batch
         targetItem.retailPrice = nextRetailPrice;
         targetItem.sellingPriceRetail = nextRetailPrice;
         targetItem.retailDiscount = nextRetailDiscount;
-
         targetItem.wholesalePrice = nextWholesalePrice;
         targetItem.sellingPriceWholesale = nextWholesalePrice;
         targetItem.wholesaleDiscount = nextWholesaleDiscount;
-
         targetItem.loosePrice = nextLoosePrice;
         targetItem.sellingPriceLoose = nextLoosePrice;
         targetItem.looseDiscount = nextLooseDiscount;
 
         itemsArray[b.itemIndex] = targetItem;
 
-        const writeBt = writeBatch(db);
-        
-        writeBt.update(docRef, {
+        const updatedInvoice = {
+          ...invDoc,
           items: itemsArray,
-          updatedAt: serverTimestamp()
-        });
+          offlineUpdated: isOfflineNow,
+        };
+
+        await safePutLocal(invoiceCollection, updatedInvoice);
+        setPurchaseSources(prev => ({
+          ...prev,
+          [invoiceCollection]: prev[invoiceCollection].map(x => x.id === invoiceId ? updatedInvoice : x)
+        }));
 
         const otherBatchesSum = selectedItemBatches
           .filter(x => x.batchId !== b.batchId)
           .reduce((sum, x) => sum + parseFloat(x.remainingQty || 0), 0);
-        
-        const newTotalStock = otherBatchesSum + nextRemaining;
 
-        const itemRef = doc(db, 'items', selectedItem);
-        writeBt.update(itemRef, {
+        const newTotalStock = otherBatchesSum + nextRemaining;
+        const updatedParentItem = {
+          ...parentItem,
           stock: newTotalStock,
           currentStock: newTotalStock,
-          'stocks.Main_Store': newTotalStock
-        });
+          'stocks.Main_Store': newTotalStock,
+          offlineUpdated: isOfflineNow,
+          pendingSync: isOfflineNow,
+        };
+
+        await safePutLocal('items', updatedParentItem);
+        setItems(prev => prev.map(i => i.id === selectedItem ? updatedParentItem : i));
 
         const diff = nextRemaining - currentRemaining;
+        let newAdjRecord = null;
         if (diff !== 0) {
-          const adjRef = doc(collection(db, 'stockAdjustments'));
-          writeBt.set(adjRef, {
-            uid:       user.uid,
-            itemId:    selectedItem,
-            itemName:  items.find(i => i.id === selectedItem)?.name || 'Unknown',
-            type:      diff > 0 ? 'add' : 'reduce',
-            qty:       Math.abs(diff),
-            reason:    `Batch Qty Adjusted (Invoice #${b.invoiceId.slice(-6).toUpperCase()})`,
-            date:      new Date().toISOString().split('T')[0],
-            createdAt: serverTimestamp(),
+          const adjId = doc(collection(db, 'stockAdjustments')).id;
+          newAdjRecord = {
+            id: adjId,
+            uid: user.uid,
+            itemId: selectedItem,
+            itemName: parentItem?.name || 'Unknown',
+            type: diff > 0 ? 'add' : 'reduce',
+            qty: Math.abs(diff),
+            reason: `Batch Qty Adjusted (Invoice #${b.invoiceId.slice(-6).toUpperCase()})`,
+            date: new Date().toISOString().split('T')[0],
+            createdAt: new Date().toISOString(),
+            synced: !isOfflineNow,
+            offlinePending: isOfflineNow,
+          };
+
+          await safePutLocal('stockAdjustments', newAdjRecord);
+          setAdjustments(prev => {
+            const next = [newAdjRecord, ...prev];
+            sortByDate(next);
+            return next;
           });
         }
 
-        await writeBt.commit();
+        if (navigator.onLine) {
+          try {
+            const writeBt = writeBatch(db);
+            const docRef = doc(db, invoiceCollection, invoiceId);
+            writeBt.update(docRef, {
+              items: itemsArray,
+              updatedAt: serverTimestamp()
+            });
+            const itemRef = doc(db, 'items', selectedItem);
+            writeBt.update(itemRef, {
+              stock: newTotalStock,
+              currentStock: newTotalStock,
+              'stocks.Main_Store': newTotalStock
+            });
+            if (newAdjRecord) {
+              const adjRef = doc(collection(db, 'stockAdjustments'));
+              const { id, synced, offlinePending, ...cleanAdj } = newAdjRecord;
+              writeBt.set(adjRef, {
+                ...cleanAdj,
+                createdAt: serverTimestamp(),
+              });
+            }
+            await writeBt.commit();
+            await safePutLocal(invoiceCollection, { ...updatedInvoice, offlineUpdated: false });
+            await safePutLocal('items', { ...updatedParentItem, offlineUpdated: false, pendingSync: false });
+            if (newAdjRecord) {
+              await safePutLocal('stockAdjustments', { ...newAdjRecord, synced: true, offlinePending: false });
+            }
+          } catch (e) {
+            console.warn("Firestore batch edit write failed (queued offline):", e);
+          }
+        }
+
         showToast(t.batchAdjustSuccess);
         setEditingBatchId(null);
       }
@@ -851,22 +1154,24 @@ export default function StockAdjustmentPage() {
     });
   };
 
-  /* ── Sync Missing History ── */
+  /* ── Sync Missing History (Offline Safe) ── */
   const handleSyncMissingHistory = async () => {
     const confirmed = await showConfirm(t.syncConfirm);
     if (!confirmed) return;
-
     setIsSyncing(true);
     try {
-      const batch       = writeBatch(db);
-      let   count       = 0;
       const existingIds = new Set(adjustments.map((a) => a.itemId));
+      const newAdjustments = [];
+      const batch = writeBatch(db);
+      let count = 0;
+      const isOfflineNow = !navigator.onLine;
 
       items.forEach((item) => {
         const actualStock = getActualStock(item);
         if (actualStock > 0 && !existingIds.has(item.id)) {
-          const ref = doc(collection(db, 'stockAdjustments'));
-          batch.set(ref, {
+          const adjId = doc(collection(db, 'stockAdjustments')).id;
+          const adjData = {
+            id: adjId,
             uid:       user.uid,
             itemId:    item.id,
             itemName:  item.name || 'Unknown',
@@ -874,14 +1179,38 @@ export default function StockAdjustmentPage() {
             qty:       actualStock,
             reason:    'Bulk Import (System Synced)',
             date:      new Date().toISOString().split('T')[0],
-            createdAt: serverTimestamp(),
-          });
+            createdAt: new Date().toISOString(),
+            synced: !isOfflineNow,
+            offlinePending: isOfflineNow,
+          };
+          newAdjustments.push(adjData);
+
+          if (!isOfflineNow) {
+            const ref = doc(db, 'stockAdjustments', adjId);
+            batch.set(ref, {
+              ...adjData,
+              createdAt: serverTimestamp(),
+            });
+          }
           count++;
         }
       });
 
       if (count > 0) {
-        await batch.commit();
+        await safeBulkPutLocal('stockAdjustments', newAdjustments);
+        setAdjustments(prev => {
+          const merged = [...newAdjustments, ...prev];
+          sortByDate(merged);
+          return merged;
+        });
+
+        if (!isOfflineNow) {
+          try {
+            await batch.commit();
+          } catch (e) {
+            console.warn("Firestore batch commit failed (saved locally):", e);
+          }
+        }
         showToast(`${count} ${t.syncDone}`);
       } else {
         showToast(t.syncNone, 'error');
@@ -969,11 +1298,9 @@ export default function StockAdjustmentPage() {
   ═══════════════════════════════════════ */
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: 20 }}>
-
       {toast && (
         <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
       )}
-
       {confirm && (
         <ConfirmModal
           message={confirm.message}
@@ -989,7 +1316,28 @@ export default function StockAdjustmentPage() {
         alignItems: 'center', marginBottom: 20,
         flexWrap: 'wrap', gap: 10,
       }}>
-        <h2 style={{ color: '#1e293b', margin: 0 }}>{t.pageTitle}</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <h2 style={{ color: '#1e293b', margin: 0 }}>{t.pageTitle}</h2>
+          {!isOnline ? (
+            <span style={{
+              padding: '4px 10px', background: '#fef3c7', color: '#b45309',
+              borderRadius: 20, fontSize: 12, fontWeight: 'bold',
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              border: '1px solid #fde68a'
+            }}>
+              📡 {t.offlineNotice}
+            </span>
+          ) : (
+            <span style={{
+              padding: '4px 10px', background: '#dcfce7', color: '#15803d',
+              borderRadius: 20, fontSize: 12, fontWeight: 'bold',
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              border: '1px solid #bbf7d0'
+            }}>
+              🟢 Online
+            </span>
+          )}
+        </div>
         <button
           onClick={handleSyncMissingHistory}
           disabled={isSyncing}
@@ -1009,7 +1357,6 @@ export default function StockAdjustmentPage() {
           <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 5, fontSize: 15 }}>
             {t.searchLabel}
           </label>
-
           <div style={{ position: 'relative' }}>
             <input
               type="text"
@@ -1143,7 +1490,6 @@ export default function StockAdjustmentPage() {
                 const isZero = b.remainingQty === 0;
                 const isNegative = b.remainingQty < 0 || b.isVirtualDeficit;
                 const isEditing = b.batchId === editingBatchId;
-
                 return (
                   <div 
                     key={b.batchId} 
@@ -1181,7 +1527,6 @@ export default function StockAdjustmentPage() {
 
                     {isEditing ? (
                       <div style={{ background: '#fff', padding: 14, borderRadius: 8, border: '1px solid #fde68a' }}>
-                        
                         {/* Row 1: Stock Remaining & Buying Price */}
                         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
                           <div style={{ flex: '1 1 120px' }}>
@@ -1211,7 +1556,7 @@ export default function StockAdjustmentPage() {
                           </div>
                         </div>
 
-                        {/* pricing rows disabled if virtual deficit */}
+                        {/* Pricing rows disabled if virtual deficit */}
                         {!b.isVirtualDeficit && (
                           <>
                             {/* Row 2: Retail Pricing in Batch */}
@@ -1345,7 +1690,6 @@ export default function StockAdjustmentPage() {
                             )}
                           </div>
                         )}
-
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
                           <span style={{ fontSize: 11, color: isNegative ? '#b91c1c' : '#64748b', fontWeight: isNegative ? 700 : 500 }}>
                             {b.isVirtualDeficit ? '⚠️ POS සෘණ විකුණුම් නිසා තොගයේ ඇතිවූ අඩුව පියවීමට මෙය 0 කරන්න' : 'Batch Pricing Details Synced'}
