@@ -2,19 +2,18 @@
 
 // src/components/SupplierReport.jsx
 // ═══════════════════════════════════════════════════════════════
-// v2.0 — Next.js App Router Compatible
-// useParams + useNavigate → useParams + useRouter (next/navigation)
-// firebaseConfig → @/shared/firebase-config
+// v2.2 — Offline-First IndexedDB + Firestore Supplier Report
 // ═══════════════════════════════════════════════════════════════
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { db } from "@/shared/firebase-config";
+import { db, auth } from "@/shared/firebase-config";
+import { onAuthStateChanged } from "firebase/auth";
 import {
   doc, getDoc, collection, query, where,
   getDocs, updateDoc, arrayUnion, deleteDoc
 } from "firebase/firestore";
-import { useUserAuth } from "@/context/UserContext";
+import localDb, { ensureDbOpen } from "@/lib/localDb";
 
 const toNum = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 
@@ -36,13 +35,19 @@ const formatDate = (d) => {
 const formatCurrency = (amt) =>
   `Rs. ${toNum(amt).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
 
+// ── Safely calculate stored balance (fixed zero-balance fallthrough bug) ──
 const getSupBalance = (sup) => {
   if (!sup) return 0;
-  const b = parseFloat(sup.balance);
-  if (!isNaN(b) && b !== 0) return b;
-  const c = parseFloat(sup.currentBalance);
-  if (!isNaN(c) && c !== 0) return c;
-  return parseFloat(sup.openingBalance) || 0;
+  if (sup.currentBalance !== undefined && sup.currentBalance !== null && !isNaN(parseFloat(sup.currentBalance))) {
+    return parseFloat(sup.currentBalance);
+  }
+  if (sup.balance !== undefined && sup.balance !== null && !isNaN(parseFloat(sup.balance))) {
+    return parseFloat(sup.balance);
+  }
+  if (sup.openingBalance !== undefined && sup.openingBalance !== null && !isNaN(parseFloat(sup.openingBalance))) {
+    return parseFloat(sup.openingBalance);
+  }
+  return 0;
 };
 
 const extractAllImages = (data) => {
@@ -75,7 +80,7 @@ const normalizePurchaseItems = (raw) => {
 };
 
 const compressImage = (file) => new Promise((resolve) => {
-  if (!file.type.startsWith('image/')) { alert("පින්තූරයක් පමණක් තෝරන්න!"); resolve(null); return; }
+  if (!file?.type?.startsWith('image/')) { alert("පින්තූරයක් පමණක් තෝරන්න!"); resolve(null); return; }
   const reader = new FileReader();
   reader.readAsDataURL(file);
   reader.onload = (e) => {
@@ -143,7 +148,7 @@ const getPaymentStatusInfo = (rawData) => {
   const map = {
     paid:    { label: '🟢 Paid',    labelSi: '✅ සම්පූර්ණ', color: '#16a34a', bg: '#dcfce7' },
     partial: { label: '🟡 Partial', labelSi: '🟡 අර්ධ',     color: '#d97706', bg: '#fef3c7' },
-    credit:  { label: '🔴 Credit',  labelSi: '🔴 ණය',      color: '#dc2626', bg: '#fee2e2' },
+    credit:  { label: '🔴 Credit',  labelSi: '🔴 ණය',       color: '#dc2626', bg: '#fee2e2' },
   };
   return map[status] || map.credit;
 };
@@ -152,10 +157,22 @@ const getPaymentStatusInfo = (rawData) => {
    MAIN COMPONENT
    ═══════════════════════════════════════════════════════════ */
 export default function SupplierReport() {
-  const params   = useParams();
-  const id       = params?.id;
-  const router   = useRouter();
-  const { user } = useUserAuth();
+  const params = useParams();
+  const rawId  = Array.isArray(params?.id) ? params.id[0] : params?.id;
+  const id     = rawId ? decodeURIComponent(rawId) : null;
+  const router = useRouter();
+
+  // Native Firebase Auth + Local Fallback State
+  const [user, setUser] = useState({ uid: 'pos_local_user', email: 'admin@pos.local' });
+
+  useEffect(() => {
+    if (!auth) return;
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (u) setUser(u);
+      else setUser({ uid: 'pos_local_user', email: 'admin@pos.local' });
+    });
+    return () => unsub();
+  }, []);
 
   const [supplier, setSupplier]       = useState(null);
   const [loading, setLoading]         = useState(true);
@@ -171,83 +188,192 @@ export default function SupplierReport() {
   const toggleRow = (key) => setExpanded(p => ({ ...p, [key]: !p[key] }));
 
   const fetchReport = useCallback(async () => {
-    if (!user || !id) return;
+    if (!id) return;
     setLoading(true);
     setError(null);
 
     try {
-      // Supplier doc
-      const supSnap = await getDoc(doc(db, 'suppliers', id));
-      if (!supSnap.exists()) throw new Error('Supplier not found');
-      const supData = { id: supSnap.id, ...supSnap.data() };
+      await ensureDbOpen();
+      const idStr = String(id);
+      const idNum = Number(id);
+
+      // ── 1. Fetch Supplier (Dexie Local -> Firestore Fallback) ──
+      let supData = null;
+
+      if (!isNaN(idNum) && idNum > 0) {
+        supData = await localDb.suppliers.get(idNum);
+      }
+      if (!supData) {
+        supData = await localDb.suppliers.where('docId').equals(idStr).first();
+      }
+      if (!supData) {
+        supData = await localDb.suppliers.filter(s =>
+          String(s.id) === idStr || String(s.docId) === idStr || String(s.supplierId) === idStr
+        ).first();
+      }
+
+      // If not in Dexie, try Firestore online
+      if (!supData && db) {
+        try {
+          const supSnap = await getDoc(doc(db, 'suppliers', idStr));
+          if (supSnap.exists()) {
+            supData = { id: supSnap.id, docId: supSnap.id, ...supSnap.data() };
+            try { await localDb.suppliers.put(supData); } catch {}
+          }
+        } catch (e) {
+          console.warn("Firestore supplier fetch error:", e.message);
+        }
+      }
+
+      if (!supData) throw new Error('සැපයුම්කරු සොයාගත නොහැක (Supplier not found)');
       setSupplier(supData);
+
+      // Build complete set of valid identifiers for this supplier
+      const supIdSet = new Set([
+        idStr,
+        String(supData.id || ''),
+        String(supData.docId || ''),
+        String(supData.supplierId || '')
+      ].filter(Boolean));
+
+      const supIdNums = new Set([
+        idNum,
+        Number(supData.id)
+      ].filter(n => !isNaN(n) && n > 0));
+
+      const matchesSupplier = (rec) => {
+        if (!rec) return false;
+        const sId = String(rec.supplierId || rec.supplier_id || rec.entityId || '');
+        const sNum = Number(rec.supplierId || rec.supplier_id || rec.entityId);
+        return supIdSet.has(sId) || (!isNaN(sNum) && supIdNums.has(sNum));
+      };
 
       const storedBalance = getSupBalance(supData);
       const txns = [];
-      const seen = new Set();
+      const seenKeys = new Set();
 
-      // ── Purchases ──────────────────────────────────────
-      const purchaseCollection = collection(db, 'purchaseInvoices');
-      for (const fld of ['supplierId', 'supplier_id']) {
-        try {
-          const snap = await getDocs(query(purchaseCollection, where(fld, '==', id), where('uid', '==', user.uid)));
-          snap.forEach(d => {
-            const key = d.ref.path;
-            if (seen.has(key)) return;
-            seen.add(key);
-            const dt = d.data();
-            const amt = toNum(dt.grandTotal || dt.total || dt.amount || dt.netTotal);
-            if (amt <= 0) return;
-            const ri = extractAllImages(dt);
-            txns.push({
-              key, id: d.id, type: 'purchase',
-              date: parseDate(dt.createdAt || dt.date || dt.timestamp),
-              amount: amt,
-              note: `📦 මිලදී ගැනීම ${dt.refNo || dt.invoiceNo ? `[${dt.refNo || dt.invoiceNo}]` : ''}`,
-              items: normalizePurchaseItems(dt.items || dt.cart || dt.products || dt.purchaseItems || dt.details || []),
-              receiptImages: ri, receiptUrl: ri[0] || null,
-              _path: d.ref.path, _rawData: dt,
+      // ── 2. Fetch Purchases (Dexie Local) ──
+      const dexiePurchases = [];
+      try {
+        const p1 = await localDb.purchases.filter(matchesSupplier).toArray();
+        const p2 = await localDb.purchaseInvoices.filter(matchesSupplier).toArray();
+        dexiePurchases.push(...p1, ...p2);
+      } catch (e) {
+        console.warn("Dexie purchases fetch warning:", e.message);
+      }
+
+      // ── 3. Fetch Purchases (Firestore Online) ──
+      const firestorePurchases = [];
+      if (db && user?.uid && user.uid !== 'pos_local_user') {
+        const purchaseCollection = collection(db, 'purchaseInvoices');
+        for (const fld of ['supplierId', 'supplier_id']) {
+          try {
+            const snap = await getDocs(query(purchaseCollection, where(fld, '==', idStr), where('uid', '==', user.uid)));
+            snap.forEach(d => {
+              firestorePurchases.push({ id: d.id, _path: d.ref.path, ...d.data() });
             });
-          });
-        } catch (e) { console.warn(`purchaseInvoices (${fld}):`, e.message); }
+          } catch (e) {
+            console.warn(`Firestore purchaseInvoices (${fld}):`, e.message);
+          }
+        }
       }
 
-      // ── Payments / Receipts ────────────────────────────
-      const cashCol = collection(db, 'users', user.uid, 'cashTransactions');
-      const payMap  = new Map();
-      for (const fld of ['supplierId', 'supplier_id']) {
-        try {
-          const snap = await getDocs(query(cashCol, where(fld, '==', id)));
-          snap.forEach(d => { if (!payMap.has(d.ref.path)) payMap.set(d.ref.path, d); });
-        } catch {}
+      // Add purchases to list
+      const addPurchaseTxn = (dt, localId = null, path = null, dbTable = 'purchaseInvoices') => {
+        const docId = dt.docId || dt.id || path || localId;
+        const uniqueKey = `purchase_${docId}_${dt.invoiceNo || dt.refNo || ''}_${dt.grandTotal || dt.total || dt.amount || 0}`;
+        if (seenKeys.has(uniqueKey)) return;
+        seenKeys.add(uniqueKey);
+
+        const amt = toNum(dt.grandTotal || dt.total || dt.amount || dt.netTotal);
+        if (amt <= 0) return;
+
+        const ri = extractAllImages(dt);
+        txns.push({
+          key: uniqueKey,
+          id: dt.id || localId,
+          type: 'purchase',
+          date: parseDate(dt.createdAt || dt.date || dt.timestamp),
+          amount: amt,
+          note: `📦 මිලදී ගැනීම ${dt.refNo || dt.invoiceNo ? `[${dt.refNo || dt.invoiceNo}]` : ''}`,
+          items: normalizePurchaseItems(dt.items || dt.cart || dt.products || dt.purchaseItems || dt.details || []),
+          receiptImages: ri,
+          receiptUrl: ri[0] || null,
+          _path: path || dt._path || null,
+          _localId: localId || dt.id || null,
+          _table: dbTable,
+          _rawData: dt,
+        });
+      };
+
+      dexiePurchases.forEach(p => addPurchaseTxn(p, p.id, p._path, 'purchaseInvoices'));
+      firestorePurchases.forEach(p => addPurchaseTxn(p, null, p._path, 'purchaseInvoices'));
+
+      // ── 4. Fetch Cash Transactions (Dexie Local) ──
+      const dexieCash = [];
+      try {
+        const c1 = await localDb.cashTransactions.filter(matchesSupplier).toArray();
+        dexieCash.push(...c1);
+      } catch (e) {
+        console.warn("Dexie cash fetch warning:", e.message);
       }
-      payMap.forEach((d, key) => {
-        if (seen.has(key)) return;
-        const dt = d.data();
+
+      // ── 5. Fetch Cash Transactions (Firestore Online) ──
+      const firestoreCash = [];
+      if (db && user?.uid && user.uid !== 'pos_local_user') {
+        const cashCol = collection(db, 'users', user.uid, 'cashTransactions');
+        for (const fld of ['supplierId', 'supplier_id']) {
+          try {
+            const snap = await getDocs(query(cashCol, where(fld, '==', idStr)));
+            snap.forEach(d => {
+              firestoreCash.push({ id: d.id, _path: d.ref.path, ...d.data() });
+            });
+          } catch {}
+        }
+      }
+
+      const addCashTxn = (dt, localId = null, path = null) => {
         if (isPurchaseInvoiceDoc(dt)) return;
+        const docId = dt.docId || dt.id || path || localId;
+        const uniqueKey = `cash_${docId}_${dt.amount || dt.paymentAmount || 0}_${dt.timestamp || dt.date || ''}`;
+        if (seenKeys.has(uniqueKey)) return;
+        seenKeys.add(uniqueKey);
+
         const amt = toNum(dt.amount || dt.paymentAmount || dt.paidAmount || dt.cash || 0);
         if (amt <= 0) return;
-        seen.add(key);
+
         const txnType = detectCashTxnType(dt);
         const method  = (dt.method || dt.paymentMethod || 'cash').toLowerCase();
         const ri = extractAllImages(dt);
+
         txns.push({
-          key, id: d.id, type: txnType,
+          key: uniqueKey,
+          id: dt.id || localId,
+          type: txnType,
           date: parseDate(dt.timestamp || dt.createdAt || dt.date || dt.paymentDate),
           amount: amt,
           note: txnType === 'receipt' ? `📥 ලැබීම [${method.toUpperCase()}]` : `💵 ගෙවීම [${method.toUpperCase()}]`,
-          items: [], receiptImages: ri, receiptUrl: ri[0] || null,
-          _path: d.ref.path, _paymentMethod: method,
+          items: [],
+          receiptImages: ri,
+          receiptUrl: ri[0] || null,
+          _path: path || dt._path || null,
+          _localId: localId || dt.id || null,
+          _table: 'cashTransactions',
+          _paymentMethod: method,
           _bankName: dt.bankName || dt.bank || dt.bankAccountName || '',
           _accountNo: dt.accountNo || dt.accountNumber || '',
           _transactionId: dt.transactionId || dt.txnId || '',
           _chequeNo: dt.chequeNo || '',
           _reference: dt.reference || dt.refNo || '',
-          _description: getNoteText(dt), _rawData: dt,
+          _description: getNoteText(dt),
+          _rawData: dt,
         });
-      });
+      };
 
-      // ── Stats ──────────────────────────────────────────
+      dexieCash.forEach(c => addCashTxn(c, c.id, c._path));
+      firestoreCash.forEach(c => addCashTxn(c, null, c._path));
+
+      // ── 6. Aggregate Stats & Running Balances ──
       const txnsAsc = [...txns].sort((a, b) => a.date.getTime() - b.date.getTime());
       let totalPurchase = 0, totalPaid = 0, totalReceived = 0;
       txnsAsc.forEach(t => {
@@ -260,43 +386,117 @@ export default function SupplierReport() {
       setStats({ totalPurchase, totalPaid, totalReceived, currentBalance: storedBalance });
       setTxns(txnsForDisplay);
 
-    } catch (e) { setError(e.message || 'Error'); }
-    finally { setLoading(false); }
+    } catch (e) {
+      setError(e.message || 'Error loading report');
+    } finally {
+      setLoading(false);
+    }
   }, [id, user]);
 
   useEffect(() => { fetchReport(); }, [fetchReport]);
 
+  // ── Image Upload (Local DB + Firestore) ──
   const handleUpload = async (txn, file) => {
-    if (!file || !user) return;
+    if (!file) return;
     try {
-      setUploadingId(txn._path);
+      setUploadingId(txn.key);
       const b64 = await compressImage(file);
       if (!b64) return;
-      await updateDoc(doc(db, txn._path), { receiptImages: arrayUnion(b64), receiptUrl: b64 });
+
+      await ensureDbOpen();
+      const updatedImages = [...(txn.receiptImages || []), b64];
+
+      // Update Local Dexie
+      if (txn._table && txn._localId && localDb[txn._table]) {
+        try {
+          await localDb[txn._table].update(Number(txn._localId) || txn._localId, {
+            receiptImages: updatedImages,
+            receiptUrl: b64,
+            syncStatus: 'pending'
+          });
+        } catch (e) { console.warn("Dexie receipt update error:", e.message); }
+      }
+
+      // Update Firestore if online
+      if (txn._path && db) {
+        try {
+          await updateDoc(doc(db, txn._path), {
+            receiptImages: arrayUnion(b64),
+            receiptUrl: b64
+          });
+        } catch (e) { console.warn("Firestore receipt update error:", e.message); }
+      }
+
       setTxns(p => p.map(t =>
-        t._path === txn._path ? { ...t, receiptImages: [...(t.receiptImages || []), b64], receiptUrl: b64 } : t
+        t.key === txn.key ? { ...t, receiptImages: updatedImages, receiptUrl: b64 } : t
       ));
       alert('✅ Save කරන ලදී!');
-    } catch (e) { alert('❌ ' + e.message); }
-    finally { setUploadingId(null); }
+    } catch (e) {
+      alert('❌ ' + e.message);
+    } finally {
+      setUploadingId(null);
+    }
   };
 
+  // ── Delete Transaction (Local DB + Firestore + Balance Update) ──
   const handleDelete = async (txn) => {
     if (!window.confirm(`මෙම ගනුදෙනුව මකන්න?\n${formatCurrency(txn.amount)}`)) return;
     try {
-      setDeletingId(txn._path);
-      await deleteDoc(doc(db, txn._path));
+      setDeletingId(txn.key);
+      await ensureDbOpen();
+
+      // 1. Delete from Dexie Local DB
+      if (txn._table && txn._localId && localDb[txn._table]) {
+        try {
+          await localDb[txn._table].delete(Number(txn._localId) || txn._localId);
+        } catch (e) { console.warn("Dexie delete error:", e.message); }
+      }
+
+      // 2. Delete from Firestore if online
+      if (txn._path && db) {
+        try {
+          await deleteDoc(doc(db, txn._path));
+        } catch (e) { console.warn("Firestore delete error:", e.message); }
+      }
+
+      // 3. Update Supplier Balance
       const bal = getSupBalance(supplier);
       let newBal = bal;
       if (txn.type === 'purchase') newBal = bal - txn.amount;
       else if (txn.type === 'payment') newBal = bal + txn.amount;
       else if (txn.type === 'receipt') newBal = bal - txn.amount;
-      await updateDoc(doc(db, 'suppliers', id), { balance: newBal, currentBalance: newBal });
-      setSupplier(p => ({ ...p, balance: newBal, currentBalance: newBal }));
+
+      const updatedSupData = {
+        ...supplier,
+        balance: newBal,
+        currentBalance: newBal,
+        updatedAt: new Date().toISOString()
+      };
+
+      if (supplier.id) {
+        try {
+          await localDb.suppliers.put(updatedSupData);
+        } catch (e) { console.warn("Dexie supplier update error:", e.message); }
+      }
+
+      if (supplier.id && db) {
+        try {
+          await updateDoc(doc(db, 'suppliers', String(supplier.id)), {
+            balance: newBal,
+            currentBalance: newBal,
+            updatedAt: new Date().toISOString()
+          });
+        } catch (e) { console.warn("Firestore supplier update error:", e.message); }
+      }
+
+      setSupplier(updatedSupData);
       await fetchReport();
       alert('✅ මකා දමන ලදී!');
-    } catch (e) { alert('❌ ' + e.message); }
-    finally { setDeletingId(null); }
+    } catch (e) {
+      alert('❌ ' + e.message);
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const filtered = filterTab === 'all' ? transactions
@@ -379,7 +579,7 @@ export default function SupplierReport() {
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 20, borderTop: '3px solid #cbd5e1', paddingTop: 15, marginTop: 10 }}>
               <b style={{ color: '#0f172a' }}>වත්මන් ශේෂය:</b>
-              <b style={{ color: stats.currentBalance > 0 ? '#dc2626' : '#16a34a', fontSize: 22 }}>
+              <b style={{ color: stats.currentBalance > 0 ? '#dc2626' : stats.currentBalance < 0 ? '#16a34a' : '#64748b', fontSize: 22 }}>
                 {formatCurrency(Math.abs(stats.currentBalance))}
                 <span style={{ fontSize: 13, marginLeft: 6, fontWeight: 'normal' }}>
                   {stats.currentBalance > 0 ? '(ගෙවිය යුතු)' : stats.currentBalance < 0 ? '(අධිකව ගෙවූ)' : '(ශේෂ නැත)'}
@@ -392,7 +592,7 @@ export default function SupplierReport() {
         {/* Filter tabs */}
         <div className="no-print" style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
           {[
-            { key: 'all',      label: `සියල්ල (${transactions.length})`,                 bg: '#7c3aed' },
+            { key: 'all',      label: `සියල්ල (${transactions.length})`,                bg: '#7c3aed' },
             { key: 'purchase', label: `📦 මිලදී ගැනීම් (${purchaseCount})`,              bg: '#dc2626' },
             { key: 'payment',  label: `💵 ගෙවීම් / ලැබීම් (${paymentCount})`,            bg: '#16a34a' },
           ].map(f => (
@@ -421,7 +621,7 @@ export default function SupplierReport() {
               {filtered.length === 0 ? (
                 <tr><td colSpan="8" style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>ගනුදෙනු නොමැත.</td></tr>
               ) : filtered.map((txn, i) => {
-                const noteText  = getNoteText(txn._rawData);
+                const noteText   = getNoteText(txn._rawData);
                 const statusInfo = txn.type === 'purchase' ? getPaymentStatusInfo(txn._rawData) : null;
 
                 return (
@@ -476,16 +676,16 @@ export default function SupplierReport() {
                           {txn.receiptImages?.length > 0 && (
                             <button onClick={() => setViewRec(txn.receiptImages[0])} style={{ padding: '5px 8px', background: '#0369a1', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>👁️</button>
                           )}
-                          <label style={{ padding: '5px 8px', background: uploadingId === txn._path ? '#94a3b8' : '#f59e0b', color: 'white', borderRadius: 4, cursor: uploadingId === txn._path ? 'wait' : 'pointer', fontSize: 12 }}>
-                            {uploadingId === txn._path ? '⏳' : '📤'}
-                            <input type="file" hidden accept="image/*" onChange={e => e.target.files[0] && handleUpload(txn, e.target.files[0])} disabled={uploadingId === txn._path} />
+                          <label style={{ padding: '5px 8px', background: uploadingId === txn.key ? '#94a3b8' : '#f59e0b', color: 'white', borderRadius: 4, cursor: uploadingId === txn.key ? 'wait' : 'pointer', fontSize: 12 }}>
+                            {uploadingId === txn.key ? '⏳' : '📤'}
+                            <input type="file" hidden accept="image/*" onChange={e => e.target.files[0] && handleUpload(txn, e.target.files[0])} disabled={uploadingId === txn.key} />
                           </label>
                         </div>
                       </td>
 
                       <td style={{ padding: 10, textAlign: 'center' }} className="no-print">
-                        <button onClick={() => handleDelete(txn)} disabled={deletingId === txn._path} style={{ padding: '5px 8px', background: deletingId === txn._path ? '#94a3b8' : '#dc2626', color: 'white', border: 'none', borderRadius: 4, cursor: deletingId === txn._path ? 'wait' : 'pointer', fontSize: 12 }}>
-                          {deletingId === txn._path ? '⏳' : '🗑️'}
+                        <button onClick={() => handleDelete(txn)} disabled={deletingId === txn.key} style={{ padding: '5px 8px', background: deletingId === txn.key ? '#94a3b8' : '#dc2626', color: 'white', border: 'none', borderRadius: 4, cursor: deletingId === txn.key ? 'wait' : 'pointer', fontSize: 12 }}>
+                          {deletingId === txn.key ? '⏳' : '🗑️'}
                         </button>
                       </td>
                     </tr>

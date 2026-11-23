@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { useUserAuth } from '@/context/UserContext';
 import { startAutoSync, forceSyncAndBackup, purgeOtherUsers } from '@/lib/syncService';
-import { localDb } from '@/lib/localDb';
+import localDb, { ensureDbOpen } from '@/lib/localDb'; // 👈 Fixed Default Import
 
 // POSInvoice Component එක Dynamic ලෙස SSR නැතිව Load කිරීම (Electron / Next.js Hydration Mismatch වැළැක්වීමට)
 const POSInvoice = dynamic(() => import('@/components/POSInvoice'), {
@@ -30,7 +30,22 @@ const POSInvoice = dynamic(() => import('@/components/POSInvoice'), {
 
 export default function POSPage() {
   const router = useRouter();
-  const { user, loading } = useUserAuth();
+
+  // Safe Auth Hook Invocation (Offline / Context Guard)
+  let authUser = null;
+  let authLoading = false;
+  try {
+    const authCtx = useUserAuth();
+    authUser = authCtx?.user;
+    authLoading = !!authCtx?.loading;
+  } catch {
+    authLoading = false;
+  }
+
+  // Offline / Desktop Local User Fallback
+  const user = authUser || { uid: 'pos_local_user', email: 'admin@pos.local' };
+  const loading = authLoading;
+
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [syncing, setSyncing] = useState(false);
   const [dataPurged, setDataPurged] = useState(false);
@@ -57,7 +72,6 @@ export default function POSPage() {
 
     const uid = user.uid;
 
-    // User මාරු වුවහොත් re-purge එකක් සක්‍රීය කරයි
     if (prevUidRef.current && prevUidRef.current !== uid) {
       setDataPurged(false);
     }
@@ -69,11 +83,14 @@ export default function POSPage() {
 
     const prepare = async () => {
       try {
+        await ensureDbOpen();
         await purgeOtherUsers(uid);
-        // UID එකක් නොමැති අනාථ (Orphan) Item දත්ත ඇත්නම් ඒවා ඉවත් කිරීම
-        const orphans = await localDb.items.filter((r) => !r.uid).count().catch(() => 0);
-        if (orphans > 0) {
-          await localDb.items.filter((r) => !r.uid).delete().catch(() => {});
+
+        if (localDb && localDb.items) {
+          const orphans = await localDb.items.filter((r) => !r.uid).count().catch(() => 0);
+          if (orphans > 0) {
+            await localDb.items.filter((r) => !r.uid).delete().catch(() => {});
+          }
         }
       } catch (err) {
         console.warn("දත්ත පිරිසිදු කිරීමේ සටහන:", err);
@@ -107,14 +124,7 @@ export default function POSPage() {
     };
   }, [user?.uid, dataPurged]);
 
-  // 4. Auth Guard - Login වී නොමැති නම් ආරක්ෂිතව Redirect කිරීම
-  useEffect(() => {
-    if (!loading && !user?.uid) {
-      router.replace('/');
-    }
-  }, [loading, user?.uid, router]);
-
-  // 5. Manual Sync බොත්තම ක්‍රියා කරවීම
+  // 4. Manual Sync බොත්තම ක්‍රියා කරවීම
   const handleManualSync = async () => {
     if (syncing || !user?.uid) return;
     setSyncing(true);
@@ -128,7 +138,7 @@ export default function POSPage() {
   };
 
   // Loading Screen
-  if (loading || !user?.uid || !dataPurged) {
+  if (loading || !dataPurged) {
     return (
       <div style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -149,7 +159,7 @@ export default function POSPage() {
 
   return (
     <>
-      {/* තිරයේ ඉහළ දකුණු පස ඇති Sync / Online Status Indicator එක (Invoice Print කිරීමේදී පෙනෙන්නේ නැත - 'no-print') */}
+      {/* Sync / Online Status Indicator */}
       <div className="no-print" style={{
         position: 'fixed', top: 10, right: 12, zIndex: 9998,
         display: 'flex', alignItems: 'center', gap: 6,
@@ -180,7 +190,6 @@ export default function POSPage() {
           <p>POS පූරණය වෙමින්...</p>
         </div>
       }>
-        {/* key={user.uid} මගින් User මාරු වන විට POSInvoice Component එක සම්පූර්ණයෙන්ම Remount වී පැරණි State ඉවත් වේ */}
         <POSInvoice key={user.uid} user={user} lang="si" />
       </Suspense>
     </>

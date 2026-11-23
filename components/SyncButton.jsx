@@ -12,7 +12,7 @@ import {
   startAfter,
   onSnapshot,
 } from 'firebase/firestore';
-import { localDb } from '@/lib/localDb';
+import localDb, { ensureDbOpen as libEnsureDbOpen } from '@/lib/localDb';
 import { onAuthStateChanged } from 'firebase/auth';
 
 const sanitizeForFirestore = (val) => {
@@ -50,7 +50,7 @@ const sanitizeForFirestore = (val) => {
 };
 
 /* ═══════════════════════════════════════
-   SAFE DEXIE DATABASE HELPERS
+   SAFE DEXIE DATABASE HELPERS (CRASH-PROOF)
 ═══════════════════════════════════════ */
 const ensureDbOpen = async () => {
   if (!localDb) return false;
@@ -60,7 +60,15 @@ const ensureDbOpen = async () => {
     }
     return true;
   } catch (err) {
-    console.warn('[Dexie] Auto-open warning:', err?.message || err);
+    // Retry opening if DatabaseClosedError / UnknownError
+    try {
+      if (typeof localDb.open === 'function') {
+        await localDb.open();
+        return true;
+      }
+    } catch (retryErr) {
+      // Catch silently to prevent unhandled rejection spam
+    }
     return false;
   }
 };
@@ -68,29 +76,28 @@ const ensureDbOpen = async () => {
 const getSafeDocs = async (table) => {
   if (!table || !localDb) return [];
   try {
-    await ensureDbOpen();
+    const isOpen = await ensureDbOpen();
+    if (!isOpen) return [];
     return await table.toArray();
   } catch (err) {
-    if (err?.name === 'AbortError' || err?.message?.includes('aborted')) {
-      return [];
-    }
-    // Attempt automatic database reopening and retry once
+    // Retry once silently
     try {
       if (localDb && typeof localDb.open === 'function') {
         await localDb.open();
         return await table.toArray();
       }
-    } catch (retryErr) {
-      // Quiet fallback without triggering unhandled console rejection
+    } catch (e) {
+      // Quiet fallback
     }
     return [];
   }
 };
 
 const safePut = async (table, record) => {
-  if (!table) return;
+  if (!table || !localDb) return;
   try {
-    await ensureDbOpen();
+    const isOpen = await ensureDbOpen();
+    if (!isOpen) return;
     await table.put(record);
   } catch (err) {
     try {
@@ -99,15 +106,16 @@ const safePut = async (table, record) => {
         await table.put(record);
       }
     } catch (e) {
-      console.warn('[Sync] safePut failed:', e?.message || e);
+      console.warn('[Sync] safePut silent recovery failed');
     }
   }
 };
 
 const safeBulkPut = async (table, records) => {
-  if (!table || !records || !records.length) return;
+  if (!table || !records || !records.length || !localDb) return;
   try {
-    await ensureDbOpen();
+    const isOpen = await ensureDbOpen();
+    if (!isOpen) return;
     await table.bulkPut(records);
   } catch (err) {
     try {
@@ -116,7 +124,7 @@ const safeBulkPut = async (table, records) => {
         await table.bulkPut(records);
       }
     } catch (e) {
-      console.warn('[Sync] safeBulkPut failed:', e?.message || e);
+      console.warn('[Sync] safeBulkPut silent recovery failed');
     }
   }
 };
@@ -207,6 +215,9 @@ export default function SyncButton() {
   const autoUploadLocalToCloud = useCallback(async () => {
     const activeUser = fbUser || auth.currentUser;
     if (!activeUser || !navigator.onLine || !localDb) return;
+
+    const dbOpen = await ensureDbOpen();
+    if (!dbOpen) return;
 
     try {
       const syncTargets = [
@@ -339,7 +350,9 @@ export default function SyncButton() {
     if (isDuplicate) return;
 
     autoUploadLocalToCloud();
-    const interval = setInterval(autoUploadLocalToCloud, 8000);
+    const interval = setInterval(() => {
+      autoUploadLocalToCloud();
+    }, 8000);
 
     const handleOnline = () => {
       setStatusMsg('🌐 Online! Auto-Syncing missing records...');
@@ -799,7 +812,7 @@ export default function SyncButton() {
               textAlign: 'left',
               display: 'flex',
               alignItems: 'center',
-              justify: 'space-between',
+              justifyContent: 'space-between',
               fontSize: '13px',
             }}
           >
@@ -822,7 +835,7 @@ export default function SyncButton() {
               textAlign: 'left',
               display: 'flex',
               alignItems: 'center',
-              justify: 'space-between',
+              justifyContent: 'space-between',
               fontSize: '13px',
             }}
           >
@@ -845,7 +858,7 @@ export default function SyncButton() {
               textAlign: 'left',
               display: 'flex',
               alignItems: 'center',
-              justify: 'space-between',
+              justifyContent: 'space-between',
               fontSize: '13px',
             }}
           >
@@ -868,7 +881,7 @@ export default function SyncButton() {
               textAlign: 'left',
               display: 'flex',
               alignItems: 'center',
-              justify: 'space-between',
+              justifyContent: 'space-between',
               fontSize: '13px',
             }}
           >
@@ -892,7 +905,7 @@ export default function SyncButton() {
                 textAlign: 'left',
                 display: 'flex',
                 alignItems: 'center',
-                justify: 'space-between',
+                justifyContent: 'space-between',
                 fontSize: '13px',
               }}
             >
