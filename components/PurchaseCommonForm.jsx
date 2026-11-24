@@ -1,15 +1,18 @@
 'use client';
-
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { db, auth } from '@/lib/firebase';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { localDb, ensureDbOpen } from '@/lib/localDb';
+import localDb, { ensureDbOpen } from '@/lib/localDb';
 import {
   doc,
   setDoc,
   writeBatch,
   increment,
   serverTimestamp,
+  collection,
+  getDocs,
+  query,
+  where,
 } from 'firebase/firestore';
 
 // ─── Safe DB Lookup Helpers ───
@@ -75,6 +78,34 @@ const localISODate = (d = new Date()) => {
   return `${year}-${month}-${day}`;
 };
 
+// Accurate timestamp extractor for sorting
+const getRecordTime = (inv) => {
+  if (!inv) return 0;
+  if (inv.createdAt) {
+    if (typeof inv.createdAt === 'object' && inv.createdAt.seconds) {
+      return inv.createdAt.seconds * 1000 + (inv.createdAt.nanoseconds || 0) / 1e6;
+    }
+    const parsed = new Date(inv.createdAt).getTime();
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  if (inv.updatedAt) {
+    if (typeof inv.updatedAt === 'object' && inv.updatedAt.seconds) {
+      return inv.updatedAt.seconds * 1000;
+    }
+    const parsed = new Date(inv.updatedAt).getTime();
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  if (inv.id) {
+    const match = String(inv.id).match(/_(\d{10,14})_/);
+    if (match && match[1]) return Number(match[1]);
+  }
+  if (inv.date) {
+    const parsed = new Date(inv.date).getTime();
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return 0;
+};
+
 const getExpiryStatus = (expiryDate) => {
   if (!expiryDate) return null;
   const today = new Date();
@@ -109,7 +140,7 @@ const S = {
   card: { background: '#ffffff', borderRadius: 12, padding: 20, marginBottom: 20, boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)', border: '1px solid #e2e8f0' },
   lbl: { display: 'block', fontSize: 13, fontWeight: 700, color: '#334155', marginBottom: 6 },
   inp: { width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 14, outline: 'none', boxSizing: 'border-box' },
-  btn: { padding: '12px 20px', borderRadius: 8, border: 'none', fontWeight: 700, cursor: 'pointer', color: '#ffffff', transition: 'all 0.2s' },
+  btn: { padding: '10px 18px', borderRadius: 8, border: 'none', fontWeight: 700, cursor: 'pointer', color: '#ffffff', transition: 'all 0.2s', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 },
   tab: (active) => ({ padding: '12px 24px', borderRadius: '10px 10px 0 0', border: 'none', fontWeight: 700, cursor: 'pointer', background: active ? '#ffffff' : '#f1f5f9', color: active ? '#2563eb' : '#64748b', borderBottom: active ? '3px solid #2563eb' : 'none' }),
 };
 
@@ -118,7 +149,7 @@ const ExpiryBadge = ({ expiryDate, size = 'normal' }) => {
   const info = getExpiryStatus(expiryDate);
   if (!info) return null;
   return (
-    <span style={{ padding: size === 'small' ? '2px 6px' : '4px 8px', borderRadius: 6, fontSize: size === 'small' ? 10 : 12, fontWeight: 700, background: info.bg, color: info.color, border: `1px solid ${info.border}` }}>
+    <span style={{ padding: size === 'small' ? '2px 6px' : '4px 8px', borderRadius: 6, fontSize: size === 'small' ? 10 : 12, fontWeight: 700, background: info.bg, color: info.color, border: `1px solid ${info.border}`, whiteSpace: 'nowrap' }}>
       {info.label}
     </span>
   );
@@ -146,7 +177,7 @@ const PriceBox = ({ title, icon, bgColor, borderColor, textColor, accentBg, pric
   </div>
 );
 
-const SupplierSearchableSelect = ({ options, value, onChange, onSupplierCreated, placeholder }) => {
+const SupplierSearchableSelect = ({ options, value, onChange, onSupplierCreated, placeholder, user }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -167,17 +198,23 @@ const SupplierSearchableSelect = ({ options, value, onChange, onSupplierCreated,
       await ensureDbOpen();
       const supId = `sup_${Date.now()}`;
       const nowIso = new Date().toISOString();
+      const currentUid = user?.uid || 'pos_local_user';
+
       const newSup = {
         id: supId,
         docId: supId,
+        uid: currentUid,
+        userId: currentUid,
         name: newSupName.trim(),
         phone: newSupPhone.trim(),
         currentBalance: 0,
         balance: 0,
         createdAt: nowIso,
         updatedAt: nowIso,
+        createdBy: user?.email || currentUid,
         synced: false,
       };
+
       await localDb.suppliers.put(newSup);
 
       if (navigator.onLine) {
@@ -192,6 +229,7 @@ const SupplierSearchableSelect = ({ options, value, onChange, onSupplierCreated,
           console.warn('Firestore supplier save warning:', e);
         }
       }
+
       onSupplierCreated(newSup);
       setShowAddModal(false);
       setNewSupName('');
@@ -220,6 +258,7 @@ const SupplierSearchableSelect = ({ options, value, onChange, onSupplierCreated,
           ➕ නව
         </button>
       </div>
+
       {isOpen && (
         <div style={{ position: 'absolute', zIndex: 50, background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 8, width: '100%', maxHeight: 200, overflowY: 'auto', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}>
           {filtered.map((s) => (
@@ -238,6 +277,7 @@ const SupplierSearchableSelect = ({ options, value, onChange, onSupplierCreated,
           {!filtered.length && <div style={{ padding: 12, color: '#94a3b8', textAlign: 'center' }}>සැපයුම්කරුවන් නොමැත</div>}
         </div>
       )}
+
       {showAddModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ ...S.card, width: 360 }}>
@@ -315,6 +355,7 @@ const ReceiptUploader = ({ receipts, setReceipts, disabled }) => {
       reader.readAsDataURL(file);
     });
   };
+
   return (
     <div>
       <input type="file" accept="image/*" multiple onChange={handleFileChange} disabled={disabled} style={{ marginBottom: 10 }} />
@@ -379,7 +420,177 @@ const ScannerModal = ({ isOpen, onClose, onScan }) => {
   );
 };
 
-const PaymentModal = ({ isOpen, onClose, invoice, onPaymentSaved, collectionName, bankAccounts, bankLoading }) => {
+// ─── INVOICE DETAILS MODAL (VIEW ALL DETAILS + PRINT) ───
+const InvoiceDetailsModal = ({ isOpen, onClose, invoice }) => {
+  if (!isOpen || !invoice) return null;
+
+  const bal = toNum(invoice.balanceAmount ?? invoice.currentBalance ?? 0);
+  const paid = toNum(invoice.paidAmount ?? 0);
+  const total = toNum(invoice.totalAmount ?? 0);
+  const status = getInvStatus(invoice);
+
+  const statusLabel =
+    status === 'paid'
+      ? { text: 'සම්පූර්ණයෙන්ම ගෙවා ඇත (PAID)', bg: '#dcfce7', color: '#15803d' }
+      : status === 'partial'
+      ? { text: 'කොටසක් ගෙවා ඇත (PARTIAL)', bg: '#fef3c7', color: '#b45309' }
+      : { text: 'ණයට ලබාගෙන ඇත (CREDIT)', bg: '#fee2e2', color: '#b91c1c' };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', zIndex: 150, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 15 }}>
+      <div style={{ background: '#ffffff', borderRadius: 16, width: '100%', maxWidth: 880, maxHeight: '92vh', display: 'flex', flexDirection: 'column', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', overflow: 'hidden' }}>
+        
+        {/* Modal Header */}
+        <div style={{ padding: '18px 24px', background: '#0f172a', color: '#ffffff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 18, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span>📑 මිලදී ගැනීමේ ඉන්වොයිස් විස්තර</span>
+              <span style={{ fontSize: 12, padding: '3px 8px', borderRadius: 6, background: statusLabel.bg, color: statusLabel.color, fontWeight: 800 }}>
+                {statusLabel.text}
+              </span>
+            </h3>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>ID: {invoice.id}</div>
+          </div>
+          <button onClick={onClose} style={{ background: '#334155', border: 'none', color: '#ffffff', borderRadius: '50%', width: 34, height: 34, cursor: 'pointer', fontSize: 18 }}>✕</button>
+        </div>
+
+        {/* Modal Body (Scrollable) */}
+        <div style={{ padding: 24, overflowY: 'auto', flex: 1 }}>
+          {/* Key Meta Grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, background: '#f8fafc', padding: 16, borderRadius: 12, border: '1px solid #e2e8f0', marginBottom: 20 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>සැපයුම්කරු (SUPPLIER)</div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: '#1e293b' }}>{invoice.supplierName || 'නොදනී'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>දිනය (DATE)</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#1e293b' }}>{invoice.date || 'N/A'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>REF NO / බිල් අංකය</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#1e293b' }}>{invoice.refNo || 'නැත'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>ගෙවීම් ක්‍රමය (METHOD)</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#2563eb', textTransform: 'capitalize' }}>
+                {invoice.paymentMethod || 'cash'}
+              </div>
+            </div>
+            {invoice.notes && (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>විශේෂ සටහන් (NOTES)</div>
+                <div style={{ fontSize: 13, color: '#334155', marginTop: 2 }}>{invoice.notes}</div>
+              </div>
+            )}
+          </div>
+
+          {/* Items Table */}
+          <div style={{ marginBottom: 20 }}>
+            <h4 style={{ margin: '0 0 10px', fontSize: 15, color: '#1e293b' }}>📦 මිලදී ගත් භාණ්ඩ ලැයිස්තුව ({invoice.items?.length || 0})</h4>
+            <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: 13 }}>
+                <thead style={{ background: '#f1f5f9', color: '#475569', fontWeight: 700 }}>
+                  <tr>
+                    <th style={{ padding: '10px 12px' }}>#</th>
+                    <th style={{ padding: '10px 12px' }}>භාණ්ඩය</th>
+                    <th style={{ padding: '10px 12px', textAlign: 'center' }}>කල් ඉකුත්වීම / Batch</th>
+                    <th style={{ padding: '10px 12px', textAlign: 'center' }}>ප්‍රමාණය (Qty)</th>
+                    <th style={{ padding: '10px 12px', textAlign: 'right' }}>මිලදී ගත් මිල</th>
+                    <th style={{ padding: '10px 12px', textAlign: 'right' }}>විකුණුම් මිල</th>
+                    <th style={{ padding: '10px 12px', textAlign: 'right' }}>එකතුව</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(invoice.items || []).map((it, idx) => (
+                    <tr key={idx} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      <td style={{ padding: '10px 12px', color: '#64748b' }}>{idx + 1}</td>
+                      <td style={{ padding: '10px 12px' }}>
+                        <div style={{ fontWeight: 700, color: '#1e293b' }}>{it.name || it.itemName}</div>
+                        {(it.barcode || it.itemCode) && (
+                          <div style={{ fontSize: 11, color: '#64748b' }}>
+                            Code: {it.itemCode || it.barcode}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                        {it.expiryDate ? <ExpiryBadge expiryDate={it.expiryDate} size="small" /> : <span style={{ color: '#94a3b8' }}>-</span>}
+                        {it.batchNo && <div style={{ fontSize: 10, color: '#7c3aed', marginTop: 2 }}>🏷️ {it.batchNo}</div>}
+                      </td>
+                      <td style={{ padding: '10px 12px', textAlign: 'center', fontWeight: 800, color: '#2563eb' }}>
+                        {it.qty}
+                      </td>
+                      <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 600 }}>
+                        {formatCurrency(it.buyingNetPrice || it.buyingPrice)}
+                        {toNum(it.discountPercent) > 0 && <span style={{ fontSize: 10, color: '#d97706' }}> (-{it.discountPercent}%)</span>}
+                      </td>
+                      <td style={{ padding: '10px 12px', textAlign: 'right', color: '#059669', fontWeight: 600 }}>
+                        {formatCurrency(it.retailYourPrice || it.retailPrice || 0)}
+                      </td>
+                      <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 800, color: '#1e293b' }}>
+                        {formatCurrency(it.totalCost || (toNum(it.qty) * toNum(it.buyingNetPrice || it.buyingPrice)))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Receipts section if present */}
+          {invoice.receiptImages && invoice.receiptImages.length > 0 && (
+            <div style={{ marginBottom: 20 }}>
+              <h4 style={{ margin: '0 0 10px', fontSize: 14, color: '#1e293b' }}>🧾 රිසිට්පත් / ලේඛන</h4>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {invoice.receiptImages.map((src, i) => (
+                  <a key={i} href={src} target="_blank" rel="noopener noreferrer">
+                    <img src={src} alt="receipt" style={{ width: 90, height: 90, objectFit: 'cover', borderRadius: 8, border: '1px solid #cbd5e1' }} />
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Financial Totals Summary */}
+          <div style={{ background: '#f8fafc', padding: 18, borderRadius: 12, border: '2px solid #e2e8f0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: 14, color: '#64748b', fontWeight: 600 }}>මුළු බිල්පත් එකතුව (Total Amount):</span>
+              <span style={{ fontSize: 16, fontWeight: 800, color: '#1e293b' }}>{formatCurrency(total)}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: 14, color: '#16a34a', fontWeight: 600 }}>ගෙවූ මුදල (Paid Amount):</span>
+              <span style={{ fontSize: 16, fontWeight: 800, color: '#16a34a' }}>{formatCurrency(paid)}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '2px dashed #cbd5e1', paddingTop: 10 }}>
+              <span style={{ fontSize: 16, fontWeight: 800, color: bal > 0 ? '#dc2626' : '#16a34a' }}>හිඟ ශේෂය (Balance Due):</span>
+              <span style={{ fontSize: 22, fontWeight: 900, color: bal > 0 ? '#dc2626' : '#16a34a' }}>{formatCurrency(bal)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Modal Footer */}
+        <div style={{ padding: '14px 24px', background: '#f8fafc', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <button
+            type="button"
+            onClick={() => window.print()}
+            style={{ ...S.btn, background: '#475569' }}
+          >
+            🖨️ Print
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{ ...S.btn, background: '#2563eb' }}
+          >
+            හරි (Close)
+          </button>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+const PaymentModal = ({ isOpen, onClose, invoice, onPaymentSaved, collectionName, bankAccounts, bankLoading, user }) => {
   const [payAmount, setPayAmount] = useState('');
   const [method, setMethod] = useState('cash');
   const [bankId, setBankId] = useState('');
@@ -398,6 +609,7 @@ const PaymentModal = ({ isOpen, onClose, invoice, onPaymentSaved, collectionName
       alert('කරුණාකර බැංකු ගිණුමක් තෝරන්න!');
       return;
     }
+
     setSaving(true);
     try {
       await ensureDbOpen();
@@ -424,6 +636,7 @@ const PaymentModal = ({ isOpen, onClose, invoice, onPaymentSaved, collectionName
             currentBalance: supBal,
             balance: supBal,
             synced: false,
+            updatedAt: nowIso,
           });
         }
       }
@@ -436,8 +649,34 @@ const PaymentModal = ({ isOpen, onClose, invoice, onPaymentSaved, collectionName
             balance: bankBal,
             currentBalance: bankBal,
             synced: false,
+            updatedAt: nowIso,
           });
         }
+      }
+
+      // Record transaction locally if table exists
+      try {
+        if (localDb.supplierTransactions) {
+          const txId = `stx_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+          await localDb.supplierTransactions.put({
+            id: txId,
+            docId: txId,
+            uid: invoice.uid || user?.uid || 'pos_local_user',
+            supplierId: invoice.supplierId,
+            supplierName: invoice.supplierName,
+            invoiceId: invoice.id,
+            refNo: invoice.refNo || '',
+            amount: amt,
+            type: 'payment',
+            method: method,
+            bankAccountId: bankId || '',
+            date: localISODate(),
+            createdAt: nowIso,
+            synced: false,
+          });
+        }
+      } catch (txErr) {
+        console.warn('supplierTransactions save warning:', txErr);
       }
 
       // Firestore Cloud Update
@@ -450,6 +689,7 @@ const PaymentModal = ({ isOpen, onClose, invoice, onPaymentSaved, collectionName
           currentBalance: increment(-amt),
           syncedAt: serverTimestamp(),
         });
+
         if (invoice.supplierId) {
           batch.update(doc(db, 'suppliers', String(invoice.supplierId)), {
             currentBalance: increment(-amt),
@@ -457,6 +697,7 @@ const PaymentModal = ({ isOpen, onClose, invoice, onPaymentSaved, collectionName
             syncedAt: serverTimestamp(),
           });
         }
+
         if (method === 'bank' && bankId) {
           batch.update(doc(db, 'bankAccounts', String(bankId)), {
             balance: increment(-amt),
@@ -464,11 +705,14 @@ const PaymentModal = ({ isOpen, onClose, invoice, onPaymentSaved, collectionName
             syncedAt: serverTimestamp(),
           });
         }
+
         await batch.commit();
+
         if (localDb[collectionName]) {
           await localDb[collectionName].update(invoice.id, { synced: true });
         }
       }
+
       onPaymentSaved();
       onClose();
       alert('✅ ගෙවීම සාර්ථකව සුරැකිණි!');
@@ -509,7 +753,7 @@ const PaymentModal = ({ isOpen, onClose, invoice, onPaymentSaved, collectionName
   );
 };
 
-const InvoiceCard = ({ inv, collectionName, S, onPayClick, onUpdate, onDeleteInvoice }) => {
+const InvoiceCard = ({ inv, collectionName, S, onPayClick, onViewDetails, onUpdate, onDeleteInvoice }) => {
   const isPaid = getInvStatus(inv) === 'paid';
   const bal = toNum(inv.balanceAmount ?? inv.currentBalance ?? 0);
 
@@ -533,15 +777,29 @@ const InvoiceCard = ({ inv, collectionName, S, onPayClick, onUpdate, onDeleteInv
   };
 
   return (
-    <div style={{ ...S.card, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+    <div style={{ ...S.card, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, transition: 'transform 0.15s ease' }}>
       <div>
-        <div style={{ fontSize: 16, fontWeight: 'bold' }}>{inv.supplierName} <span style={{ fontSize: 12, color: '#64748b' }}>({inv.refNo || inv.id})</span></div>
-        <div style={{ fontSize: 12, color: '#64748b' }}>දිනය: {inv.date} | අයිතම: {inv.items?.length || 0}</div>
-        <div style={{ fontSize: 13, marginTop: 4 }}>
+        <div style={{ fontSize: 16, fontWeight: 'bold', color: '#0f172a' }}>
+          {inv.supplierName || 'නොදනී'} <span style={{ fontSize: 12, color: '#64748b' }}>({inv.refNo || inv.id})</span>
+        </div>
+        <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
+          📅 දිනය: <b>{inv.date}</b> | 📦 අයිතම: <b>{inv.items?.length || 0}</b>
+        </div>
+        <div style={{ fontSize: 13, marginTop: 6 }}>
           එකතුව: <b>{formatCurrency(inv.totalAmount)}</b> | ගෙවූ: <span style={{ color: '#16a34a' }}>{formatCurrency(inv.paidAmount)}</span> | ශේෂය: <span style={{ color: bal > 0 ? '#dc2626' : '#16a34a', fontWeight: 'bold' }}>{formatCurrency(bal)}</span>
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        {/* OPEN / VIEW DETAILS BUTTON */}
+        <button
+          type="button"
+          onClick={() => onViewDetails(inv)}
+          style={{ ...S.btn, background: '#0284c7', padding: '8px 14px', fontSize: 12 }}
+          title="සියලු විස්තර බලන්න"
+        >
+          👁️ විස්තර (Open)
+        </button>
+
         {!isPaid && (
           <button onClick={() => onPayClick(inv)} style={{ ...S.btn, background: '#2563eb', padding: '8px 14px', fontSize: 12 }}>
             💳 ගෙවීම් කරන්න
@@ -656,32 +914,105 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
   const [showScanner, setShowScanner] = useState(false);
   const [paymentModal, setPaymentModal] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
+
+  // New Details Modal State
+  const [viewModalOpen, setViewModalOpen] = useState(false);
+  const [viewingInvoice, setViewingInvoice] = useState(null);
+
   const [isSaving, setIsSaving] = useState(false);
   const [saveStep, setSaveStep] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState('date-desc');
   const [historyFilter, setHistoryFilter] = useState('all');
 
-  // ─── Sync Data from Local DB ───
+  // ─── Sync Data from Local DB (Strict UID Scoping & Foreign User Purge) ───
   const syncLocalUiStates = useCallback(async () => {
     try {
       await ensureDbOpen();
-      const sups = await localDb.suppliers.toArray();
-      setSuppliers(sups);
-      const itms = await localDb.items.toArray();
-      setItems(itms);
-      if (localDb[storageKey]) {
-        const hist = await localDb[storageKey].toArray();
-        setHistory(hist);
+      const currentUid = user?.uid || 'pos_local_user';
+      const currentUserEmail = user?.email || '';
+
+      // 1. Purge foreign users' records from local Dexie
+      if (currentUid && currentUid !== 'pos_local_user') {
+        try {
+          if (localDb[storageKey]) {
+            await localDb[storageKey].filter((r) => r.uid && r.uid !== currentUid).delete();
+          }
+          if (localDb.purchases && storageKey !== 'purchases') {
+            await localDb.purchases.filter((r) => r.uid && r.uid !== currentUid).delete();
+          }
+          if (localDb.purchaseInvoices && storageKey !== 'purchaseInvoices') {
+            await localDb.purchaseInvoices.filter((r) => r.uid && r.uid !== currentUid).delete();
+          }
+        } catch (purgeErr) {
+          console.warn('Purge foreign records warning:', purgeErr);
+        }
       }
+
+      // 2. Fetch User's Invoices from Firestore if Online
+      if (typeof window !== 'undefined' && navigator.onLine && currentUid && currentUid !== 'pos_local_user') {
+        try {
+          const q = query(collection(db, storageKey), where('uid', '==', currentUid));
+          const snap = await getDocs(q);
+          if (!snap.empty && localDb[storageKey]) {
+            const remoteDocs = snap.docs.map((d) => ({
+              ...d.data(),
+              id: d.id,
+              docId: d.id,
+              synced: true,
+            }));
+            await localDb[storageKey].bulkPut(remoteDocs);
+          }
+        } catch (fsSyncErr) {
+          console.warn('Firestore fetch purchases warning:', fsSyncErr);
+        }
+      }
+
+      // 3. Load Suppliers (Filtered by UID)
+      if (localDb.suppliers) {
+        const allSups = await localDb.suppliers.toArray();
+        const userSups = allSups.filter((s) => {
+          if (!s.uid || s.uid === 'pos_local_user') return true;
+          return s.uid === currentUid;
+        });
+        setSuppliers(userSups);
+      }
+
+      // 4. Load Items
+      if (localDb.items) {
+        const itms = await localDb.items.toArray();
+        setItems(itms);
+      }
+
+      // 5. Load History (Strict User UID Isolation)
+      if (localDb[storageKey]) {
+        const allHist = await localDb[storageKey].toArray();
+        const userHist = allHist.filter((item) => {
+          if (item.uid === currentUid) return true;
+          if (item.userId === currentUid) return true;
+          if (currentUid === 'pos_local_user' && (!item.uid || item.uid === 'pos_local_user')) return true;
+          if (!item.uid && currentUserEmail && item.createdBy === currentUserEmail) return true;
+          return false;
+        });
+        setHistory(userHist);
+      }
+
+      // 6. Load Bank Accounts
       setBankLoading(true);
-      const banks = await localDb.bankAccounts.toArray();
-      setBankAccounts(banks);
+      if (localDb.bankAccounts) {
+        const allBanks = await localDb.bankAccounts.toArray();
+        const userBanks = allBanks.filter((b) => {
+          if (!b.uid || b.uid === 'pos_local_user') return true;
+          return b.uid === currentUid;
+        });
+        setBankAccounts(userBanks);
+      }
       setBankLoading(false);
     } catch (e) {
       console.error('Local UI sync error:', e);
+      setBankLoading(false);
     }
-  }, [storageKey]);
+  }, [storageKey, user]);
 
   useEffect(() => {
     syncLocalUiStates();
@@ -708,7 +1039,6 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
   const handleItemSelect = (id) => {
     const found = items.find((i) => i.id === id || i.docId === id);
     if (!found) return;
-
     const itemIdVal = found.id || found.docId;
     setLineItem({
       itemId: itemIdVal,
@@ -835,11 +1165,10 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
   const needsBank = paymentData.paymentMethod === 'bank';
   const bankMissing = needsBank && !paymentData.bankAccountId;
 
-  // History Totals
+  // History Totals (Strict User Scoped)
   const totalPurchases = useMemo(() => history.reduce((acc, h) => acc + toNum(h.totalAmount), 0), [history]);
   const totalPaid = useMemo(() => history.reduce((acc, h) => acc + toNum(h.paidAmount), 0), [history]);
   const totalBillsOutstanding = useMemo(() => history.reduce((acc, h) => acc + toNum(h.balanceAmount ?? h.currentBalance), 0), [history]);
-  const totalSupplierDebt = useMemo(() => suppliers.reduce((acc, s) => acc + toNum(s.currentBalance || s.balance), 0), [suppliers]);
 
   // Grouped Outstanding Suppliers
   const groupedOutstanding = useMemo(() => {
@@ -862,6 +1191,13 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
     return Object.values(groups);
   }, [history]);
 
+  const totalSupplierDebt = useMemo(() => {
+    const debtFromInvoices = groupedOutstanding.reduce((acc, g) => acc + toNum(g.totalDebt), 0);
+    if (debtFromInvoices > 0) return debtFromInvoices;
+    return suppliers.reduce((acc, s) => acc + toNum(s.currentBalance || s.balance), 0);
+  }, [groupedOutstanding, suppliers]);
+
+  // ─── Filtered & Accurately Sorted History ───
   const filteredHistory = useMemo(() => {
     return history
       .filter((inv) => {
@@ -874,7 +1210,13 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
         return matchesSearch && matchesFilter;
       })
       .sort((a, b) => {
-        if (sortBy === 'date-desc') return new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt);
+        if (sortBy === 'date-desc') {
+          // Precise Millisecond Sorting: Exact newest invoice on top
+          return getRecordTime(b) - getRecordTime(a);
+        }
+        if (sortBy === 'date-asc') {
+          return getRecordTime(a) - getRecordTime(b);
+        }
         if (sortBy === 'amount-desc') return toNum(b.totalAmount) - toNum(a.totalAmount);
         if (sortBy === 'balance-desc') return toNum(b.balanceAmount ?? b.currentBalance) - toNum(a.balanceAmount ?? a.currentBalance);
         return 0;
@@ -908,12 +1250,14 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
 
     try {
       await ensureDbOpen();
+      const currentUid = user?.uid || 'pos_local_user';
+      const currentUserEmail = user?.email || 'admin@pos.local';
+
       const invId = `${type}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
       const nowIso = new Date().toISOString();
       const isOnline = typeof window !== 'undefined' && navigator.onLine;
       const netPayNow = toNum(paymentData.payNow);
       const calculatedBalance = Math.max(0, Math.round((cartTotal - netPayNow) * 100) / 100);
-
       const isPurchaseType = type === 'purchase' || type === 'purchases';
       const isReturnType = type === 'purchase-return' || type === 'purchase_returns';
 
@@ -943,6 +1287,8 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
       const invoiceDoc = {
         id: invId,
         docId: invId,
+        uid: currentUid,
+        userId: currentUid,
         type,
         supplierId: formData.supplierId,
         supplierName: formData.supplierName,
@@ -959,7 +1305,7 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
         receiptImages: receiptImages || [],
         createdAt: nowIso,
         updatedAt: nowIso,
-        createdBy: user?.email || user?.uid || 'system',
+        createdBy: currentUserEmail,
         synced: false,
       };
 
@@ -976,10 +1322,8 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
         for (const cartItem of cleanedItems) {
           const itemId = cartItem.itemId || cartItem.id;
           if (!itemId) continue;
-
           const localItem = await getItemFromDb(itemId);
           const changeQty = toNum(cartItem.qty);
-
           if (localItem) {
             const currentStock = toNum(localItem.stock ?? localItem.currentStock ?? 0);
             const newStock = isReturnType ? currentStock - changeQty : currentStock + changeQty;
@@ -1007,13 +1351,14 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
               if (cartItem.loosePrice) itemUpdate.loosePrice = cartItem.loosePrice;
               if (cartItem.looseYourPrice) itemUpdate.looseYourPrice = cartItem.looseYourPrice;
             }
-
             await localDb.items.update(localItem.id, itemUpdate);
           } else {
             // New Item creation in local DB if missing
             const newLocalItem = {
               id: String(itemId),
               docId: String(itemId),
+              uid: currentUid,
+              userId: currentUid,
               name: cartItem.name || 'Uncategorized',
               itemName: cartItem.name || 'Uncategorized',
               barcode: cartItem.barcode || '',
@@ -1040,7 +1385,6 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
       if (formData.supplierId) {
         const localSup = await getSupplierFromDb(formData.supplierId);
         const diffBal = isReturnType ? -calculatedBalance : calculatedBalance;
-
         if (localSup) {
           const supBal = toNum(localSup.currentBalance ?? localSup.balance ?? 0);
           const newSupBal = Math.max(0, Math.round((supBal + diffBal) * 100) / 100);
@@ -1055,6 +1399,8 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
           await localDb.suppliers.put({
             id: String(formData.supplierId),
             docId: String(formData.supplierId),
+            uid: currentUid,
+            userId: currentUid,
             name: formData.supplierName,
             currentBalance: initialBal,
             balance: initialBal,
@@ -1088,6 +1434,8 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
           const firestoreInvoiceRef = doc(db, storageKey, invId);
           batch.set(firestoreInvoiceRef, {
             ...cleanInvoicePayload,
+            uid: currentUid,
+            userId: currentUid,
             synced: true,
             serverCreatedAt: serverTimestamp(),
           });
@@ -1097,10 +1445,8 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
             for (const cartItem of cleanedItems) {
               const itemId = String(cartItem.itemId || cartItem.id);
               if (!itemId) continue;
-
               const itemRef = doc(db, 'items', itemId);
               const changeQty = isReturnType ? -toNum(cartItem.qty) : toNum(cartItem.qty);
-
               const firestoreFields = {
                 stock: increment(changeQty),
                 currentStock: increment(changeQty),
@@ -1120,7 +1466,6 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
                 if (cartItem.loosePrice) firestoreFields.loosePrice = cartItem.loosePrice;
                 if (cartItem.looseYourPrice) firestoreFields.looseYourPrice = cartItem.looseYourPrice;
               }
-
               batch.set(itemRef, firestoreFields, { merge: true });
             }
           }
@@ -1132,6 +1477,7 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
             batch.set(
               supRef,
               {
+                uid: currentUid,
                 currentBalance: increment(diffBal),
                 balance: increment(diffBal),
                 syncedAt: serverTimestamp(),
@@ -1155,6 +1501,7 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
           }
 
           await batch.commit();
+
           if (localDb[storageKey]) {
             await localDb[storageKey].update(invId, { synced: true });
           }
@@ -1231,7 +1578,19 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
         collectionName={storageKey}
         bankAccounts={bankAccounts}
         bankLoading={bankLoading}
+        user={user}
       />
+
+      {/* Full Details Modal */}
+      <InvoiceDetailsModal
+        isOpen={viewModalOpen}
+        onClose={() => {
+          setViewModalOpen(false);
+          setViewingInvoice(null);
+        }}
+        invoice={viewingInvoice}
+      />
+
       {bankLoading && (
         <div style={{ padding: '8px 16px', background: '#fef3c7', borderRadius: 8, marginBottom: 10, fontSize: 13, color: '#92400e', textAlign: 'center' }}>
           ⏳ Loading bank accounts...
@@ -1248,9 +1607,9 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
         </button>
         <button type="button" style={S.tab(activeTab === 'payments')} onClick={() => handleTabChange('payments')}>
           💳 Payments Outstanding
-          {totalSupplierDebt > 0 && (
+          {totalBillsOutstanding > 0 && (
             <span style={{ background: '#ef4444', color: 'white', borderRadius: 10, padding: '2px 8px', fontSize: 11, marginLeft: 6 }}>
-              {formatCurrency(totalSupplierDebt)}
+              {formatCurrency(totalBillsOutstanding)}
             </span>
           )}
         </button>
@@ -1284,6 +1643,7 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
                     }));
                   }}
                   placeholder="සැපයුම්කරු තෝරන්න / නව"
+                  user={user}
                 />
               </div>
               <div>
@@ -1472,6 +1832,7 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
                       </div>
                     </div>
                   </div>
+
                   {needsBank && (
                     <div style={{ padding: 16, background: 'white', borderRadius: 12, border: '2px solid #bfdbfe', marginTop: 4 }}>
                       <BankAccountSelector value={paymentData.bankAccountId} onChange={(id) => setPaymentData((p) => ({ ...p, bankAccountId: id }))} bankAccounts={bankAccounts} loading={bankLoading} disabled={isSaving} showDeductInfo deductAmount={currentPayNow} />
@@ -1520,7 +1881,8 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 15 }}>
               <input placeholder="🔍 Search invoices..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={{ ...S.inp, textAlign: 'left', flex: '1 1 300px', padding: 12 }} />
               <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ ...S.inp, textAlign: 'left', width: 'auto', minWidth: 160 }}>
-                <option value="date-desc">📅 Latest</option>
+                <option value="date-desc">📅 Latest (නවතම පළමුව)</option>
+                <option value="date-asc">📅 Oldest (පැරණි පළමුව)</option>
                 <option value="amount-desc">💰 Highest Amount</option>
                 <option value="balance-desc">🔴 Outstanding Balance</option>
               </select>
@@ -1561,6 +1923,10 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
                 inv={inv}
                 collectionName={storageKey}
                 S={S}
+                onViewDetails={(invoice) => {
+                  setViewingInvoice(invoice);
+                  setViewModalOpen(true);
+                }}
                 onPayClick={(invoice) => {
                   setSelectedInvoice(invoice);
                   setPaymentModal(true);
@@ -1596,6 +1962,7 @@ export default function PurchaseCommonForm({ title, type, storageKey }) {
                 <div style={{ fontSize: 28, fontWeight: 900, color: '#7c3aed' }}>{formatCurrency(totalBillsOutstanding)}</div>
               </div>
             </div>
+
             <div style={{ marginBottom: 15, fontWeight: 700, fontSize: 18, color: '#1e293b' }}>🔴 Supplier Outstanding Balances</div>
             {groupedOutstanding.length > 0 ? (
               groupedOutstanding.map((g) => (
