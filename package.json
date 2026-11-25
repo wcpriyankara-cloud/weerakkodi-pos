@@ -3,12 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "main": "main.js",
-    "scripts": {
+  "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "electron": "electron .",
-    "electron:dev": "concurrently -k -p \"[{name}]\" -n \"NEXT,ELEC\" -c \"cyan.bold,green.bold\" \"npm run dev\" \"npx wait-on -i 2000 -t 300000 http-get://localhost:3000 && electron .\"",
+    "electron:dev": "concurrently -k -p \"[{name}]\" -n \"NEXT,ELEC\" -c \"cyan.bold,green.bold\" \"npm run dev\" \"npx wait-on -i 1000 -t 300000 tcp:127.0.0.1:3000 && electron .\"",
     "electron:build": "npm run build && electron-builder --win --x64"
   },
   "dependencies": {

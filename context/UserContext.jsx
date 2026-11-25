@@ -1,3 +1,5 @@
+// C:\Users\chandana\StudioProjects\weerakkodi_pos_app\context\UserContext.jsx
+
 'use client';
 
 import React, {
@@ -25,7 +27,7 @@ import {
   setDoc,
   serverTimestamp,
 } from 'firebase/firestore';
-import { localDb } from '@/lib/localDb';
+import { localDb, ensureDbOpen, isDbReady } from '@/lib/localDb';
 
 const UserAuthContext = createContext(null);
 
@@ -66,24 +68,30 @@ const normalizeUser = (firebaseUser) => {
     email:         firebaseUser.email       || '',
     photoURL:      firebaseUser.photoURL    || '',
     phoneNumber:   firebaseUser.phoneNumber || '',
-    emailVerified: !!firebaseUser.emailVerified,
+    emailVerified: Boolean(firebaseUser.emailVerified),
   };
 };
 
-/* ══ CRITICAL: Dexie Cleanup on User Switch/Logout ══ */
+/* ══ CRITICAL: Dexie Cleanup on User Switch/Logout (Safe & Guarded) ══ */
 const cleanupUserDexieData = async (uid) => {
   if (!uid || uid === 'wlknSmbTOEbcxp527cqGBnc3yu93') return;
   try {
-    await Promise.all([
-      localDb.items.where('uid').equals(uid).delete(),
-      localDb.customers.where('uid').equals(uid).delete(),
-      localDb.invoices.where('uid').equals(uid).delete(),
-      localDb.customerLoans.where('uid').equals(uid).delete(),
-      localDb.cashTransactions.where('uid').equals(uid).delete(),
-    ]);
-    console.log(`[Auth] ✅ Cleaned Dexie data for uid=${uid}`);
+    await ensureDbOpen();
+    if (!isDbReady()) return;
+
+    const tables = ['items', 'customers', 'invoices', 'customerLoans', 'cashTransactions'];
+    for (const t of tables) {
+      try {
+        if (localDb[t]) {
+          await localDb[t].where('uid').equals(uid).delete();
+        }
+      } catch (err) {
+        // Table delete error bypass
+      }
+    }
+    console.log(`[Auth] ✅ Cleaned Dexie data safely for uid=${uid}`);
   } catch (e) {
-    console.warn('[Auth] Dexie cleanup failed:', e);
+    console.warn('[Auth] Dexie cleanup deferred:', e?.message || e);
   }
 };
 
@@ -119,7 +127,7 @@ export function UserAuthContextProvider({ children }) {
   const [loading, setLoading]   = useState(true);
   const prevUidRef              = useRef(null);
 
-  // Background (non-blocking) profile load
+  // Background (non-blocking) profile load with Quota-Exceeded protection
   const loadUserData = useCallback(async (firebaseUser) => {
     if (!firebaseUser?.uid) return null;
 
@@ -131,7 +139,7 @@ export function UserAuthContextProvider({ children }) {
 
     try {
       const fetchPromise = getDoc(doc(db, 'users', firebaseUser.uid));
-      const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 3000));
+      const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 2500));
       const snap = await Promise.race([fetchPromise, timeoutPromise]);
       if (snap && snap.exists()) {
         const data = snap.data();
@@ -140,7 +148,8 @@ export function UserAuthContextProvider({ children }) {
         return data;
       }
     } catch (e) {
-      console.warn('loadUserData offline fallback:', e.message);
+      // Firebase Quota exceeded හෝ Network offline වූ විට app crash වීම වළකයි
+      console.warn('[UserContext] Profile load offline fallback:', e?.message);
     }
     return null;
   }, []);
@@ -170,23 +179,43 @@ export function UserAuthContextProvider({ children }) {
 
         prevUidRef.current = newUid;
         setUser(norm);
+
+        // Safe Database Write with ensureDbOpen guard
         try {
           localStorage.setItem('weerakkodi_last_uid', norm.uid);
-          await localDb.settings.put({ id: 'current_user', ...norm });
-        } catch (e) {}
+          await ensureDbOpen();
+          if (isDbReady()) {
+            await localDb.settings.put({ id: 'current_user', ...norm });
+            if (localDb.users) {
+              await localDb.users.put({
+                id: norm.uid,
+                uid: norm.uid,
+                email: norm.email || '',
+                displayName: norm.displayName || '',
+                role: 'admin',
+                updatedAt: new Date().toISOString()
+              });
+            }
+          }
+        } catch (e) {
+          console.warn('[Auth] Local user save deferred gracefully:', e?.message);
+        }
+
         loadUserData(firebaseUser);
       } else {
         // Safe check for Electron & Offline state
         const isElectronEnv = typeof window !== 'undefined' && (
           Boolean(window.process?.versions?.electron) ||
-          Boolean(window.navigator?.userAgent?.includes('Electron'))
+          Boolean(window.navigator?.userAgent?.includes('Electron')) ||
+          Boolean(window.electronAPI)
         );
         const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
 
         if (isElectronEnv && isOffline) {
           // Strictly inside Electron AND Offline: use local saved user or fallback
           try {
-            const localUser = await localDb.settings.get('current_user');
+            await ensureDbOpen();
+            const localUser = isDbReady() ? await localDb.settings.get('current_user') : null;
             if (localUser && localUser.uid) {
               setUser(localUser);
               prevUidRef.current = localUser.uid;
@@ -245,12 +274,30 @@ export function UserAuthContextProvider({ children }) {
 
         setUser(norm);
         setUserData(null);
-        await localDb.settings.put({ id: 'current_user', ...norm });
+
+        try {
+          await ensureDbOpen();
+          if (isDbReady()) {
+            await localDb.settings.put({ id: 'current_user', ...norm });
+            if (localDb.users) {
+              await localDb.users.put({
+                id: norm.uid,
+                uid: norm.uid,
+                email: norm.email || '',
+                displayName: norm.displayName || '',
+                role: 'admin',
+                updatedAt: new Date().toISOString()
+              });
+            }
+          }
+        } catch (e) {}
+
         loadUserData(res.user);
         return { success: true, user: norm };
       }
 
-      const localUser = await localDb.settings.get('current_user');
+      await ensureDbOpen();
+      const localUser = isDbReady() ? await localDb.settings.get('current_user') : null;
       if (localUser && localUser.uid && localUser.email === cleanEmail) {
         setUser(localUser);
         return { success: true, user: localUser };
@@ -292,8 +339,25 @@ export function UserAuthContextProvider({ children }) {
       setUser(norm);
       setUserData(null);
       clearUserCache();
-      await localDb.settings.put({ id: 'current_user', ...norm });
 
+      try {
+        await ensureDbOpen();
+        if (isDbReady()) {
+          await localDb.settings.put({ id: 'current_user', ...norm });
+          if (localDb.users) {
+            await localDb.users.put({
+              id: norm.uid,
+              uid: norm.uid,
+              email: norm.email || '',
+              displayName: norm.displayName || '',
+              role: 'admin',
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+      } catch (e) {}
+
+      // Non-blocking Firestore user sync
       setDoc(doc(db, 'users', firebaseUser.uid), {
         uid:         norm.uid,
         displayName: norm.displayName,
@@ -318,7 +382,10 @@ export function UserAuthContextProvider({ children }) {
     clearUserCache();
 
     try {
-      await localDb.settings.delete('current_user').catch(() => {});
+      await ensureDbOpen();
+      if (isDbReady()) {
+        await localDb.settings.delete('current_user').catch(() => {});
+      }
       if (oldUid) {
         await cleanupUserDexieData(oldUid).catch(() => {});
       }

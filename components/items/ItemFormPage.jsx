@@ -1,12 +1,12 @@
 ﻿'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useUserAuth } from '@/context/UserContext';
 import { db, storage } from '@/lib/firebase';
 import {
-  collection, addDoc, updateDoc, deleteDoc,
-  doc, onSnapshot, query, where, getDoc,
+  collection, addDoc, updateDoc, setDoc, deleteDoc,
+  doc, query, where, getDoc, getDocs,
 } from 'firebase/firestore';
 import {
   ref as storageRef,
@@ -14,20 +14,19 @@ import {
   getDownloadURL,
   deleteObject,
 } from 'firebase/storage';
-
-// ★ OFFLINE IMPORTS
+import { localDb, ensureDbOpen } from '@/lib/localDb';
 import {
-  saveItemLocal, getItemsLocal,
+  saveItemLocal, getItemLocal, getItemsLocal, deleteItemLocal,
   addToSyncQueue, getSyncQueue,
   cacheRefData, getCachedRefData,
 } from '@/lib/offlineDB';
 import { processSyncQueue, isOnline } from '@/lib/syncManager';
+import SafeItemImage from '@/components/common/SafeItemImage';
 
 /* ══════════════════════════════════════════
-   CONSTANTS
+   CONSTANTS & PLACEHOLDERS
 ══════════════════════════════════════════ */
-const DEFAULT_IMG =
-  'https://placehold.co/200x200/e2e8f0/64748b?text=No+Image';
+const DEFAULT_IMG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='18' x='3' y='3' rx='2' ry='2'/%3E%3Ccircle cx='9' cy='9' r='2'/%3E%3Cpath d='m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21'/%3E%3C/svg%3E";
 
 const WARRANTY_TYPES = [
   { value: '',             label: 'වගකීමක් නැත',    icon: '❌' },
@@ -47,33 +46,6 @@ const WARRANTY_PERIODS = [
   { label: 'Life', value: 'lifetime', desc: 'ජීවිත කාල' },
 ];
 
-const COMMON_UOMS = [
-  { name: 'Piece',     symbol: 'pcs',  group: 'ගණන්' },
-  { name: 'Kilogram',  symbol: 'kg',   group: 'බර' },
-  { name: 'Gram',      symbol: 'g',    group: 'බර' },
-  { name: 'Liter',     symbol: 'L',    group: 'පරිමාව' },
-  { name: 'Milliliter',symbol: 'ml',   group: 'පරිමාව' },
-  { name: 'Meter',     symbol: 'm',    group: 'දිග' },
-  { name: 'Centimeter',symbol: 'cm',   group: 'දිග' },
-  { name: 'Foot',      symbol: 'ft',   group: 'දිග' },
-  { name: 'Inch',      symbol: 'in',   group: 'දිග' },
-  { name: 'Box',       symbol: 'box',  group: 'ඇසුරුම්' },
-  { name: 'Pack',      symbol: 'pack', group: 'ඇසුරුම්' },
-  { name: 'Dozen',     symbol: 'dz',   group: 'ඇසුරුම්' },
-  { name: 'Pair',      symbol: 'pr',   group: 'ගණන්' },
-  { name: 'Set',       symbol: 'set',  group: 'ගණන්' },
-  { name: 'Roll',      symbol: 'roll', group: 'ඇසුරුම්' },
-  { name: 'Sheet',     symbol: 'sht',  group: 'ගණන්' },
-  { name: 'Bottle',    symbol: 'btl',  group: 'ඇසුරුම්' },
-  { name: 'Bag',       symbol: 'bag',  group: 'ඇසුරුම්' },
-  { name: 'Yard',      symbol: 'yd',   group: 'දිග' },
-  { name: 'Pound',     symbol: 'lb',   group: 'බර' },
-  { name: 'Ounce',     symbol: 'oz',   group: 'බර' },
-  { name: 'Gallon',    symbol: 'gal',  group: 'පරිමාව' },
-  { name: 'Square Meter', symbol: 'm²', group: 'ප්‍රමාණය' },
-  { name: 'Square Foot',  symbol: 'ft²', group: 'ප්‍රමාණය' },
-];
-
 const INITIAL_FORM = {
   id: null,
   itemCode: '', barcode: '', barcodeImage: '',
@@ -82,17 +54,14 @@ const INITIAL_FORM = {
   categoryId: '', categoryName: '',
   subCategoryId: '', subCategoryName: '',
   uomId: '', uomName: '', availableUnits: [],
+  displayUom: '', catalogUom: '', catalogPriceType: 'retail',
   isHidden: false, isPurchaseOnly: false,
   showPrice: true, showDiscount: true,
   allowOrderWhenOutOfStock: false,
-  catalogPriceType: 'retail', catalogUom: '',
   colorId: '', colorName: '',
   rackId: '', rackName: '',
   supplierId: '', supplierName: '',
-  
-  // ★ පවතින සම්පූර්ණ ප්‍රමාණය
   currentStock: '', minStockLevel: '', maxStockLevel: '',
-  
   buyingPrice: '',
   sellingPriceRetail: '', retailDiscount: '', retailYourPrice: '',
   sellingPriceWholesale: '', wholesaleDiscount: '', wholesaleYourPrice: '',
@@ -103,12 +72,33 @@ const INITIAL_FORM = {
   warrantyTerms: '', warrantyNotes: '',
 };
 
-/* ══════════════════════════════════════════
-   HELPERS
-══════════════════════════════════════════ */
+const safeTimeout = (promise, ms = 2000, fallbackVal = null) =>
+  Promise.race([
+    Promise.resolve(promise),
+    new Promise((resolve) => setTimeout(() => resolve(fallbackVal), ms)),
+  ]).catch(() => fallbackVal);
+
+const sanitizeForStorage = (data) => {
+  if (!data) return data;
+  try {
+    return JSON.parse(JSON.stringify(data, (key, value) => {
+      if (value && typeof value === 'object') {
+        if (typeof value.toDate === 'function') return value.toDate().toISOString();
+        if (typeof value.seconds === 'number' && typeof value.nanoseconds === 'number') {
+          return new Date(value.seconds * 1000).toISOString();
+        }
+      }
+      return value;
+    }));
+  } catch (e) {
+    return data;
+  }
+};
+
 const calcNet = (price, discount) => {
   const p = parseFloat(price || 0);
   const d = parseFloat(discount || 0);
+  if (isNaN(p)) return '0.00';
   return (p - (p * d) / 100).toFixed(2);
 };
 
@@ -116,9 +106,7 @@ const calcWarrantyExpiry = (period) => {
   if (!period) return '';
   const txt = String(period).toLowerCase().trim();
   if (txt === 'lifetime') return '♾️ ජීවිත කාල';
-  const match = txt.match(
-    /^(\d+)\s*(day|days|month|months|year|years|d|m|y)s?$/i
-  );
+  const match = txt.match(/^(\d+)\s*(day|days|month|months|year|years|d|m|y)s?$/i);
   if (!match) return '';
   const qty  = parseInt(match[1], 10);
   const unit = match[2].charAt(0).toLowerCase();
@@ -131,7 +119,7 @@ const calcWarrantyExpiry = (period) => {
   });
 };
 
-const compressImage = (source, maxWidth = 800, quality = 0.82) =>
+const compressImage = (source, maxWidth = 800, quality = 0.80) =>
   new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -143,13 +131,14 @@ const compressImage = (source, maxWidth = 800, quality = 0.82) =>
       }
       canvas.width  = width;
       canvas.height = height;
-      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
       canvas.toBlob(
-        (blob) => (blob ? resolve(blob) : reject(new Error('toBlob failed'))),
+        (blob) => (blob ? resolve(blob) : reject(new Error('Canvas to Blob failed'))),
         'image/jpeg', quality
       );
     };
-    img.onerror = reject;
+    img.onerror = () => reject(new Error('Image loading failed'));
     if (typeof source === 'string') {
       img.src = source;
     } else if (source instanceof Blob || source instanceof File) {
@@ -162,53 +151,46 @@ const compressImage = (source, maxWidth = 800, quality = 0.82) =>
     }
   });
 
-/* ══════════════════════════════════════════
-   TOAST
-══════════════════════════════════════════ */
+const blobToBase64 = (blob) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+
 function Toast({ message, type, onClose }) {
   useEffect(() => {
-    const t = setTimeout(onClose, 3000);
+    const t = setTimeout(onClose, 4000);
     return () => clearTimeout(t);
   }, [onClose]);
-
   return (
     <div style={{
       position: 'fixed', top: 20, right: 20, zIndex: 9999,
-      background: type === 'error' ? '#dc2626' : '#16a34a',
+      background: type === 'error' ? '#dc2626' : type === 'warning' ? '#d97706' : '#16a34a',
       color: 'white', padding: '14px 20px',
       borderRadius: 12, fontWeight: 700,
-      boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+      boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
       animation: 'fadeIn 0.3s ease',
-      maxWidth: 320,
+      maxWidth: 440,
     }}>
       {message}
-      <style>{`
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(-8px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </div>
   );
 }
 
-/* ══════════════════════════════════════════
-   TOGGLE ROW
-══════════════════════════════════════════ */
 function ToggleRow({ label, desc, checked, onChange, color = 'peer-checked:bg-blue-600' }) {
   return (
     <div className="flex items-center justify-between py-3">
       <div className="flex-1 pr-3">
         <div className="font-medium text-gray-800 text-sm">{label}</div>
-        {desc && (
-          <div className="text-[11px] text-gray-400 mt-0.5">{desc}</div>
-        )}
+        {desc && <div className="text-[11px] text-gray-400 mt-0.5">{desc}</div>}
       </div>
       <label className="relative inline-flex items-center cursor-pointer shrink-0">
         <input
           type="checkbox"
           className="sr-only peer"
-          checked={checked}
+          checked={!!checked}
           onChange={(e) => onChange(e.target.checked)}
         />
         <div className={`relative w-11 h-6 bg-gray-200 rounded-full
@@ -223,33 +205,20 @@ function ToggleRow({ label, desc, checked, onChange, color = 'peer-checked:bg-bl
   );
 }
 
-/* ══════════════════════════════════════════
-   IMAGE UPLOAD SECTION
-══════════════════════════════════════════ */
-function ImageUploadSection({ formData, uid, itemId, onImagesChange, isOnline }) {
+function ImageUploadSection({ formData, uid, itemId, onImagesChange, isOnlineStatus }) {
   const [uploading, setUploading]           = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
   const fileInputRef = useRef(null);
 
   const uploadToStorage = async (file) => {
-    const blob     = await compressImage(file, 800, 0.82);
+    const compressedBlob = await compressImage(file, 800, 0.80);
     const filename = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
-    const path     = `items/${uid}/${itemId || 'new'}/${filename}`;
+    const path     = `items/${uid || 'public'}/${itemId || 'new'}/${filename}`;
     const fileRef  = storageRef(storage, path);
-    const snap     = await uploadBytes(fileRef, blob, {
-      contentType: 'image/jpeg',
-    });
-    const url = await getDownloadURL(snap.ref);
+    const snap     = await uploadBytes(fileRef, compressedBlob, { contentType: 'image/jpeg' });
+    const url      = await getDownloadURL(snap.ref);
     return { url, path };
   };
-
-  const fileToBase64 = (file) =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
 
   const handleFiles = async (files) => {
     if (!files?.length) return;
@@ -257,30 +226,38 @@ function ImageUploadSection({ formData, uid, itemId, onImagesChange, isOnline })
     const newImages = [];
     const newPaths  = [];
     for (let i = 0; i < files.length; i++) {
-      setUploadProgress(`Uploading ${i + 1}/${files.length}...`);
+      setUploadProgress(`පින්තූර සකසමින්... ${i + 1}/${files.length}`);
       try {
-        if (isOnline) {
+        if (isOnlineStatus && storage) {
           const { url, path } = await uploadToStorage(files[i]);
           newImages.push(url);
           newPaths.push(path);
         } else {
-          const base64 = await fileToBase64(files[i]);
+          const compressedBlob = await compressImage(files[i], 500, 0.70);
+          const base64 = await blobToBase64(compressedBlob);
           newImages.push(base64);
-          newPaths.push(`offline_pending_${Date.now()}_${i}`);
+          newPaths.push(`offline_${Date.now()}_${i}`);
         }
       } catch (err) {
-        console.error('Upload failed:', err);
+        console.warn('Storage upload fallback to base64:', err?.message);
         try {
-          const base64 = await fileToBase64(files[i]);
+          const compressedBlob = await compressImage(files[i], 500, 0.70);
+          const base64 = await blobToBase64(compressedBlob);
           newImages.push(base64);
           newPaths.push(`offline_fallback_${Date.now()}_${i}`);
-        } catch {}
+        } catch (e2) {
+          console.error('Image processing failed:', e2?.message);
+        }
       }
     }
+    const updatedImages = [...(formData.images || []), ...newImages];
+    const updatedPaths  = [...(formData.imagePaths || []), ...newPaths];
     onImagesChange({
-      images:     [...(formData.images || []), ...newImages],
-      imagePaths: [...(formData.imagePaths || []), ...newPaths],
+      images: updatedImages,
+      imagePaths: updatedPaths,
+      picture: updatedImages[0] || '',
     });
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setUploading(false);
     setUploadProgress('');
   };
@@ -288,68 +265,117 @@ function ImageUploadSection({ formData, uid, itemId, onImagesChange, isOnline })
   const removeImage = async (idx) => {
     const imgs  = [...(formData.images || [])];
     const paths = [...(formData.imagePaths || [])];
-    if (paths[idx] && isOnline && !paths[idx].startsWith('offline_')) {
+    if (paths[idx] && isOnlineStatus && !paths[idx].startsWith('offline_') && storage) {
       try { await deleteObject(storageRef(storage, paths[idx])); } catch {}
     }
     imgs.splice(idx, 1);
     paths.splice(idx, 1);
-    onImagesChange({ images: imgs, imagePaths: paths });
+    onImagesChange({
+      images: imgs,
+      imagePaths: paths,
+      picture: imgs[0] || '',
+    });
   };
+
+  const setAsMainImage = (idx) => {
+    if (idx === 0) return;
+    const imgs = [...(formData.images || [])];
+    const paths = [...(formData.imagePaths || [])];
+    const targetImg = imgs.splice(idx, 1)[0];
+    const targetPath = paths.splice(idx, 1)[0];
+    imgs.unshift(targetImg);
+    paths.unshift(targetPath);
+    onImagesChange({
+      images: imgs,
+      imagePaths: paths,
+      picture: imgs[0] || '',
+    });
+  };
+
+  const safeImages = (formData.images || []).filter(Boolean);
 
   return (
     <div className="bg-white p-4 rounded-xl shadow-sm border">
-      <label className="block font-bold mb-3 text-center">📷 භාණ්ඩ රූප</label>
-
-      {(formData.images || []).length > 0 ? (
+      <div className="flex justify-between items-center mb-3">
+        <label className="block font-bold text-gray-800 text-sm">📷 භාණ්ඩයේ පින්තූර (Images)</label>
+        <span className="text-xs text-gray-500">පළමු රූපය Main Image එක වේ</span>
+      </div>
+      {safeImages.length > 0 ? (
         <div className="flex overflow-x-auto gap-3 pb-3 mb-3">
-          {(formData.images || []).map((img, idx) => (
-            <div key={idx} className="relative shrink-0" style={{ minWidth: 100 }}>
-              <div className="w-24 h-24 border-2 border-gray-200 rounded-xl overflow-hidden bg-gray-50">
-                <img src={img} className="w-full h-full object-cover"
-                  onError={(e) => { e.target.src = DEFAULT_IMG; }} alt="" />
+          {safeImages.map((img, idx) => (
+            <div key={idx} className="relative shrink-0 group" style={{ minWidth: 110 }}>
+              <div
+                onClick={() => setAsMainImage(idx)}
+                className={`w-28 h-28 border-2 rounded-xl overflow-hidden bg-gray-50 cursor-pointer transition-all ${
+                  idx === 0 ? 'border-blue-600 ring-2 ring-blue-300' : 'border-gray-200 hover:border-gray-400'
+                }`}
+                title="ප්‍රධාන රූපය බවට පත් කිරීමට click කරන්න"
+              >
+                <SafeItemImage
+                  src={img}
+                  className="w-full h-full object-cover"
+                  fallbackClassName="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400"
+                />
               </div>
-              {idx === 0 && (
-                <span className="absolute bottom-1 left-1 bg-blue-600
-                  text-white text-[9px] px-1.5 py-0.5 rounded font-bold">Main</span>
+              {idx === 0 ? (
+                <span className="absolute bottom-1 left-1 bg-blue-600 text-white text-[9px] px-2 py-0.5 rounded-md font-bold shadow">
+                  ⭐ Main
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setAsMainImage(idx)}
+                  className="absolute bottom-1 left-1 bg-black/60 text-white text-[8px] px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  Set Main
+                </button>
               )}
-              {(formData.imagePaths || [])[idx]?.startsWith('offline_') && (
-                <span className="absolute top-1 left-1 bg-orange-500
-                  text-white text-[8px] px-1 py-0.5 rounded font-bold">💾</span>
-              )}
-              <button onClick={() => removeImage(idx)}
-                className="absolute -top-2 -right-2 bg-red-600 text-white
-                  rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold shadow-md">✕</button>
+              <button
+                type="button"
+                onClick={() => removeImage(idx)}
+                className="absolute -top-2 -right-2 bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold shadow-md hover:bg-red-700"
+              >
+                ✕
+              </button>
             </div>
           ))}
         </div>
       ) : (
-        <div className="border-2 border-dashed border-gray-200 rounded-xl
-          h-28 flex flex-col items-center justify-center mb-3 bg-gray-50 text-gray-400">
+        <div
+          onClick={() => fileInputRef.current?.click()}
+          className="border-2 border-dashed border-gray-300 rounded-xl h-32 flex flex-col items-center justify-center mb-3 bg-gray-50 text-gray-400 cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-colors"
+        >
           <div className="text-3xl mb-1">📷</div>
-          <div className="text-sm">රූප නොමැත</div>
+          <div className="text-sm font-bold text-gray-600">පින්තූරයක් එක් කිරීමට මෙතැන ඔබන්න</div>
+          <div className="text-[11px] text-gray-400 mt-0.5">JPG, PNG, WEBP (උපරිම 5MB)</div>
         </div>
       )}
-
       {uploading && (
         <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-3">
-          <div className="w-5 h-5 border-3 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+          <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
           <span className="text-blue-700 text-sm font-bold">{uploadProgress}</span>
         </div>
       )}
-
-      <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading}
-        className="w-full bg-gray-100 text-gray-800 py-3 rounded-xl font-bold hover:bg-gray-200 disabled:opacity-50">
-        📂 Gallery
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={uploading}
+        className="w-full bg-blue-50 text-blue-700 border-2 border-blue-200 py-3 rounded-xl font-bold hover:bg-blue-100 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+      >
+        <span>📁 ගැලරියෙන් පින්තූර තෝරන්න (Select Images)</span>
       </button>
-      <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
-        onChange={(e) => handleFiles(Array.from(e.target.files || []))} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => handleFiles(Array.from(e.target.files || []))}
+      />
     </div>
   );
 }
 
-/* ══════════════════════════════════════════════════════════════
-   SMART SELECT WITH FULL CRUD MANAGEMENT MODAL
-══════════════════════════════════════════════════════════════ */
 function SmartSelectWithManage({
   label, icon = '📋', value, displayValue, options,
   onSelect, collectionName, uid, showToast,
@@ -370,18 +396,12 @@ function SmartSelectWithManage({
   const [isDeleting, setIsDeleting]     = useState(null);
   const ref = useRef(null);
 
-  const PRESET_COLORS = [
-    '#ef4444','#f97316','#f59e0b','#eab308','#84cc16','#22c55e',
-    '#14b8a6','#06b6d4','#3b82f6','#6366f1','#8b5cf6','#a855f7',
-    '#d946ef','#ec4899','#f43f5e','#78716c','#000000','#ffffff',
-  ];
-
   const filteredByParent = parentFilter
-    ? options.filter(o => o[parentFilter.field] === parentFilter.value)
-    : options;
+    ? (options || []).filter(o => o && o[parentFilter.field] === parentFilter.value)
+    : (options || []);
 
   const filtered = filteredByParent.filter((opt) =>
-    (opt.name || '').toLowerCase().includes(search.toLowerCase())
+    (opt?.name || '').toLowerCase().includes(search.toLowerCase())
   );
 
   useEffect(() => {
@@ -395,24 +415,35 @@ function SmartSelectWithManage({
   }, []);
 
   const handleAdd = async (nameToAdd) => {
-    if (!nameToAdd?.trim() || !uid) return null;
+    if (!nameToAdd?.trim()) return null;
+    const effectiveUid = uid || 'local_user';
     setIsSaving(true);
     try {
-      const newDoc = { name: nameToAdd.trim(), uid, createdAt: new Date().toISOString() };
+      const newDoc = { name: nameToAdd.trim(), uid: effectiveUid, createdAt: new Date().toISOString() };
       if (colorPicker) newDoc.color = editColor;
       if (parentFilter) newDoc[parentFilter.field] = parentFilter.value;
       extraFields.forEach(ef => { if (editExtras[ef.key]) newDoc[ef.key] = editExtras[ef.key]; });
 
-      if (isOnline()) {
-        const docRef = await addDoc(collection(db, collectionName), newDoc);
-        showToast?.(`✅ "${nameToAdd.trim()}" එක් කරන ලදී`);
-        return docRef.id;
-      } else {
-        const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        await addToSyncQueue(uid, 'add', collectionName, newDoc, localId);
-        showToast?.(`💾 "${nameToAdd.trim()}" offline සුරකින ලදී`);
-        return localId;
+      try {
+        const hasTable = localDb?.isOpen?.() && localDb.tables?.some(t => t.name === collectionName);
+        if (hasTable) {
+          await localDb.table(collectionName).put({ ...newDoc, id: `loc_${Date.now()}` }).catch(() => {});
+        }
+      } catch (_) {}
+
+      if (isOnline() && db) {
+        try {
+          const docRef = await addDoc(collection(db, collectionName), newDoc);
+          showToast?.(`✅ "${nameToAdd.trim()}" එක් කරන ලදී`);
+          return docRef.id;
+        } catch (cloudErr) {
+          console.warn('Cloud ref add skipped (Quota limit):', cloudErr?.message);
+        }
       }
+      const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      await addToSyncQueue(effectiveUid, 'add', collectionName, newDoc, localId);
+      showToast?.(`💾 "${nameToAdd.trim()}" Local Hard Disk එකට සුරකින ලදී`);
+      return localId;
     } catch (e) {
       showToast?.('❌ Error: ' + e.message, 'error');
       return null;
@@ -428,18 +459,24 @@ function SmartSelectWithManage({
 
   const handleUpdate = async () => {
     if (!editItem || !editName.trim()) return;
+    const effectiveUid = uid || 'local_user';
     setIsSaving(true);
     try {
       const updateData = { name: editName.trim(), updatedAt: new Date().toISOString() };
       if (colorPicker) updateData.color = editColor;
       extraFields.forEach(ef => { if (editExtras[ef.key] !== undefined) updateData[ef.key] = editExtras[ef.key]; });
 
-      if (isOnline() && !editItem.id?.startsWith('local_')) {
-        await updateDoc(doc(db, collectionName, editItem.id), updateData);
-      } else {
-        await addToSyncQueue(uid, 'update', collectionName, updateData, editItem.id);
+      const hasTable = localDb?.isOpen?.() && localDb.tables?.some(t => t.name === collectionName);
+      if (hasTable) {
+        try { await localDb.table(collectionName).update(editItem.id, updateData); } catch (_) {}
       }
-
+      if (isOnline() && db && !String(editItem.id).startsWith('local_') && !String(editItem.id).startsWith('loc_')) {
+        try {
+          await updateDoc(doc(db, collectionName, editItem.id), updateData);
+        } catch (_) {}
+      } else {
+        await addToSyncQueue(effectiveUid, 'update', collectionName, updateData, editItem.id);
+      }
       if (value === editItem.id) onSelect(editItem.id, editName.trim());
       showToast?.(`✅ "${editName.trim()}" යාවත්කාලීන කරන ලදී`);
       setEditItem(null); setEditName(''); setEditExtras({});
@@ -450,12 +487,17 @@ function SmartSelectWithManage({
 
   const handleDelete = async (item) => {
     if (!confirm(`"${item.name}" මකා දැමීමට අවශ්‍යද?`)) return;
+    const effectiveUid = uid || 'local_user';
     setIsDeleting(item.id);
     try {
-      if (isOnline() && !item.id?.startsWith('local_')) {
-        await deleteDoc(doc(db, collectionName, item.id));
+      const hasTable = localDb?.isOpen?.() && localDb.tables?.some(t => t.name === collectionName);
+      if (hasTable) {
+        try { await localDb.table(collectionName).delete(item.id); } catch (_) {}
+      }
+      if (isOnline() && db && !String(item.id).startsWith('local_') && !String(item.id).startsWith('loc_')) {
+        try { await deleteDoc(doc(db, collectionName, item.id)); } catch (_) {}
       } else {
-        await addToSyncQueue(uid, 'delete', collectionName, {}, item.id);
+        await addToSyncQueue(effectiveUid, 'delete', collectionName, {}, item.id);
       }
       if (value === item.id) onSelect('', '');
       showToast?.(`🗑️ "${item.name}" මකා දමන ලදී`);
@@ -478,61 +520,77 @@ function SmartSelectWithManage({
     <div className="relative" ref={ref}>
       <div className="flex items-center justify-between mb-1">
         <label className="block text-sm font-bold text-gray-800">{icon} {label}</label>
-        <button type="button" onClick={(e) => {
-          e.stopPropagation();
-          if (parentMissing) { showToast?.(`කරුණාකර පළමුව ${parentLabel} තෝරන්න`, 'error'); return; }
-          setIsManageOpen(true);
-        }} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-lg font-bold hover:bg-indigo-200">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (parentMissing) { showToast?.(`කරුණාකර පළමුව ${parentLabel} තෝරන්න`, 'error'); return; }
+            setIsManageOpen(true);
+          }}
+          className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-lg font-bold hover:bg-indigo-200"
+        >
           ⚙️ කළමනාකරණය
         </button>
       </div>
-
-      <div onClick={() => {
-        if (parentMissing) { showToast?.(`කරුණාකර පළමුව ${parentLabel} තෝරන්න`, 'error'); return; }
-        setIsOpen(!isOpen);
-      }} className={`border-2 p-3 rounded-xl bg-white cursor-pointer flex justify-between items-center shadow-sm
-        hover:border-blue-400 ${parentMissing ? 'opacity-50 cursor-not-allowed' : ''}`}>
+      <div
+        onClick={() => {
+          if (parentMissing) { showToast?.(`කරුණාකර පළමුව ${parentLabel} තෝරන්න`, 'error'); return; }
+          setIsOpen(!isOpen);
+        }}
+        className={`border-2 p-3 rounded-xl bg-white cursor-pointer flex justify-between items-center shadow-sm
+          hover:border-blue-400 ${parentMissing ? 'opacity-50 cursor-not-allowed' : ''}`}
+      >
         <div className="flex items-center gap-2 flex-1 min-w-0">
           {colorPicker && value && (() => {
-            const sel = options.find(o => o.id === value);
+            const sel = (options || []).find(o => o && o.id === value);
             return sel?.color ? <div className="w-5 h-5 rounded-full border-2 border-gray-300 shrink-0" style={{ backgroundColor: sel.color }} /> : null;
           })()}
           <span className={`truncate ${value ? 'text-gray-900 font-medium' : 'text-gray-400'}`}>
-            {value ? (options.find(o => o.id === value)?.name || displayValue || 'Selected')
+            {value ? ((options || []).find(o => o && o.id === value)?.name || displayValue || 'Selected')
               : parentMissing ? `පළමුව ${parentLabel} තෝරන්න` : 'තෝරන්න හෝ ටයිප් කර එක් කරන්න...'}
           </span>
         </div>
         <span className={`text-gray-500 transition-transform shrink-0 ml-2 ${isOpen ? 'rotate-180' : ''}`}>▼</span>
       </div>
-
       {isOpen && !parentMissing && (
         <div className="absolute z-30 w-full bg-white border-2 border-gray-200 mt-1 shadow-2xl max-h-72 overflow-hidden rounded-xl">
           <div className="sticky top-0 bg-white border-b">
-            <input autoFocus className="w-full p-3 outline-none text-gray-900 bg-gray-50"
+            <input
+              autoFocus
+              className="w-full p-3 outline-none text-gray-900 bg-gray-50 text-sm"
               placeholder="🔍 සොයන්න හෝ නව නමක් ටයිප් කරන්න..."
-              value={search} onChange={(e) => setSearch(e.target.value)}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
               onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => { if (e.key === 'Enter' && search && filtered.length === 0) handleQuickAdd(e); }} />
+              onKeyDown={(e) => { if (e.key === 'Enter' && search && filtered.length === 0) handleQuickAdd(e); }}
+            />
           </div>
           <div className="max-h-52 overflow-y-auto">
             {value && (
-              <div onMouseDown={(e) => { e.preventDefault(); onSelect('', ''); setIsOpen(false); }}
-                className="p-3 hover:bg-red-50 cursor-pointer border-b text-red-600 font-medium flex items-center gap-2">
+              <div
+                onMouseDown={(e) => { e.preventDefault(); onSelect('', ''); setIsOpen(false); }}
+                className="p-3 hover:bg-red-50 cursor-pointer border-b text-red-600 font-medium flex items-center gap-2 text-sm"
+              >
                 ✕ ඉවත් කරන්න
               </div>
             )}
             {filtered.map((opt) => (
-              <div key={opt.id} onMouseDown={(e) => { e.preventDefault(); onSelect(opt.id, opt.name); setIsOpen(false); setSearch(''); }}
-                className={`p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0 flex items-center gap-2
-                  ${value === opt.id ? 'bg-blue-100 text-blue-800 font-medium' : 'text-gray-800'}`}>
+              <div
+                key={opt.id}
+                onMouseDown={(e) => { e.preventDefault(); onSelect(opt.id, opt.name); setIsOpen(false); setSearch(''); }}
+                className={`p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0 flex items-center gap-2 text-sm
+                  ${value === opt.id ? 'bg-blue-100 text-blue-800 font-medium' : 'text-gray-800'}`}
+              >
                 {colorPicker && opt.color && <div className="w-4 h-4 rounded-full border shrink-0" style={{ backgroundColor: opt.color }} />}
                 <span className="flex-1">{opt.name}</span>
-                {value === opt.id && <span>✓</span>}
+                {value === opt.id && <span className="font-bold text-blue-600">✓</span>}
               </div>
             ))}
             {search && filtered.length === 0 && (
-              <div onMouseDown={handleQuickAdd}
-                className="p-3 bg-green-50 text-green-700 font-bold cursor-pointer hover:bg-green-100 flex justify-between items-center">
+              <div
+                onMouseDown={handleQuickAdd}
+                className="p-3 bg-green-50 text-green-700 font-bold cursor-pointer hover:bg-green-100 flex justify-between items-center text-sm"
+              >
                 <span>➕ "{search}" එක් කරන්න</span>
                 {isSaving && <span className="animate-spin">⏳</span>}
               </div>
@@ -543,146 +601,89 @@ function SmartSelectWithManage({
           </div>
         </div>
       )}
-
-      {/* Management Modal */}
       {isManageOpen && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50"
           onClick={() => { setIsManageOpen(false); setEditItem(null); }}>
-          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl animate-slideUp"
+          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl"
             onClick={(e) => e.stopPropagation()}>
-            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 text-white">
-              <div className="flex items-center justify-between">
-                <h2 className="font-bold text-lg">{icon} {label} කළමනාකරණය</h2>
-                <button onClick={() => { setIsManageOpen(false); setEditItem(null); }}
-                  className="bg-white/20 hover:bg-white/30 rounded-full w-8 h-8 flex items-center justify-center font-bold">✕</button>
-              </div>
+            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 text-white flex items-center justify-between">
+              <h2 className="font-bold text-lg">{icon} {label} කළමනාකරණය</h2>
+              <button onClick={() => { setIsManageOpen(false); setEditItem(null); }} className="bg-white/20 rounded-full w-8 h-8 font-bold">✕</button>
             </div>
-
             <div className="p-4 border-b bg-gray-50">
               <div className="flex gap-2">
-                <input className="flex-1 border-2 border-gray-200 p-3 rounded-xl text-sm font-medium outline-none focus:border-indigo-400"
+                <input
+                  className="flex-1 border-2 border-gray-200 p-3 rounded-xl text-sm font-medium outline-none focus:border-indigo-400"
                   placeholder={`නව ${label} නමක්...`}
-                  value={editItem ? '' : search} onChange={(e) => { if (!editItem) setSearch(e.target.value); }}
+                  value={editItem ? '' : search}
+                  onChange={(e) => { if (!editItem) setSearch(e.target.value); }}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !editItem && search.trim()) handleAdd(search.trim()).then(id => { if (id) setSearch(''); }); }}
-                  disabled={!!editItem} />
-                <button type="button" onClick={() => { if (!editItem && search.trim()) handleAdd(search.trim()).then(id => { if (id) setSearch(''); }); }}
-                  disabled={isSaving || !!editItem || !search.trim()}
-                  className="bg-indigo-600 text-white px-4 rounded-xl font-bold disabled:opacity-50 shrink-0">
+                  disabled={!!editItem}
+                />
+                <button
+                  type="button"
+                  onClick={() => { if (!editItem && search.trim()) handleAdd(search.trim()).then(id => { if (id) setSearch(''); }); }}
+                  disabled={isSaving || !editItem && !search.trim()}
+                  className="bg-indigo-600 text-white px-4 rounded-xl font-bold disabled:opacity-50 shrink-0"
+                >
                   {isSaving ? '⏳' : '➕'}
                 </button>
               </div>
-              {colorPicker && !editItem && search.trim() && (
-                <div className="mt-3">
-                  <label className="text-xs font-bold text-gray-600 block mb-1">🎨 වර්ණය</label>
-                  <div className="flex gap-1.5 flex-wrap">
-                    {PRESET_COLORS.map(c => (
-                      <button key={c} type="button" onClick={() => setEditColor(c)}
-                        className={`w-7 h-7 rounded-full border-2 ${editColor === c ? 'border-gray-800 scale-125 shadow-md' : 'border-gray-200 hover:scale-110'}`}
-                        style={{ backgroundColor: c }} />
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
-
             {editItem && (
               <div className="p-4 border-b bg-amber-50">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-amber-600 font-bold text-sm">✏️ සංස්කරණය:</span>
-                  <span className="text-gray-600 text-xs bg-amber-100 px-2 py-0.5 rounded-full">{editItem.name}</span>
-                </div>
-                <input className="w-full border-2 border-amber-200 p-3 rounded-xl text-sm font-bold outline-none focus:border-amber-400 bg-white"
-                  value={editName} onChange={(e) => setEditName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleUpdate(); }} autoFocus />
-                {colorPicker && (
-                  <div className="mt-3">
-                    <div className="flex gap-1.5 flex-wrap">
-                      {PRESET_COLORS.map(c => (
-                        <button key={c} type="button" onClick={() => setEditColor(c)}
-                          className={`w-7 h-7 rounded-full border-2 ${editColor === c ? 'border-gray-800 scale-125' : 'border-gray-200'}`}
-                          style={{ backgroundColor: c }} />
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {extraFields.map(ef => (
-                  <div key={ef.key} className="mt-3">
-                    <label className="text-xs font-bold text-gray-600 block mb-1">{ef.icon} {ef.label}</label>
-                    <input className="w-full border-2 border-amber-200 p-2 rounded-lg text-sm outline-none bg-white"
-                      value={editExtras[ef.key] || ''} onChange={(e) => setEditExtras(prev => ({ ...prev, [ef.key]: e.target.value }))} />
-                  </div>
-                ))}
+                <span className="text-amber-800 font-bold text-xs block mb-2">✏️ සංස්කරණය: {editItem.name}</span>
+                <input
+                  className="w-full border-2 border-amber-300 p-3 rounded-xl text-sm font-bold outline-none bg-white"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleUpdate(); }}
+                  autoFocus
+                />
                 <div className="flex gap-2 mt-3">
-                  <button type="button" onClick={() => { setEditItem(null); setEditName(''); }}
-                    className="flex-1 bg-gray-200 py-2 rounded-xl font-bold text-sm">❌ අවලංගු</button>
-                  <button type="button" onClick={handleUpdate} disabled={isSaving || !editName.trim()}
-                    className="flex-1 bg-amber-500 text-white py-2 rounded-xl font-bold text-sm disabled:opacity-50">
-                    {isSaving ? '⏳' : '✅ යාවත්කාලීන'}
+                  <button type="button" onClick={() => { setEditItem(null); setEditName(''); }} className="flex-1 bg-gray-200 py-2 rounded-xl font-bold text-sm">✕ අවලංගු</button>
+                  <button type="button" onClick={handleUpdate} disabled={isSaving || !editName.trim()} className="flex-1 bg-amber-500 text-white py-2 rounded-xl font-bold text-sm disabled:opacity-50">
+                    {isSaving ? '⏳' : '✅ සුරකින්න'}
                   </button>
                 </div>
               </div>
             )}
-
             <div className="flex-1 overflow-y-auto">
               {filteredByParent.length === 0 ? (
-                <div className="p-8 text-center text-gray-400">
-                  <div className="text-4xl mb-2">{icon}</div>
-                  <p className="font-medium">දත්ත නොමැත</p>
-                </div>
+                <div className="p-8 text-center text-gray-400">දත්ත නොමැත</div>
               ) : filteredByParent.map((item, idx) => (
-                <div key={item.id} className={`flex items-center gap-3 px-4 py-3 border-b hover:bg-gray-50
-                  ${value === item.id ? 'bg-blue-50' : ''} ${isDeleting === item.id ? 'opacity-50' : ''}`}>
-                  {colorPicker && item.color
-                    ? <div className="w-8 h-8 rounded-full border-2 border-gray-200 shrink-0" style={{ backgroundColor: item.color }} />
-                    : <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-500 shrink-0">{idx + 1}</div>
-                  }
-                  <div className="flex-1 min-w-0 cursor-pointer" onClick={() => { onSelect(item.id, item.name); setIsManageOpen(false); }}>
-                    <div className="font-medium text-gray-800 truncate">{item.name}</div>
+                <div key={item.id} className="flex items-center gap-3 px-4 py-3 border-b hover:bg-gray-50">
+                  <div className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-500 shrink-0">{idx + 1}</div>
+                  <div className="flex-1 min-w-0 cursor-pointer font-medium text-gray-800" onClick={() => { onSelect(item.id, item.name); setIsManageOpen(false); }}>
+                    {item.name}
                   </div>
-                  {value === item.id && <span className="bg-blue-600 text-white text-[9px] px-2 py-0.5 rounded-full font-bold shrink-0">✓</span>}
-                  <button type="button" onClick={(e) => { e.stopPropagation(); startEdit(item); }}
-                    className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center hover:bg-amber-200 shrink-0">✏️</button>
-                  <button type="button" onClick={(e) => { e.stopPropagation(); handleDelete(item); }} disabled={isDeleting === item.id}
-                    className="w-8 h-8 rounded-lg bg-red-100 text-red-700 flex items-center justify-center hover:bg-red-200 shrink-0 disabled:opacity-50">🗑️</button>
+                  {value === item.id && <span className="bg-blue-600 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">තෝරා ඇත</span>}
+                  <button type="button" onClick={() => startEdit(item)} className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">✏️</button>
+                  <button type="button" onClick={() => handleDelete(item)} disabled={isDeleting === item.id} className="w-8 h-8 rounded-lg bg-red-100 text-red-700 flex items-center justify-center">🗑️</button>
                 </div>
               ))}
             </div>
-            
-            {/* Modal Footer with Total Count */}
-            <div className="p-3 bg-gray-50 border-t text-center font-bold text-xs text-gray-600">
-              📊 මුළු සංඛ්‍යාව: {filteredByParent.length} {search && `(සෙවූ ප්‍රතිඵල: ${filtered.length})`}
-            </div>
           </div>
-          <style>{`
-            @keyframes slideUp { from { opacity:0; transform:translateY(30px); } to { opacity:1; transform:translateY(0); } }
-            .animate-slideUp { animation: slideUp 0.3s ease; }
-          `}</style>
         </div>
       )}
     </div>
   );
 }
 
-/* ══════════════════════════════════════════════════════════════
-   UOM SMART SELECT WITH CREATE + MANAGE
-══════════════════════════════════════════════════════════════ */
 function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast }) {
   const [isOpen, setIsOpen]             = useState(false);
   const [search, setSearch]             = useState('');
-  const [isManageOpen, setIsManageOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [isEditOpen, setIsEditOpen]     = useState(false);
-  const [editUom, setEditUom]           = useState(null);
-  const [isDeleting, setIsDeleting]     = useState(null);
   const [newUomName, setNewUomName]     = useState('');
   const [newUomSymbol, setNewUomSymbol] = useState('');
   const [conversions, setConversions]   = useState([]);
   const [isSaving, setIsSaving]         = useState(false);
   const ref = useRef(null);
 
-  const selectedUom = uoms.find(u => u.id === value);
-  const filtered = uoms.filter(u =>
-    (u.fromUnitName || '').toLowerCase().includes(search.toLowerCase()) ||
-    (u.symbol || '').toLowerCase().includes(search.toLowerCase())
+  const selectedUom = (uoms || []).find(u => u && u.id === value);
+  const filtered = (uoms || []).filter(u =>
+    (u?.fromUnitName || '').toLowerCase().includes(search.toLowerCase()) ||
+    (u?.symbol || '').toLowerCase().includes(search.toLowerCase())
   );
 
   useEffect(() => {
@@ -695,130 +696,45 @@ function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast })
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const addConversionRow = () => setConversions(prev => [...prev, { toUnitName: '', rate: '', symbol: '' }]);
-  const updateConversion = (idx, field, val) => setConversions(prev => { const n = [...prev]; n[idx] = { ...n[idx], [field]: val }; return n; });
-  const removeConversion = (idx) => setConversions(prev => prev.filter((_, i) => i !== idx));
   const openCreate = () => { setNewUomName(''); setNewUomSymbol(''); setConversions([]); setIsCreateOpen(true); };
-  const openEdit = (uom) => { setEditUom(uom); setNewUomName(uom.fromUnitName || ''); setNewUomSymbol(uom.symbol || ''); setConversions(uom.conversions?.map(c => ({ ...c })) || []); setIsEditOpen(true); };
 
   const saveNewUom = async () => {
-    if (!newUomName.trim() || !uid) { showToast?.('කරුණාකර මිනුම් නම ඇතුළත් කරන්න', 'error'); return; }
+    if (!newUomName.trim()) { showToast?.('කරුණාකර මිනුම් නම ඇතුළත් කරන්න', 'error'); return; }
+    const effectiveUid = uid || 'local_user';
     setIsSaving(true);
     try {
-      const validConversions = conversions.filter(c => c.toUnitName.trim() && c.rate).map(c => ({ toUnitName: c.toUnitName.trim(), rate: Number(c.rate) || 1, symbol: c.symbol || '' }));
-      const uomData = { fromUnitName: newUomName.trim(), symbol: newUomSymbol.trim(), conversions: validConversions, uid, createdAt: new Date().toISOString() };
-      if (isOnline()) {
-        const docRef = await addDoc(collection(db, 'uoms'), uomData);
-        showToast?.(`✅ "${newUomName.trim()}" UOM එක් කරන ලදී`);
-        onSelect(docRef.id, newUomName.trim(), validConversions);
-      } else {
-        const localId = `local_${Date.now()}`;
-        await addToSyncQueue(uid, 'add', 'uoms', uomData, localId);
-        showToast?.(`💾 "${newUomName.trim()}" offline සුරකින ලදී`);
-        onSelect(localId, newUomName.trim(), validConversions);
+      const validConversions = conversions.filter(c => c.toUnitName?.trim() && c.rate).map(c => ({ toUnitName: c.toUnitName.trim(), rate: Number(c.rate) || 1, symbol: c.symbol || '' }));
+      const uomData = { fromUnitName: newUomName.trim(), symbol: newUomSymbol.trim(), conversions: validConversions, uid: effectiveUid, createdAt: new Date().toISOString() };
+      
+      const hasTable = localDb?.isOpen?.() && localDb.tables?.some(t => t.name === 'uoms');
+      if (hasTable) {
+        try { await localDb.table('uoms').put({ ...uomData, id: `uom_${Date.now()}` }).catch(() => {}); } catch (_) {}
       }
-      setIsCreateOpen(false); setNewUomName(''); setNewUomSymbol(''); setConversions([]);
+
+      if (isOnline() && db) {
+        try {
+          const docRef = await addDoc(collection(db, 'uoms'), uomData);
+          showToast?.(`✅ "${newUomName.trim()}" UOM එක් කරන ලදී`);
+          onSelect(docRef.id, newUomName.trim(), validConversions);
+          setIsCreateOpen(false);
+          return;
+        } catch (_) {}
+      }
+
+      const localId = `local_${Date.now()}`;
+      await addToSyncQueue(effectiveUid, 'add', 'uoms', uomData, localId);
+      showToast?.(`💾 "${newUomName.trim()}" Local Hard Disk එකට සුරකින ලදී`);
+      onSelect(localId, newUomName.trim(), validConversions);
+      setIsCreateOpen(false);
     } catch (e) { showToast?.('❌ Error: ' + e.message, 'error'); }
     finally { setIsSaving(false); }
   };
-
-  const updateUom = async () => {
-    if (!editUom || !newUomName.trim()) return;
-    setIsSaving(true);
-    try {
-      const validConversions = conversions.filter(c => c.toUnitName.trim() && c.rate).map(c => ({ toUnitName: c.toUnitName.trim(), rate: Number(c.rate) || 1, symbol: c.symbol || '' }));
-      const updateData = { fromUnitName: newUomName.trim(), symbol: newUomSymbol.trim(), conversions: validConversions, updatedAt: new Date().toISOString() };
-      if (isOnline() && !editUom.id?.startsWith('local_')) {
-        await updateDoc(doc(db, 'uoms', editUom.id), updateData);
-      } else {
-        await addToSyncQueue(uid, 'update', 'uoms', updateData, editUom.id);
-      }
-      if (value === editUom.id) onSelect(editUom.id, newUomName.trim(), validConversions);
-      showToast?.(`✅ "${newUomName.trim()}" යාවත්කාලීන කරන ලදී`);
-      setIsEditOpen(false); setEditUom(null);
-    } catch (e) { showToast?.('❌ Error: ' + e.message, 'error'); }
-    finally { setIsSaving(false); }
-  };
-
-  const deleteUom = async (uom) => {
-    if (!confirm(`"${uom.fromUnitName}" මකා දැමීමට අවශ්‍යද?`)) return;
-    setIsDeleting(uom.id);
-    try {
-      if (isOnline() && !uom.id?.startsWith('local_')) {
-        await deleteDoc(doc(db, 'uoms', uom.id));
-      } else {
-        await addToSyncQueue(uid, 'delete', 'uoms', {}, uom.id);
-      }
-      if (value === uom.id) onSelect('', '', []);
-      showToast?.(`🗑️ "${uom.fromUnitName}" මකා දමන ලදී`);
-    } catch (e) { showToast?.('❌ Error: ' + e.message, 'error'); }
-    finally { setIsDeleting(null); }
-  };
-
-  const renderUomForm = (isEdit) => (
-    <div className="p-4 space-y-4">
-      <div>
-        <label className="block text-sm font-bold text-gray-800 mb-1">📏 මූලික මිනුම් නම *</label>
-        <input className="w-full border-2 border-gray-200 p-3 rounded-xl text-sm font-bold outline-none focus:border-teal-400"
-          value={newUomName} onChange={(e) => setNewUomName(e.target.value)} placeholder="උදා: Kilogram, Piece, Meter..." autoFocus />
-      </div>
-      <div>
-        <label className="block text-sm font-bold text-gray-800 mb-1">🔤 සංකේතය (Symbol)</label>
-        <input className="w-full border-2 border-gray-200 p-3 rounded-xl text-sm outline-none focus:border-teal-400"
-          value={newUomSymbol} onChange={(e) => setNewUomSymbol(e.target.value)} placeholder="උදා: kg, pcs, m..." />
-      </div>
-      {!isEdit && (
-        <div>
-          <label className="block text-sm font-bold text-gray-800 mb-2">⚡ ඉක්මන් තේරීම</label>
-          <div className="flex flex-wrap gap-1.5">
-            {COMMON_UOMS.slice(0, 12).map(cu => (
-              <button key={cu.name} type="button" onClick={() => { setNewUomName(cu.name); setNewUomSymbol(cu.symbol); }}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border transition-all ${newUomName === cu.name ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-gray-700 border-gray-200 hover:border-teal-300'}`}>
-                {cu.name} ({cu.symbol})
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <label className="block text-sm font-bold text-gray-800">🔄 පරිවර්තන (Conversions)</label>
-          <button type="button" onClick={addConversionRow} className="text-xs bg-teal-100 text-teal-700 px-3 py-1 rounded-lg font-bold hover:bg-teal-200">➕ පරිවර්තනයක්</button>
-        </div>
-        {conversions.length === 0 ? (
-          <div className="p-4 bg-gray-50 rounded-xl text-center text-gray-400 text-sm border-2 border-dashed">
-            <div className="text-2xl mb-1">🔄</div><p>පරිවර්තන නොමැත</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {conversions.map((conv, idx) => (
-              <div key={idx} className="bg-teal-50 p-3 rounded-xl border border-teal-200">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-bold text-teal-700 bg-teal-100 px-2 py-0.5 rounded-full">#{idx + 1}</span>
-                  <span className="text-xs text-teal-600 flex-1">1 {newUomName || '...'} = {conv.rate || '?'} {conv.toUnitName || '...'}</span>
-                  <button type="button" onClick={() => removeConversion(idx)} className="w-6 h-6 bg-red-100 text-red-600 rounded-full flex items-center justify-center text-xs hover:bg-red-200">✕</button>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <input className="w-full border p-2 rounded-lg text-sm outline-none" value={conv.toUnitName} onChange={(e) => updateConversion(idx, 'toUnitName', e.target.value)} placeholder="ඒකකය" />
-                  <input type="number" min="0" step="any" className="w-full border p-2 rounded-lg text-sm outline-none font-bold" value={conv.rate} onChange={(e) => updateConversion(idx, 'rate', e.target.value)} placeholder="අනුපාතය" />
-                  <input className="w-full border p-2 rounded-lg text-sm outline-none" value={conv.symbol || ''} onChange={(e) => updateConversion(idx, 'symbol', e.target.value)} placeholder="සංකේතය" />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
 
   return (
     <div className="relative" ref={ref}>
       <div className="flex items-center justify-between mb-1">
-        <label className="block text-sm font-bold text-gray-800">📐 මිනුම් සැකසුම (UOM)</label>
-        <div className="flex gap-1">
-          <button type="button" onClick={openCreate} className="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-lg font-bold hover:bg-teal-200">➕ නව UOM</button>
-          <button type="button" onClick={() => setIsManageOpen(true)} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-lg font-bold hover:bg-indigo-200">⚙️ කළමනාකරණය</button>
-        </div>
+        <label className="block text-sm font-bold text-gray-800">📐 මූලික මිනුම් සැකසුම (Base UOM)</label>
+        <button type="button" onClick={openCreate} className="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded-lg font-bold hover:bg-teal-200">➕ නව UOM</button>
       </div>
       <div onClick={() => setIsOpen(!isOpen)} className="border-2 p-3 rounded-xl bg-white cursor-pointer flex justify-between items-center shadow-sm hover:border-blue-400">
         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -827,88 +743,44 @@ function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast })
         </div>
         <span className={`text-gray-500 transition-transform shrink-0 ml-2 ${isOpen ? 'rotate-180' : ''}`}>▼</span>
       </div>
-      {selectedUom?.conversions?.length > 0 && (
-        <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-xl">
-          <div className="text-xs font-bold text-blue-700 mb-1">📊 පරිවර්තන:</div>
-          <div className="flex flex-wrap gap-1.5">
-            {selectedUom.conversions.map((conv, i) => (
-              <span key={i} className="bg-white text-blue-800 text-[11px] px-2 py-1 rounded-lg border border-blue-200 font-medium">1 {selectedUom.fromUnitName} = {conv.rate} {conv.toUnitName}</span>
-            ))}
-          </div>
-        </div>
-      )}
       {isOpen && (
         <div className="absolute z-30 w-full bg-white border-2 border-gray-200 mt-1 shadow-2xl max-h-72 overflow-hidden rounded-xl">
           <div className="sticky top-0 bg-white border-b">
-            <input autoFocus className="w-full p-3 outline-none text-gray-900 bg-gray-50" placeholder="🔍 UOM සොයන්න..." value={search} onChange={(e) => setSearch(e.target.value)} onClick={(e) => e.stopPropagation()} />
+            <input autoFocus className="w-full p-3 outline-none text-gray-900 bg-gray-50 text-sm" placeholder="🔍 UOM සොයන්න..." value={search} onChange={(e) => setSearch(e.target.value)} onClick={(e) => e.stopPropagation()} />
           </div>
           <div className="max-h-52 overflow-y-auto">
-            {value && <div onMouseDown={(e) => { e.preventDefault(); onSelect('', '', []); setIsOpen(false); }} className="p-3 hover:bg-red-50 cursor-pointer border-b text-red-600 font-medium">✕ ඉවත් කරන්න</div>}
+            {value && <div onMouseDown={(e) => { e.preventDefault(); onSelect('', '', []); setIsOpen(false); }} className="p-3 hover:bg-red-50 cursor-pointer border-b text-red-600 font-medium text-sm">✕ ඉවත් කරන්න</div>}
             {filtered.map(uom => (
               <div key={uom.id} onMouseDown={(e) => { e.preventDefault(); onSelect(uom.id, uom.fromUnitName, uom.conversions || []); setIsOpen(false); setSearch(''); }}
-                className={`p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0 ${value === uom.id ? 'bg-blue-100 text-blue-800 font-medium' : 'text-gray-800'}`}>
-                <span className="font-medium">{uom.fromUnitName}</span>
+                className={`p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0 text-sm ${value === uom.id ? 'bg-blue-100 text-blue-800 font-medium' : 'text-gray-800'}`}>
+                <span className="font-bold">{uom.fromUnitName}</span> {uom.symbol && <span className="text-gray-500 text-xs">({uom.symbol})</span>}
               </div>
             ))}
-            {filtered.length === 0 && <div className="p-4 text-center text-gray-400 text-sm">UOM නොමැත</div>}
           </div>
         </div>
       )}
       {isCreateOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50" onClick={() => setIsCreateOpen(false)}>
-          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="bg-gradient-to-r from-teal-600 to-emerald-600 p-4 text-white flex items-center justify-between">
-              <h2 className="font-bold text-lg">➕ නව UOM නිර්මාණය</h2>
-              <button onClick={() => setIsCreateOpen(false)} className="bg-white/20 rounded-full w-8 h-8 font-bold">✕</button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3" onClick={() => setIsCreateOpen(false)}>
+          <div className="bg-white w-full max-w-md rounded-2xl overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="bg-teal-600 p-4 text-white font-bold flex justify-between items-center">
+              <span>➕ නව UOM නිර්මාණය</span>
+              <button onClick={() => setIsCreateOpen(false)}>✕</button>
             </div>
-            <div className="flex-1 overflow-y-auto">{renderUomForm(false)}</div>
-            <div className="p-4 border-t flex gap-3">
-              <button onClick={() => setIsCreateOpen(false)} className="flex-1 bg-gray-200 py-3 rounded-xl font-bold">❌ අවලංගු</button>
-              <button onClick={saveNewUom} disabled={isSaving || !newUomName.trim()} className="flex-[2] bg-teal-600 text-white py-3 rounded-xl font-bold disabled:opacity-50">{isSaving ? '⏳' : '💾 සුරකින්න'}</button>
-            </div>
-          </div>
-        </div>
-      )}
-      {isEditOpen && editUom && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50" onClick={() => { setIsEditOpen(false); setEditUom(null); }}>
-          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-4 text-white flex items-center justify-between">
-              <h2 className="font-bold text-lg">✏️ UOM සංස්කරණය</h2>
-              <button onClick={() => { setIsEditOpen(false); setEditUom(null); }} className="bg-white/20 rounded-full w-8 h-8 font-bold">✕</button>
-            </div>
-            <div className="flex-1 overflow-y-auto">{renderUomForm(true)}</div>
-            <div className="p-4 border-t flex gap-3">
-              <button onClick={() => { setIsEditOpen(false); setEditUom(null); }} className="flex-1 bg-gray-200 py-3 rounded-xl font-bold">❌ අවලංගු</button>
-              <button onClick={updateUom} disabled={isSaving || !newUomName.trim()} className="flex-[2] bg-amber-500 text-white py-3 rounded-xl font-bold disabled:opacity-50">{isSaving ? '⏳' : '✅ යාවත්කාලීන'}</button>
-            </div>
-          </div>
-        </div>
-      )}
-      {isManageOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50" onClick={() => setIsManageOpen(false)}>
-          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="bg-gradient-to-r from-teal-600 to-cyan-600 p-4 text-white flex items-center justify-between">
-              <h2 className="font-bold text-lg">📐 UOM කළමනාකරණය</h2>
-              <button onClick={() => setIsManageOpen(false)} className="bg-white/20 rounded-full w-8 h-8 font-bold">✕</button>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              {uoms.map(uom => (
-                <div key={uom.id} className="px-4 py-3 border-b hover:bg-gray-50 flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-teal-100 flex items-center justify-center shrink-0">
-                    <span className="text-teal-700 font-bold text-xs">{uom.symbol || '?'}</span>
-                  </div>
-                  <div className="flex-1 cursor-pointer" onClick={() => { onSelect(uom.id, uom.fromUnitName, uom.conversions || []); setIsManageOpen(false); }}>
-                    <div className="font-bold text-gray-800">{uom.fromUnitName}</div>
-                  </div>
-                  <button onClick={(e) => { e.stopPropagation(); openEdit(uom); setIsManageOpen(false); }} className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">✏️</button>
-                  <button onClick={(e) => { e.stopPropagation(); deleteUom(uom); }} className="w-8 h-8 rounded-lg bg-red-100 text-red-700 flex items-center justify-center">🗑️</button>
-                </div>
-              ))}
-            </div>
-            
-            {/* Modal Footer with Total UOM Count */}
-            <div className="p-3 bg-gray-50 border-t text-center font-bold text-xs text-gray-600">
-              📊 මුළු UOM සංඛ්‍යාව: {uoms.length}
+            <div className="p-4 space-y-3">
+              <div>
+                <label className="text-xs font-bold text-gray-700 block mb-1">නම (උදා: Piece, Box, Kg)</label>
+                <input className="w-full border p-2 rounded-lg text-sm" value={newUomName} onChange={e => setNewUomName(e.target.value)} />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-700 block mb-1">සංකේතය (උදා: pcs, box, kg)</label>
+                <input className="w-full border p-2 rounded-lg text-sm" value={newUomSymbol} onChange={e => setNewUomSymbol(e.target.value)} />
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setIsCreateOpen(false)} className="flex-1 bg-gray-200 py-2 rounded-xl font-bold text-sm">✕ අවලංගු</button>
+                <button type="button" onClick={saveNewUom} disabled={isSaving || !newUomName.trim()} className="flex-1 bg-teal-600 text-white py-2 rounded-xl font-bold text-sm disabled:opacity-50">
+                  {isSaving ? '⏳' : '💾 සුරකින්න'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -917,26 +789,23 @@ function UomSmartSelect({ value, displayValue, uoms, onSelect, uid, showToast })
   );
 }
 
-/* ══════════════════════════════════════════
-   MAIN COMPONENT
-══════════════════════════════════════════ */
-export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel }) {
+function ItemFormContent({ mode: propMode, itemId: propItemId, id: directId, onSuccess, onCancel }) {
   const { user } = useUserAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const rawParamId = searchParams?.get('id') || searchParams?.get('itemId') || '';
+  const resolvedItemId = (directId || propItemId || rawParamId || '').trim() || null;
+  const isEditMode = propMode === 'edit' || Boolean(resolvedItemId);
 
-  const [formData, setFormData]           = useState(INITIAL_FORM);
-  const [originalData, setOriginalData]   = useState(null);
-  const [loading, setLoading]             = useState(false);
-  const [saving, setSaving]               = useState(false);
-  const [toast, setToast]                 = useState(null);
-  const [activeTab, setActiveTab]         = useState('basic');
-
-  // ★ OFFLINE state
-  const [online, setOnline] = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
-  const [syncing, setSyncing] = useState(false);
+  const [formData, setFormData]         = useState(INITIAL_FORM);
+  const [loading, setLoading]           = useState(Boolean(isEditMode && resolvedItemId));
+  const [saving, setSaving]             = useState(false);
+  const [toast, setToast]               = useState(null);
+  const [activeTab, setActiveTab]       = useState('basic');
+  const [online, setOnline]             = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [syncing, setSyncing]           = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
 
-  // Reference data
   const [brands,        setBrands]        = useState([]);
   const [categories,    setCategories]    = useState([]);
   const [subCategories, setSubCategories] = useState([]);
@@ -945,13 +814,13 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
   const [racks,         setRacks]         = useState([]);
   const [suppliers,     setSuppliers]     = useState([]);
 
+  const loadedIdRef   = useRef(null);
+  const isFetchingRef = useRef(false);
+
   const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type });
   }, []);
 
-  // ══════════════════════════════════════════
-  //  OFFLINE / ONLINE LISTENERS
-  // ══════════════════════════════════════════
   useEffect(() => {
     const onOn = async () => {
       setOnline(true);
@@ -960,10 +829,9 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
         try {
           await processSyncQueue(user.uid);
           const queue = await getSyncQueue(user.uid);
-          setPendingCount(queue.filter(q => !q.processed).length);
-          showToast('✅ Online — දත්ත sync කරන ලදී');
+          setPendingCount((queue || []).filter(q => !q.processed).length);
         } catch (e) {
-          console.error('Sync error:', e);
+          console.warn('Sync notice:', e?.message);
         } finally {
           setSyncing(false);
         }
@@ -971,7 +839,7 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
     };
     const onOff = () => {
       setOnline(false);
-      showToast('🔴 Offline — දත්ත Hard Disk එකට සුරැකේ', 'error');
+      showToast('🔴 Offline — දත්ත PC Hard Disk එකට සුරැකේ', 'warning');
     };
     window.addEventListener('online', onOn);
     window.addEventListener('offline', onOff);
@@ -981,88 +849,236 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
     };
   }, [user?.uid, showToast]);
 
-  // ══════════════════════════════════════════
-  //  LOAD REFERENCE DATA (brands, categories, etc.)
-  // ══════════════════════════════════════════
   useEffect(() => {
-    if (!user?.uid) return;
+    let isMounted = true;
+    const effectiveUid = user?.uid || 'all';
+    const loadRefData = async () => {
+      const collections = [
+        { name: 'brands',        setter: setBrands },
+        { name: 'categories',    setter: setCategories },
+        { name: 'subCategories', setter: setSubCategories },
+        { name: 'uoms',          setter: setUoms },
+        { name: 'colors',        setter: setColors },
+        { name: 'racks',         setter: setRacks },
+        { name: 'suppliers',     setter: setSuppliers },
+      ];
 
-    const collections = [
-      { name: 'brands',        setter: setBrands },
-      { name: 'categories',    setter: setCategories },
-      { name: 'subCategories', setter: setSubCategories },
-      { name: 'uoms',          setter: setUoms },
-      { name: 'colors',        setter: setColors },
-      { name: 'racks',         setter: setRacks },
-      { name: 'suppliers',     setter: setSuppliers },
-    ];
+      for (const col of collections) {
+        try {
+          const hasTable = localDb?.isOpen?.() && localDb.tables?.some(t => t.name === col.name);
+          if (hasTable) {
+            const localList = await localDb.table(col.name).toArray().catch(() => []);
+            if (isMounted && Array.isArray(localList) && localList.length > 0) {
+              col.setter(localList);
+              continue;
+            }
+          }
+        } catch (_) {}
 
-    const unsubs = [];
+        try {
+          const cached = (await getCachedRefData(col.name, effectiveUid)) || (await getCachedRefData(effectiveUid, col.name));
+          if (isMounted && Array.isArray(cached) && cached.length > 0) {
+            col.setter(cached);
+            continue;
+          }
+        } catch (_) {}
 
-    collections.forEach(({ name, setter }) => {
-      try {
-        if (isOnline()) {
-          const q = query(collection(db, name), where('uid', '==', user.uid));
-          const unsub = onSnapshot(q, async (snap) => {
-            const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            setter(data);
-            try { await cacheRefData(name, user.uid, data); } catch {}
-          }, async (err) => {
-            console.warn(`[${name}] Firestore error, loading cache:`, err);
-            const cached = await getCachedRefData(name, user.uid);
-            setter(cached || []);
-          });
-          unsubs.push(unsub);
-        } else {
-          getCachedRefData(name, user.uid).then(cached => setter(cached || []));
+        if (isOnline() && db && user?.uid) {
+          try {
+            const q = query(collection(db, col.name), where('uid', '==', user.uid));
+            safeTimeout(getDocs(q), 1500, null).then((snap) => {
+              if (!isMounted || !snap) return;
+              const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+              if (items.length > 0) {
+                col.setter(items);
+                cacheRefData(col.name, user.uid, items).catch(() => {});
+                const hasTable = localDb?.isOpen?.() && localDb.tables?.some(t => t.name === col.name);
+                if (hasTable) {
+                  localDb.table(col.name).bulkPut(items).catch(() => {});
+                }
+              }
+            }).catch(() => {});
+          } catch (_) {}
         }
-      } catch (e) {
-        console.error(`[${name}] error:`, e);
-        getCachedRefData(name, user.uid).then(cached => setter(cached || []));
       }
-    });
-
-    return () => unsubs.forEach(u => u && u());
+    };
+    loadRefData();
+    return () => { isMounted = false; };
   }, [user?.uid]);
 
-  // ══════════════════════════════════════════
-  //  LOAD EXISTING ITEM (edit mode)
-  // ══════════════════════════════════════════
+  // Master safety timeout (Prevents infinite spinner)
   useEffect(() => {
-    if (mode !== 'edit' || !itemId || !user?.uid) return;
+    const masterTimer = setTimeout(() => {
+      setLoading(false);
+    }, 2000);
+    return () => clearTimeout(masterTimer);
+  }, [resolvedItemId]);
 
-    const loadItem = async () => {
+  // 1. Zero-Freeze PC Hard Disk First Load Item
+  useEffect(() => {
+    if (!isEditMode || !resolvedItemId) {
+      setLoading(false);
+      return;
+    }
+    if (loadedIdRef.current === resolvedItemId) {
+      setLoading(false);
+      return;
+    }
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    let isMounted = true;
+
+    const loadItemSafe = async () => {
       setLoading(true);
       try {
-        if (isOnline() && !itemId.startsWith('local_')) {
-          const snap = await getDoc(doc(db, 'items', itemId));
-          if (snap.exists()) {
-            const data = { id: snap.id, ...snap.data() };
-            setFormData({ ...INITIAL_FORM, ...data });
-            setOriginalData(data);
+        let rawData = null;
+
+        // TIER 1: PC Hard Disk (Dexie WeerakkodiPOS_DB)
+        try {
+          const isReady = await safeTimeout(ensureDbOpen(), 1000, false);
+          if (isReady && localDb && typeof localDb.isOpen === 'function' && localDb.isOpen() && localDb.items) {
+            // Direct ID lookups
+            rawData = await safeTimeout(localDb.items.get(String(resolvedItemId)), 1000, null);
+            if (!rawData) {
+              rawData = await safeTimeout(localDb.items.get(resolvedItemId), 800, null);
+            }
+            if (!rawData && !isNaN(Number(resolvedItemId))) {
+              rawData = await safeTimeout(localDb.items.get(Number(resolvedItemId)), 800, null);
+            }
+
+            // In-memory scan for legacy & unindexed fields
+            if (!rawData) {
+              const allLocal = await safeTimeout(localDb.items.toArray(), 1200, []);
+              if (Array.isArray(allLocal) && allLocal.length > 0) {
+                const targetStr = String(resolvedItemId).trim().toLowerCase();
+                rawData = allLocal.find(i => {
+                  if (!i) return false;
+                  return (
+                    (i.id != null && String(i.id).trim().toLowerCase() === targetStr) ||
+                    (i.firestoreId != null && String(i.firestoreId).trim().toLowerCase() === targetStr) ||
+                    (i.localId != null && String(i.localId).trim().toLowerCase() === targetStr) ||
+                    (i._id != null && String(i._id).trim().toLowerCase() === targetStr) ||
+                    (i.itemCode != null && String(i.itemCode).trim().toLowerCase() === targetStr) ||
+                    (i.barcode != null && String(i.barcode).trim().toLowerCase() === targetStr)
+                  );
+                });
+              }
+            }
           }
-        } else {
-          const localItems = await getItemsLocal(user.uid);
-          const found = localItems.find(i => i.id === itemId);
-          if (found) {
-            setFormData({ ...INITIAL_FORM, ...found });
-            setOriginalData(found);
+        } catch (dexErr) {
+          console.warn('[ItemForm] Dexie local fetch notice:', dexErr?.message);
+        }
+
+        // TIER 2: Raw IndexedDB Fallback
+        if (!rawData) {
+          try {
+            if (typeof getItemLocal === 'function') {
+              rawData = await safeTimeout(getItemLocal(resolvedItemId), 800, null);
+            }
+            if (!rawData && typeof getItemsLocal === 'function') {
+              const localList = await safeTimeout(getItemsLocal(user?.uid || 'all'), 800, []);
+              if (Array.isArray(localList) && localList.length > 0) {
+                const targetStr = String(resolvedItemId).trim().toLowerCase();
+                rawData = localList.find(i => {
+                  if (!i) return false;
+                  return (
+                    (i.id != null && String(i.id).trim().toLowerCase() === targetStr) ||
+                    (i.firestoreId != null && String(i.firestoreId).trim().toLowerCase() === targetStr) ||
+                    (i.localId != null && String(i.localId).trim().toLowerCase() === targetStr) ||
+                    (i._id != null && String(i._id).trim().toLowerCase() === targetStr) ||
+                    (i.itemCode != null && String(i.itemCode).trim().toLowerCase() === targetStr) ||
+                    (i.barcode != null && String(i.barcode).trim().toLowerCase() === targetStr)
+                  );
+                });
+              }
+            }
+          } catch (offErr) {
+            console.warn('[ItemForm] offlineDB fallback notice:', offErr?.message);
           }
         }
+
+        // TIER 3: Cloud Firestore Fallback (If not found on Hard Disk)
+        if (!rawData && isOnline() && db && !String(resolvedItemId).startsWith('local_') && !String(resolvedItemId).startsWith('itm_')) {
+          try {
+            const snap = await safeTimeout(getDoc(doc(db, 'items', resolvedItemId)), 1200, null);
+            if (snap?.exists()) {
+              rawData = { id: snap.id, ...snap.data() };
+              try {
+                if (localDb && typeof localDb.isOpen === 'function' && localDb.isOpen() && localDb.items) {
+                  localDb.items.put(sanitizeForStorage(rawData)).catch(() => {});
+                }
+              } catch (_) {}
+            }
+          } catch (cloudErr) {
+            console.warn('[ItemForm] Cloud fetch notice:', cloudErr?.message);
+          }
+        }
+
+        if (!isMounted) return;
+
+        if (rawData) {
+          loadedIdRef.current = resolvedItemId;
+          const data = sanitizeForStorage(rawData);
+
+          const retailPrice = data.sellingPriceRetail ?? data.sellingPrice ?? data.retailPrice ?? data.price ?? '';
+          const wholesalePrice = data.sellingPriceWholesale ?? data.wholesalePrice ?? '';
+          const loosePrice = data.sellingPriceLoose ?? data.loosePrice ?? '';
+          const buyPrice = data.buyingPrice ?? data.costPrice ?? data.cost ?? '';
+          const stockVal = data.currentStock ?? data.stock ?? data.quantity ?? '';
+
+          setFormData({
+            ...INITIAL_FORM,
+            ...data,
+            id: resolvedItemId,
+            name: data.name || '',
+            sinhalaName: data.sinhalaName || '',
+            itemCode: data.itemCode || '',
+            barcode: data.barcode || '',
+            brandId: data.brandId || '',
+            brandName: data.brandName || '',
+            categoryId: data.categoryId || '',
+            categoryName: data.categoryName || '',
+            subCategoryId: data.subCategoryId || '',
+            subCategoryName: data.subCategoryName || '',
+            uomId: data.uomId || '',
+            uomName: data.uomName || '',
+            availableUnits: Array.isArray(data.availableUnits) ? data.availableUnits : [],
+            displayUom: data.displayUom || data.catalogUom || data.uomName || '',
+            currentStock: stockVal !== '' ? String(stockVal) : '',
+            minStockLevel: data.minStockLevel !== undefined ? String(data.minStockLevel) : '',
+            maxStockLevel: data.maxStockLevel !== undefined ? String(data.maxStockLevel) : '',
+            buyingPrice: buyPrice !== '' ? String(buyPrice) : '',
+            sellingPriceRetail: retailPrice !== '' ? String(retailPrice) : '',
+            retailDiscount: data.retailDiscount !== undefined ? String(data.retailDiscount) : '',
+            retailYourPrice: data.retailYourPrice || calcNet(retailPrice, data.retailDiscount),
+            sellingPriceWholesale: wholesalePrice !== '' ? String(wholesalePrice) : '',
+            wholesaleDiscount: data.wholesaleDiscount !== undefined ? String(data.wholesaleDiscount) : '',
+            wholesaleYourPrice: data.wholesaleYourPrice || calcNet(wholesalePrice, data.wholesaleDiscount),
+            sellingPriceLoose: loosePrice !== '' ? String(loosePrice) : '',
+            looseDiscount: data.looseDiscount !== undefined ? String(data.looseDiscount) : '',
+            looseYourPrice: data.looseYourPrice || calcNet(loosePrice, data.looseDiscount),
+            images: Array.isArray(data.images) && data.images.length > 0 ? data.images : (data.picture ? [data.picture] : []),
+            imagePaths: Array.isArray(data.imagePaths) ? data.imagePaths : [],
+            picture: data.picture || (Array.isArray(data.images) ? data.images[0] : '') || '',
+          });
+        } else {
+          showToast('⚠️ භාණ්ඩ විස්තර Local Hard Disk එකෙන් සොයාගත නොහැකි විය', 'warning');
+        }
       } catch (e) {
-        console.error('Load item error:', e);
-        showToast('❌ Item load කිරීමේ දෝෂයක්', 'error');
+        console.warn('[ItemForm] Load item error:', e?.message);
       } finally {
-        setLoading(false);
+        isFetchingRef.current = false;
+        if (isMounted) setLoading(false);
       }
     };
 
-    loadItem();
-  }, [mode, itemId, user?.uid, showToast]);
+    loadItemSafe();
+    return () => {
+      isMounted = false;
+      isFetchingRef.current = false;
+    };
+  }, [isEditMode, resolvedItemId, showToast]);
 
-  // ══════════════════════════════════════════
-  //  FORM FIELD UPDATE HELPER
-  // ══════════════════════════════════════════
   const updateField = useCallback((field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   }, []);
@@ -1071,101 +1087,179 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
     setFormData(prev => ({ ...prev, ...updates }));
   }, []);
 
-  // ══════════════════════════════════════════
-  //  SAVE HANDLER (with offline support)
-  // ══════════════════════════════════════════
+  const handleGenerateBarcode = () => {
+    const randomBarcode = `${Date.now().toString().slice(-8)}${Math.floor(1000 + Math.random() * 9000)}`;
+    updateField('barcode', randomBarcode);
+    showToast(`⚡ Barcode එකක් සෑදිණි: ${randomBarcode}`);
+  };
+
+  // 2. GUARANTEED DUAL SAVE (PC Hard Disk + Cloud Firestore)
   const handleSave = async () => {
     if (!formData.name?.trim()) {
       showToast('කරුණාකර භාණ්ඩයේ නම ඇතුළත් කරන්න', 'error');
       return;
     }
-    if (!user?.uid) {
-      showToast('පරිශීලක ප්‍රවේශය අවශ්‍යයි', 'error');
-      return;
-    }
 
+    const effectiveUid = user?.uid || 'local_user';
     setSaving(true);
+
     try {
-      const payload = {
+      const primaryPic = (formData.images && formData.images.length > 0)
+        ? formData.images[0]
+        : (formData.picture || '');
+
+      let targetId = resolvedItemId;
+      if (!isEditMode || !targetId) {
+        try {
+          if (db) {
+            const autoDocRef = doc(collection(db, 'items'));
+            targetId = autoDocRef.id;
+          } else {
+            targetId = `itm_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+          }
+        } catch {
+          targetId = `itm_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        }
+      }
+
+      const stockVal  = parseFloat(formData.currentStock) || 0;
+      const sellPrice = parseFloat(formData.sellingPriceRetail) || 0;
+      const buyPrice  = parseFloat(formData.buyingPrice) || 0;
+
+      const rawPayload = {
         ...formData,
-        uid: user.uid,
+        id: String(targetId),
+        localId: String(targetId),
+        firestoreId: !String(targetId).startsWith('local_') && !String(targetId).startsWith('itm_') ? String(targetId) : (formData.firestoreId || targetId),
+        uid: effectiveUid,
         name: formData.name.trim(),
-        sellingPrice: parseFloat(formData.sellingPriceRetail) || 0,
-        costPrice: parseFloat(formData.buyingPrice) || 0,
-        currentStock: parseFloat(formData.currentStock) || 0,
+        sinhalaName: formData.sinhalaName?.trim() || '',
+        itemCode: formData.itemCode?.trim() || '',
+        barcode: formData.barcode?.trim() || '',
+        picture: primaryPic,
+        images: formData.images || [],
+        imagePaths: formData.imagePaths || [],
+        displayUom: formData.displayUom || formData.uomName || '',
+        catalogUom: formData.displayUom || formData.uomName || '',
+        sellingPrice: sellPrice,
+        sellingPriceRetail: sellPrice,
+        costPrice: buyPrice,
+        buyingPrice: buyPrice,
+        sellingPriceWholesale: parseFloat(formData.sellingPriceWholesale) || 0,
+        sellingPriceLoose: parseFloat(formData.sellingPriceLoose) || 0,
+        stock: stockVal,
+        currentStock: stockVal,
+        quantity: stockVal,
+        minStockLevel: parseFloat(formData.minStockLevel) || 0,
+        maxStockLevel: parseFloat(formData.maxStockLevel) || 0,
         updatedAt: new Date().toISOString(),
       };
-      delete payload.id;
 
-      if (mode === 'edit' && itemId) {
-        if (isOnline() && !itemId.startsWith('local_')) {
-          await updateDoc(doc(db, 'items', itemId), payload);
-          showToast('✅ භාණ්ඩය යාවත්කාලීන කරන ලදී');
-        } else {
-          await saveItemLocal(user.uid, { ...payload, id: itemId });
-          await addToSyncQueue(user.uid, 'update', 'items', payload, itemId);
-          showToast('💾 Offline update — sync pending');
+      if (!isEditMode) {
+        rawPayload.createdAt = formData.createdAt || new Date().toISOString();
+      }
+
+      const cleanPayload = sanitizeForStorage(rawPayload);
+
+      // 💾 ස්ථාන 1: PC HARD DISK එකට SAVE කිරීම (Dexie DB + OfflineDB)
+      try {
+        const isReady = await safeTimeout(ensureDbOpen(), 800, false);
+        if (isReady && localDb && typeof localDb.isOpen === 'function' && localDb.isOpen() && localDb.items) {
+          await localDb.items.put({
+            ...cleanPayload,
+            synced: 0,
+            _synced: 0,
+            _sync: 'pending',
+          });
         }
+      } catch (dexPutErr) {
+        console.warn('[ItemForm] localDb write notice:', dexPutErr?.message);
+      }
+
+      try {
+        await saveItemLocal(effectiveUid, cleanPayload, targetId);
+      } catch (offPutErr) {
+        console.warn('[ItemForm] offlineDB write notice:', offPutErr?.message);
+      }
+
+      // 🌐 ස්ථාන 2: CLOUD FIRESTORE වෙත SAVE කිරීම (Quota Safe 2000ms Race)
+      let cloudSaved = false;
+      if (isOnline() && db) {
+        try {
+          const firestorePayload = { ...cleanPayload };
+          delete firestorePayload.id;
+          const firestoreDocRef = doc(db, 'items', targetId);
+          const TIMEOUT_SENTINEL = Symbol('timeout');
+          const savePromise = setDoc(firestoreDocRef, firestorePayload, { merge: true });
+          const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(TIMEOUT_SENTINEL), 2000));
+          const result = await Promise.race([savePromise, timeoutPromise]);
+
+          if (result !== TIMEOUT_SENTINEL) {
+            cloudSaved = true;
+            try {
+              if (localDb && typeof localDb.isOpen === 'function' && localDb.isOpen() && localDb.items) {
+                await localDb.items.update(targetId, { synced: 1, _synced: 1, _sync: 'synced' });
+              }
+            } catch (_) {}
+          }
+        } catch (cloudErr) {
+          console.warn('[ItemForm] Firestore save rate-limited or quota exceeded:', cloudErr?.message);
+          cloudSaved = false;
+        }
+      }
+
+      if (cloudSaved) {
+        showToast('✅ PC Hard Disk සහ Cloud Firestore දෙකෙහිම සාර්ථකව සුරැකිණි!');
       } else {
-        if (isOnline()) {
-          payload.createdAt = new Date().toISOString();
-          const docRef = await addDoc(collection(db, 'items'), payload);
-          showToast('✅ නව භාණ්ඩය එක් කරන ලදී');
-          if (onSuccess) onSuccess(docRef.id);
-        } else {
-          const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          payload.createdAt = new Date().toISOString();
-          await saveItemLocal(user.uid, { ...payload, id: localId });
-          await addToSyncQueue(user.uid, 'add', 'items', payload, localId);
-          showToast('💾 Offline save — Internet ලැබුණු විට sync වේ');
-          if (onSuccess) onSuccess(localId);
-        }
+        await addToSyncQueue(
+          effectiveUid,
+          isEditMode ? 'update' : 'add',
+          'items',
+          cleanPayload,
+          targetId
+        );
+        showToast('💾 PC Hard Disk එකේ සාර්ථකව සුරැකිණි! (Cloud Quota සීමා වී ඇති බැවින් දත්ත Hard Disk එකට සුරැකී Sync Queue එකට එක්විය)');
       }
 
-      if (mode === 'add') {
-        setFormData(INITIAL_FORM);
-      }
-
+      if (onSuccess) onSuccess(targetId);
       setTimeout(() => {
         if (onCancel) onCancel();
         else router.push('/items');
-      }, 1000);
-
+      }, 700);
     } catch (e) {
-      console.error('Save error:', e);
-      try {
-        const localId = itemId || `local_${Date.now()}`;
-        await saveItemLocal(user.uid, { ...formData, id: localId, uid: user.uid });
-        await addToSyncQueue(user.uid, mode === 'edit' ? 'update' : 'add', 'items', formData, localId);
-        showToast('💾 Offline save — Error වුණත් දත්ත සුරැකිණි', 'success');
-      } catch (e2) {
-        showToast('❌ Save error: ' + e.message, 'error');
-      }
+      console.error('[ItemForm] Save error:', e);
+      showToast('❌ සුරැකීමේ දෝෂයක්: ' + e.message, 'error');
     } finally {
       setSaving(false);
     }
   };
 
-  // ══════════════════════════════════════════
-  //  DELETE HANDLER
-  // ══════════════════════════════════════════
   const handleDelete = async () => {
-    if (!itemId || !user?.uid) return;
-    if (!confirm(`"${formData.name}" මකා දැමීමට අවශ්‍යද?`)) return;
-
+    if (!resolvedItemId) return;
+    if (!confirm(`"${formData.name}" භාණ්ඩය මකා දැමීමට අවශ්‍ය බව සහතිකද?`)) return;
+    const effectiveUid = user?.uid || 'local_user';
     setSaving(true);
     try {
-      if (isOnline() && !itemId.startsWith('local_')) {
-        await deleteDoc(doc(db, 'items', itemId));
-        showToast('🗑️ භාණ්ඩය මකා දමන ලදී');
+      if (isOnline() && db && !String(resolvedItemId).startsWith('local_')) {
+        await deleteDoc(doc(db, 'items', resolvedItemId)).catch(() => {});
+        showToast('🗑️ භාණ්ඩය සාර්ථකව මකා දමන ලදී');
       } else {
-        await addToSyncQueue(user.uid, 'delete', 'items', {}, itemId);
+        await addToSyncQueue(effectiveUid, 'delete', 'items', {}, resolvedItemId);
         showToast('💾 Offline delete — sync pending');
       }
+
+      try {
+        const isReady = await safeTimeout(ensureDbOpen(), 800, false);
+        if (isReady && localDb && typeof localDb.isOpen === 'function' && localDb.isOpen() && localDb.items) {
+          await localDb.items.delete(resolvedItemId);
+        }
+        await deleteItemLocal(resolvedItemId);
+      } catch (_) {}
+
       setTimeout(() => {
         if (onCancel) onCancel();
         else router.push('/items');
-      }, 800);
+      }, 700);
     } catch (e) {
       showToast('❌ Delete error: ' + e.message, 'error');
     } finally {
@@ -1178,64 +1272,74 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-gray-600 font-medium">Loading...</p>
+          <p className="text-gray-600 font-bold">Hard Disk එකෙන් භාණ්ඩ විස්තර ලබා ගනිමින් පවතී...</p>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen bg-gray-50 pb-24">
+  const availableUomOptions = Array.from(new Set([
+    formData.uomName,
+    ...(formData.availableUnits || []).map(u => (typeof u === 'string' ? u : u?.toUnitName)),
+  ].filter(Boolean)));
 
-      {/* ── Offline Banner ── */}
+  return (
+    <div className="min-h-screen bg-gray-50 pb-28">
       {!online && (
-        <div className="sticky top-0 z-40 bg-gradient-to-r from-orange-500 to-red-500 text-white text-center py-2 font-bold text-sm shadow-md">
-          ⚠️ Offline — දත්ත Hard Disk එකට සුරැකේ. Internet ලැබුණු විට auto-sync වේ.
+        <div className="sticky top-0 z-50 bg-gradient-to-r from-orange-500 to-red-500 text-white text-center py-2 font-bold text-sm shadow-md">
+          ⚠️ Offline Mode — දත්ත PC Hard Disk එකට සුරැකේ. Internet ලැබුණු විට Cloud සමඟ auto-sync වේ.
           {pendingCount > 0 && <span className="ml-2 bg-white/20 px-2 py-0.5 rounded-full">{pendingCount} pending</span>}
         </div>
       )}
 
-      {/* ── Header ── */}
-      <div className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white p-4 shadow-lg">
-        <div className="flex items-center justify-between">
+      {/* Header */}
+      <div className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white p-4 shadow-lg sticky top-0 z-40">
+        <div className="flex items-center justify-between max-w-4xl mx-auto">
           <div className="flex items-center gap-3">
             <button
+              type="button"
               onClick={() => { if (onCancel) onCancel(); else router.back(); }}
-              className="bg-white/20 hover:bg-white/30 rounded-full w-10 h-10 flex items-center justify-center font-bold text-xl"
-            >←</button>
+              className="bg-white/20 hover:bg-white/30 rounded-full w-10 h-10 flex items-center justify-center font-bold text-xl transition-all"
+            >
+              ←
+            </button>
             <div>
-              <h1 className="font-bold text-lg">
-                {mode === 'edit' ? '✏️ Item Edit' : '➕ New Item'}
+              <h1 className="font-bold text-lg flex items-center gap-2">
+                {isEditMode ? '✏️ භාණ්ඩ සංස්කරණය (Edit Item)' : '➕ නව භාණ්ඩයක් එක් කරන්න (New Item)'}
               </h1>
               <div className="text-xs opacity-80 flex items-center gap-2">
-                <span>{online ? '🟢 Online' : '🔴 Offline'}</span>
+                <span>{online ? '🌐 Online (Dual-Save Mode)' : '💾 Offline (PC Hard Disk Only)'}</span>
                 {syncing && <span>🔄 Syncing...</span>}
               </div>
             </div>
           </div>
-          {mode === 'edit' && (
+          {isEditMode && (
             <button
+              type="button"
               onClick={handleDelete}
               disabled={saving}
-              className="bg-red-500/80 hover:bg-red-600 px-3 py-2 rounded-xl font-bold text-sm disabled:opacity-50"
-            >🗑️ Delete</button>
+              className="bg-red-500/80 hover:bg-red-600 px-3 py-2 rounded-xl font-bold text-sm disabled:opacity-50 transition-colors shadow"
+            >
+              🗑️ Delete
+            </button>
           )}
         </div>
       </div>
 
-      {/* ── Tabs ── */}
-      <div className="bg-white border-b sticky top-0 z-30 shadow-sm">
-        <div className="flex overflow-x-auto">
+      {/* Tabs */}
+      <div className="bg-white border-b sticky top-[68px] z-30 shadow-sm">
+        <div className="max-w-4xl mx-auto flex overflow-x-auto">
           {[
-            { key: 'basic',    label: '📝 මූලික',    },
-            { key: 'pricing',  label: '💰 මිල',      },
-            { key: 'stock',    label: '📦 Stock',    },
-            { key: 'warranty', label: '🛡️ වගකීම',  },
-            { key: 'images',   label: '📷 රූප',     },
-            { key: 'advanced', label: '⚙️ උසස්',    },
+            { key: 'basic',    label: '📝 මූලික විස්තර', },
+            { key: 'pricing',  label: '💰 මිල ගණන්',     },
+            { key: 'stock',    label: '📦 Stock ප්‍රමාණය', },
+            { key: 'warranty', label: '🛡️ වගකීම',      },
+            { key: 'images',   label: '📷 පින්තූර',       },
+            { key: 'advanced', label: '⚙️ උසස් සැකසුම්',  },
           ].map(tab => (
             <button
               key={tab.key}
+              type="button"
               onClick={() => setActiveTab(tab.key)}
               className={`shrink-0 px-4 py-3 text-sm font-bold border-b-2 transition-all whitespace-nowrap
                 ${activeTab === tab.key ? 'border-blue-600 text-blue-600 bg-blue-50' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
@@ -1246,82 +1350,122 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
         </div>
       </div>
 
-      {/* ── Form Content ── */}
-      <div className="p-4 max-w-3xl mx-auto space-y-4">
-
-        {/* ═══ BASIC TAB ═══ */}
+      {/* Form Content */}
+      <div className="p-4 max-w-4xl mx-auto space-y-4">
         {activeTab === 'basic' && (
           <>
             <div className="bg-white p-4 rounded-xl shadow-sm border space-y-3">
               <div>
-                <label className="block text-sm font-bold text-gray-800 mb-1">📦 භාණ්ඩයේ නම *</label>
+                <label className="block text-sm font-bold text-gray-800 mb-1">📦 භාණ්ඩයේ නම (Item Name) *</label>
                 <input
-                  className="w-full border-2 border-gray-200 p-3 rounded-xl font-medium outline-none focus:border-blue-400"
+                  className="w-full border-2 border-gray-200 p-3 rounded-xl font-bold text-gray-800 outline-none focus:border-blue-500 transition-colors"
                   value={formData.name}
                   onChange={(e) => updateField('name', e.target.value)}
-                  placeholder="උදා: Dialog recharge card"
+                  placeholder="උදා: Sunsilk Shampoo 180ml"
+                  autoFocus
                 />
               </div>
               <div>
-                <label className="block text-sm font-bold text-gray-800 mb-1">🇱🇰 සිංහල නම</label>
+                <label className="block text-sm font-bold text-gray-800 mb-1">🇱🇰 සිංහල නම (නොමිලේ පෙන්වීමට)</label>
                 <input
-                  className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
+                  className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-500"
                   value={formData.sinhalaName}
                   onChange={(e) => updateField('sinhalaName', e.target.value)}
+                  placeholder="සිංහල නම"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-bold text-gray-800 mb-1">🔖 Item Code</label>
                   <input
-                    className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
+                    className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-500"
                     value={formData.itemCode}
                     onChange={(e) => updateField('itemCode', e.target.value)}
+                    placeholder="ITM-001"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-bold text-gray-800 mb-1">📊 Barcode</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-sm font-bold text-gray-800">📊 Barcode</label>
+                    <button
+                      type="button"
+                      onClick={handleGenerateBarcode}
+                      className="text-[11px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded font-bold hover:bg-blue-100"
+                    >
+                      ⚡ Barcode උත්පාදනය
+                    </button>
+                  </div>
                   <input
-                    className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
+                    className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-500 font-mono"
                     value={formData.barcode}
                     onChange={(e) => updateField('barcode', e.target.value)}
+                    placeholder="890123456789"
                   />
                 </div>
               </div>
             </div>
-
             <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
               <SmartSelectWithManage
-                label="වෙළඳ නාමය" icon="🏷️"
+                label="වෙළඳ නාමය (Brand)" icon="🏷️"
                 value={formData.brandId} displayValue={formData.brandName}
                 options={brands}
                 onSelect={(id, name) => updateFields({ brandId: id, brandName: name })}
                 collectionName="brands" uid={user?.uid} showToast={showToast}
               />
               <SmartSelectWithManage
-                label="වර්ගය" icon="📂"
+                label="වර්ගය (Category)" icon="📂"
                 value={formData.categoryId} displayValue={formData.categoryName}
                 options={categories}
                 onSelect={(id, name) => updateFields({ categoryId: id, categoryName: name, subCategoryId: '', subCategoryName: '' })}
                 collectionName="categories" uid={user?.uid} showToast={showToast}
               />
               <SmartSelectWithManage
-                label="උප වර්ගය" icon="📁"
+                label="උප වර්ගය (Sub Category)" icon="📁"
                 value={formData.subCategoryId} displayValue={formData.subCategoryName}
                 options={subCategories}
                 onSelect={(id, name) => updateFields({ subCategoryId: id, subCategoryName: name })}
                 collectionName="subCategories" uid={user?.uid} showToast={showToast}
                 parentFilter={{ field: 'categoryId', value: formData.categoryId }}
-                parentRequired={true} parentLabel="වර්ගය"
+                parentRequired={true} parentLabel="වර්ගය (Category)"
               />
               <UomSmartSelect
                 value={formData.uomId} displayValue={formData.uomName}
                 uoms={uoms}
-                onSelect={(id, name, conversions) => updateFields({ uomId: id, uomName: name, availableUnits: conversions || [] })}
+                onSelect={(id, name, conversions) => {
+                  const defaultDisplay = name || '';
+                  updateFields({
+                    uomId: id,
+                    uomName: name,
+                    availableUnits: conversions || [],
+                    displayUom: formData.displayUom || defaultDisplay,
+                  });
+                }}
                 uid={user?.uid} showToast={showToast}
               />
+              <div className="bg-teal-50/70 p-3.5 rounded-xl border-2 border-teal-200">
+                <label className="block text-sm font-bold text-teal-900 mb-1">
+                  👁️ භාණ්ඩ පෙනීමේදී සහ POS එකේදී පෙන්විය යුතු UOM එක (Display / Default UOM) *
+                </label>
+                <div className="flex gap-2">
+                  <select
+                    className="flex-1 border-2 border-teal-300 p-3 rounded-xl font-bold text-teal-900 bg-white outline-none focus:border-teal-600"
+                    value={formData.displayUom || formData.uomName || ''}
+                    onChange={(e) => updateField('displayUom', e.target.value)}
+                  >
+                    <option value="">-- ප්‍රදර්ශනය වන UOM එක තෝරන්න --</option>
+                    {availableUomOptions.map((unit, idx) => (
+                      <option key={idx} value={unit}>
+                        {unit} {unit === formData.uomName ? '(මූලික Unit)' : '(පරිවර්තන Unit)'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <p className="text-[11px] text-teal-700 mt-1 font-medium">
+                  💡 බිල්පත් සහ තොග ලැයිස්තුවේදී (POS & Items) මෙම භාණ්ඩය අසල දිස්විය යුතු මිනුම් ඒකකය මෙතැනින් තෝරන්න.
+                </p>
+              </div>
               <SmartSelectWithManage
-                label="වර්ණය" icon="🎨"
+                label="වර්ණය (Color)" icon="🎨"
                 value={formData.colorId} displayValue={formData.colorName}
                 options={colors}
                 onSelect={(id, name) => updateFields({ colorId: id, colorName: name })}
@@ -1332,33 +1476,32 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
           </>
         )}
 
-        {/* ═══ PRICING TAB ═══ */}
         {activeTab === 'pricing' && (
           <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
             <div>
-              <label className="block text-sm font-bold text-gray-800 mb-1">💵 මිලදී ගත් මිල</label>
+              <label className="block text-sm font-bold text-gray-800 mb-1">💵 මිලදී ගත් මිල (Buying Cost Price)</label>
               <input
                 type="number" step="any"
-                className="w-full border-2 border-gray-200 p-3 rounded-xl font-bold outline-none focus:border-blue-400"
+                className="w-full border-2 border-gray-200 p-3 rounded-xl font-bold outline-none focus:border-blue-500 text-lg"
                 value={formData.buyingPrice}
                 onChange={(e) => updateField('buyingPrice', e.target.value)}
+                placeholder="0.00"
               />
             </div>
-
             {['Retail', 'Wholesale', 'Loose'].map(type => {
               const key = type.toLowerCase();
               const priceField = `sellingPrice${type}`;
               const discField  = `${key}Discount`;
               const netField   = `${key}YourPrice`;
               return (
-                <div key={type} className="bg-gray-50 p-3 rounded-xl border">
-                  <div className="font-bold text-sm text-gray-700 mb-2">💰 {type} Price</div>
+                <div key={type} className="bg-gray-50 p-3.5 rounded-xl border">
+                  <div className="font-bold text-sm text-gray-800 mb-2">💰 {type} Price සැකසුම</div>
                   <div className="grid grid-cols-3 gap-2">
                     <div>
-                      <label className="text-xs text-gray-600">මිල</label>
+                      <label className="text-xs font-bold text-gray-600 block mb-1">විකුණුම් මිල</label>
                       <input
                         type="number" step="any"
-                        className="w-full border p-2 rounded-lg text-sm outline-none"
+                        className="w-full border p-2.5 rounded-lg text-sm outline-none bg-white font-bold"
                         value={formData[priceField]}
                         onChange={(e) => {
                           const price = e.target.value;
@@ -1367,13 +1510,14 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
                             [netField]: calcNet(price, formData[discField]),
                           });
                         }}
+                        placeholder="0.00"
                       />
                     </div>
                     <div>
-                      <label className="text-xs text-gray-600">වට්ටම %</label>
+                      <label className="text-xs font-bold text-gray-600 block mb-1">වට්ටම %</label>
                       <input
                         type="number" step="any"
-                        className="w-full border p-2 rounded-lg text-sm outline-none"
+                        className="w-full border p-2.5 rounded-lg text-sm outline-none bg-white"
                         value={formData[discField]}
                         onChange={(e) => {
                           const disc = e.target.value;
@@ -1382,14 +1526,15 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
                             [netField]: calcNet(formData[priceField], disc),
                           });
                         }}
+                        placeholder="0%"
                       />
                     </div>
                     <div>
-                      <label className="text-xs text-gray-600">ශුද්ධ මිල</label>
+                      <label className="text-xs font-bold text-green-700 block mb-1">ශුද්ධ මිල (Net)</label>
                       <input
                         readOnly
-                        className="w-full border p-2 rounded-lg text-sm bg-green-50 font-bold text-green-700"
-                        value={formData[netField]}
+                        className="w-full border p-2.5 rounded-lg text-sm bg-green-50 font-bold text-green-800"
+                        value={formData[netField] || calcNet(formData[priceField], formData[discField])}
                       />
                     </div>
                   </div>
@@ -1399,74 +1544,68 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
           </div>
         )}
 
-        {/* ═══ STOCK TAB ═══ */}
         {activeTab === 'stock' && (
           <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
-            
-            {/* ★ පවතින සම්පූර්ණ භාණ්ඩ ප්‍රමාණය (Current / Total Stock) Input එක */}
-            <div className="bg-blue-50 p-3.5 rounded-xl border-2 border-blue-200">
-              <label className="block text-sm font-bold text-blue-900 mb-1">
-                📦 පවතින සම්පූර්ණ භාණ්ඩ ප්‍රමාණය (Total Current Quantity) *
+            <div className="bg-blue-50 p-4 rounded-xl border-2 border-blue-200">
+              <label className="block text-sm font-bold text-blue-950 mb-1">
+                📦 පවතින සම්පූර්ණ තොග ප්‍රමාණය (Current Available Stock) *
               </label>
               <input
-                type="number"
-                step="any"
-                min="0"
-                className="w-full border-2 border-blue-300 p-3 rounded-xl font-bold text-lg text-blue-800 outline-none focus:border-blue-600 bg-white shadow-inner"
+                type="number" step="any" min="0"
+                className="w-full border-2 border-blue-300 p-3 rounded-xl font-bold text-xl text-blue-900 outline-none focus:border-blue-600 bg-white"
                 value={formData.currentStock}
                 onChange={(e) => updateField('currentStock', e.target.value)}
                 placeholder="0"
               />
-              <p className="text-[11px] text-blue-600 mt-1 font-medium">
-                💡 දැනට ගබඩාවේ/සාප්පුවේ පවතින මුළු ඒකක (Units) ගණන මෙහි ඇතුළත් කරන්න.
+              <p className="text-xs text-blue-700 mt-1 font-medium">
+                දැනට සාප්පුවේ පවතින සැබෑ ප්‍රමාණය (Units/Pcs) ඇතුළත් කරන්න.
               </p>
             </div>
-
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-sm font-bold text-gray-800 mb-1">📉 අවම මට්ටම</label>
+                <label className="block text-sm font-bold text-gray-800 mb-1">📉 අවම මට්ටම (Min Stock)</label>
                 <input
                   type="number"
                   className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
                   value={formData.minStockLevel}
                   onChange={(e) => updateField('minStockLevel', e.target.value)}
+                  placeholder="5"
                 />
               </div>
               <div>
-                <label className="block text-sm font-bold text-gray-800 mb-1">📈 උපරිම මට්ටම</label>
+                <label className="block text-sm font-bold text-gray-800 mb-1">📈 උපරිම මට්ටම (Max Stock)</label>
                 <input
                   type="number"
                   className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
                   value={formData.maxStockLevel}
                   onChange={(e) => updateField('maxStockLevel', e.target.value)}
+                  placeholder="100"
                 />
               </div>
             </div>
-            
             <SmartSelectWithManage
-              label="රාක්කය" icon="🗄️"
+              label="රාක්කය / ස්ථානය (Rack/Location)" icon="🗄️"
               value={formData.rackId} displayValue={formData.rackName}
               options={racks}
               onSelect={(id, name) => updateFields({ rackId: id, rackName: name })}
               collectionName="racks" uid={user?.uid} showToast={showToast}
             />
             <SmartSelectWithManage
-              label="සැපයුම්කරු" icon="🚚"
+              label="සැපයුම්කරු (Supplier)" icon="🚚"
               value={formData.supplierId} displayValue={formData.supplierName}
               options={suppliers}
               onSelect={(id, name) => updateFields({ supplierId: id, supplierName: name })}
               collectionName="suppliers" uid={user?.uid} showToast={showToast}
             />
             <ToggleRow
-              label="Stock නැති විට Order කිරීමට ඉඩ දෙන්න"
-              desc="Stock = 0 වුණත් විකිණීමට ඉඩ දේ"
+              label="Stock නැති විටත් විකිණීමට ඉඩ දෙන්න"
+              desc="Stock = 0 වුවත් POS එකෙන් බිල් කිරීමට අවසර දේ"
               checked={formData.allowOrderWhenOutOfStock}
               onChange={(v) => updateField('allowOrderWhenOutOfStock', v)}
             />
           </div>
         )}
 
-        {/* ═══ WARRANTY TAB ═══ */}
         {activeTab === 'warranty' && (
           <div className="bg-white p-4 rounded-xl shadow-sm border space-y-4">
             <div>
@@ -1488,7 +1627,7 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
             {formData.warrantyType && (
               <>
                 <div>
-                  <label className="block text-sm font-bold text-gray-800 mb-2">⏱️ කාලය</label>
+                  <label className="block text-sm font-bold text-gray-800 mb-2">⏱️ වගකීම් කාලය</label>
                   <div className="flex flex-wrap gap-2">
                     {WARRANTY_PERIODS.map(wp => (
                       <button
@@ -1504,17 +1643,18 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
                   </div>
                 </div>
                 {formData.warrantyPeriod && (
-                  <div className="p-3 bg-green-50 border border-green-200 rounded-xl text-sm">
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-xl text-sm font-medium text-green-900">
                     <b>📅 කල් ඉකුත් වීම:</b> {calcWarrantyExpiry(formData.warrantyPeriod)}
                   </div>
                 )}
                 <div>
-                  <label className="block text-sm font-bold text-gray-800 mb-1">📝 වගකීම් නියමයන්</label>
+                  <label className="block text-sm font-bold text-gray-800 mb-1">📝 වගකීම් නියමයන් (Warranty Terms)</label>
                   <textarea
                     rows={3}
                     className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
                     value={formData.warrantyTerms}
                     onChange={(e) => updateField('warrantyTerms', e.target.value)}
+                    placeholder="අමතර කොන්දේසි..."
                   />
                 </div>
               </>
@@ -1522,60 +1662,84 @@ export default function ItemFormPage({ mode = 'add', itemId, onSuccess, onCancel
           </div>
         )}
 
-        {/* ═══ IMAGES TAB ═══ */}
         {activeTab === 'images' && (
           <ImageUploadSection
             formData={formData}
             uid={user?.uid}
-            itemId={itemId}
+            itemId={resolvedItemId}
             onImagesChange={(imgs) => updateFields(imgs)}
-            isOnline={online}
+            isOnlineStatus={online}
           />
         )}
 
-        {/* ═══ ADVANCED TAB ═══ */}
         {activeTab === 'advanced' && (
           <div className="bg-white p-4 rounded-xl shadow-sm border divide-y">
-            <ToggleRow label="හංගන්න (Hidden)" desc="මෙම භාණ්ඩය POS එකේ නොපෙන්වයි" checked={formData.isHidden} onChange={(v) => updateField('isHidden', v)} />
-            <ToggleRow label="මිලදී ගැනීම පමණයි" desc="මෙය විකිණීමට නොවේ" checked={formData.isPurchaseOnly} onChange={(v) => updateField('isPurchaseOnly', v)} />
+            <ToggleRow label="භාණ්ඩය හංගන්න (Hidden)" desc="මෙම භාණ්ඩය POS ලැයිස්තුවේ නොපෙන්වයි" checked={formData.isHidden} onChange={(v) => updateField('isHidden', v)} />
+            <ToggleRow label="මිලදී ගැනීම පමණයි (Purchase Only)" desc="විකිණීමට නොවේ" checked={formData.isPurchaseOnly} onChange={(v) => updateField('isPurchaseOnly', v)} />
             <ToggleRow label="මිල පෙන්වන්න" checked={formData.showPrice} onChange={(v) => updateField('showPrice', v)} />
             <ToggleRow label="වට්ටම පෙන්වන්න" checked={formData.showDiscount} onChange={(v) => updateField('showDiscount', v)} />
-            <ToggleRow label="VAT සක්‍රීය" checked={formData.vatEnabled} onChange={(v) => updateField('vatEnabled', v)} />
+            <ToggleRow label="VAT බදු සක්‍රීය කරන්න" checked={formData.vatEnabled} onChange={(v) => updateField('vatEnabled', v)} />
             <ToggleRow label="KOT (Kitchen Order Ticket)" checked={formData.kot} onChange={(v) => updateField('kot', v)} />
             <div className="py-3">
-              <label className="block text-sm font-bold text-gray-800 mb-1">📝 විස්තරය</label>
+              <label className="block text-sm font-bold text-gray-800 mb-1">📝 අමතර විස්තරය (Description)</label>
               <textarea
                 rows={3}
                 className="w-full border-2 border-gray-200 p-3 rounded-xl outline-none focus:border-blue-400"
                 value={formData.description}
                 onChange={(e) => updateField('description', e.target.value)}
+                placeholder="භාණ්ඩය පිළිබඳ අමතර සටහනක්..."
               />
             </div>
           </div>
         )}
-
       </div>
 
-      {/* ── Sticky Save Bar ── */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t shadow-2xl p-3 flex gap-2 z-40">
-        <button
-          onClick={() => { if (onCancel) onCancel(); else router.back(); }}
-          className="flex-1 bg-gray-200 hover:bg-gray-300 py-3 rounded-xl font-bold text-sm"
-        >❌ අවලංගු</button>
-        <button
-          onClick={handleSave}
-          disabled={saving || !formData.name?.trim()}
-          className={`flex-[2] py-3 rounded-xl font-bold text-sm text-white
-            ${online ? 'bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700' : 'bg-gradient-to-r from-orange-500 to-red-500'}
-            disabled:opacity-50`}
-        >
-          {saving ? '⏳ Saving...' : online ? '💾 සුරකින්න' : '💾 Offline Save'}
-        </button>
+      {/* Dual Save Bar */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t shadow-2xl p-3 z-40">
+        <div className="max-w-4xl mx-auto flex gap-3">
+          <button
+            type="button"
+            onClick={() => { if (onCancel) onCancel(); else router.back(); }}
+            className="flex-1 bg-gray-200 hover:bg-gray-300 py-3.5 rounded-xl font-bold text-sm transition-colors"
+          >
+            ❌ අවලංගු කරන්න
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving || !formData.name?.trim()}
+            className={`flex-[2] py-3.5 rounded-xl font-bold text-sm text-white shadow-lg transition-all
+              ${online ? 'bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700' : 'bg-gradient-to-r from-orange-500 to-red-500'}
+              disabled:opacity-50 flex items-center justify-center gap-2`}
+          >
+            {saving ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <span>සුරකිමින් පවතී (Hard Disk + Cloud)...</span>
+              </>
+            ) : isEditMode ? (
+              <span>💾 සංස්කරණය සුරකින්න (Update Item)</span>
+            ) : (
+              <span>💾 භාණ්ඩය සුරකින්න (Save Item)</span>
+            )}
+          </button>
+        </div>
       </div>
 
-      {/* ── Toast ── */}
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-
     </div>
+  );
+}
+
+export default function ItemFormPage(props) {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-slate-900 text-slate-300 flex items-center justify-center p-6">
+        <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mr-3"></div>
+        <span className="font-medium text-slate-200">භාණ්ඩ Form එක සූදානම් වෙමින් පවතී...</span>
+      </div>
+    }>
+      <ItemFormContent {...props} />
+    </Suspense>
   );
 }

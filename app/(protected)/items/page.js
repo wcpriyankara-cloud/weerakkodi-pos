@@ -1,6 +1,7 @@
+// C:\Users\chandana\StudioProjects\weerakkodi_pos_app\app\(protected)\items\page.js
 'use client';
 
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useUserAuth } from '@/context/UserContext';
 import { useLang } from '@/hooks/useLang';
@@ -12,14 +13,18 @@ import {
 
 // ★ OFFLINE IMPORTS
 import {
-  saveItemLocal, getItemsLocal, deleteItemLocal,
+  saveItemsBulkLocal, getItemsLocal, deleteItemLocal,
   addToSyncQueue, getSyncQueue,
-  cacheRefData, getCachedRefData,
+  cacheRefData,
 } from '@/lib/offlineDB';
-import { processSyncQueue, isOnline } from '@/lib/syncManager';
+import { localDb, ensureDbOpen } from '@/lib/localDb';
+import { processSyncQueue } from '@/lib/syncManager';
 
-import { getSafeImageUrl, DEFAULT_IMG, deleteImageFromStorage }
+import { getSafeImageUrl, DEFAULT_IMG as HELPER_DEFAULT_IMG, deleteImageFromStorage }
   from '@/helpers/imageHelpers';
+
+// ✅ Offline-Safe Default Image Fallback (Infinite Loop වැළැක්වීමට)
+const DEFAULT_IMG = HELPER_DEFAULT_IMG || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='18' x='3' y='3' rx='2' ry='2'/%3E%3Ccircle cx='9' cy='9' r='2'/%3E%3Cpath d='m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21'/%3E%3C/svg%3E";
 
 export default function ItemsPage() {
   const { user } = useUserAuth();
@@ -37,6 +42,7 @@ export default function ItemsPage() {
   const [syncCount, setSyncCount]     = useState(0);
   const [syncing, setSyncing]         = useState(false);
   const [syncMsg, setSyncMsg]         = useState('');
+  const isCachingRef                  = useRef(false);
 
   // ★ OFFLINE: Track online/offline events
   useEffect(() => {
@@ -55,7 +61,7 @@ export default function ItemsPage() {
     if (!user?.uid) return;
     try {
       const q = await getSyncQueue(user.uid);
-      setSyncCount(q.length);
+      setSyncCount(q?.length || 0);
     } catch {}
   }, [user?.uid]);
 
@@ -91,17 +97,34 @@ export default function ItemsPage() {
     doSync();
   }, [online, user?.uid, syncCount, syncing, refreshSyncCount]);
 
-  // ★ OFFLINE: Load from cache when offline
+  // ★ OFFLINE: Load from local Hard Disk cache (Dexie WeerakkodiPOS_DB & offlineDB)
   const loadFromCache = useCallback(async () => {
     if (!user?.uid) return;
     try {
-      const cached = await getItemsLocal(user.uid);
-      if (cached.length > 0) {
+      let cached = [];
+
+      // 1. Try Dexie WeerakkodiPOS_DB
+      try {
+        await ensureDbOpen();
+        if (localDb.isOpen() && localDb.items) {
+          cached = await localDb.items.where('uid').equals(user.uid).toArray();
+        }
+      } catch (e) {
+        console.warn('[ItemsPage] Dexie load warning:', e?.message);
+      }
+
+      // 2. Fallback to offlineDB
+      if (!cached || cached.length === 0) {
+        cached = await getItemsLocal(user.uid);
+      }
+
+      if (cached && cached.length > 0) {
         setItems(cached);
-        setIsLoading(false);
       }
     } catch (e) {
       console.error('Cache load error:', e);
+    } finally {
+      setIsLoading(false);
     }
   }, [user?.uid]);
 
@@ -109,37 +132,67 @@ export default function ItemsPage() {
   useEffect(() => {
     if (!user?.uid) return;
 
-    // ★ OFFLINE: If offline, load from cache only
-    if (!online) {
+    // Offline නම් Local Cache එකෙන් පමණක් Load කරයි
+    if (!online || !db) {
       loadFromCache();
       return;
     }
 
-    const q = query(
-      collection(db, 'items'),
-      where('uid', '==', user.uid)
-    );
-    const unsub = onSnapshot(q, async (snap) => {
-      const firestoreItems = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setItems(firestoreItems);
-      setIsLoading(false);
+    let unsub = () => {};
+    try {
+      const q = query(
+        collection(db, 'items'),
+        where('uid', '==', user.uid)
+      );
 
-      // ★ OFFLINE: Cache to IndexedDB for offline use
-      try {
-        for (const item of firestoreItems) {
-          await saveItemLocal(user.uid, item, item.id);
+      unsub = onSnapshot(q, async (snap) => {
+        const firestoreItems = snap.docs.map((d) => ({
+          id: d.id,
+          localId: d.id,
+          firestoreId: d.id,
+          uid: user.uid,
+          _offlineSaved: true,
+          ...d.data(),
+        }));
+
+        setItems(firestoreItems);
+        setIsLoading(false);
+
+        // ✅ SAFE BULK CACHE TO HARD DISK (භාණ්ඩ 1542 ම තනි Transaction එකකින් ලියයි - No LevelDB Freeze)
+        if (!isCachingRef.current && firestoreItems.length > 0) {
+          isCachingRef.current = true;
+          (async () => {
+            try {
+              // 1. Dexie WeerakkodiPOS_DB Bulk Put
+              await ensureDbOpen();
+              if (localDb.isOpen() && localDb.items) {
+                await localDb.items.bulkPut(firestoreItems);
+              }
+
+              // 2. offlineDB Single-Transaction Bulk Save
+              if (typeof saveItemsBulkLocal === 'function') {
+                await saveItemsBulkLocal(firestoreItems, user.uid);
+              }
+              await cacheRefData(user.uid, 'items', firestoreItems);
+            } catch (e) {
+              console.warn('[ItemsPage] Safe bulk cache notice:', e?.message);
+            } finally {
+              isCachingRef.current = false;
+            }
+          })();
         }
-        await cacheRefData(user.uid, 'items', firestoreItems);
-      } catch (e) {
-        console.error('Cache save error:', e);
-      }
-    }, (error) => {
-      // ★ OFFLINE: If Firestore fails (network), fall back to cache
-      console.warn('Firestore error, loading cache:', error);
+      }, (error) => {
+        console.warn('Firestore snapshot / Quota exceeded, falling back to PC disk:', error?.message);
+        loadFromCache();
+      });
+    } catch (err) {
+      console.warn('Firestore query error:', err?.message);
       loadFromCache();
-    });
+    }
 
-    return () => unsub();
+    return () => {
+      try { unsub(); } catch (e) {}
+    };
   }, [user?.uid, online, loadFromCache]);
 
   const filtered = useMemo(() => {
@@ -157,9 +210,9 @@ export default function ItemsPage() {
   // 📊 Calculate Total Items and Stock Totals
   const summaryStats = useMemo(() => {
     const totalTypes = items.length;
-    const totalStock = items.reduce((sum, item) => sum + (parseFloat(item.currentStock ?? item.stock ?? 0) || 0), 0);
+    const totalStock = items.reduce((sum, item) => sum + (parseFloat(item.currentStock ?? item.stock ?? item.quantity ?? 0) || 0), 0);
     const filteredTypes = filtered.length;
-    const filteredStock = filtered.reduce((sum, item) => sum + (parseFloat(item.currentStock ?? item.stock ?? 0) || 0), 0);
+    const filteredStock = filtered.reduce((sum, item) => sum + (parseFloat(item.currentStock ?? item.stock ?? item.quantity ?? 0) || 0), 0);
 
     return { totalTypes, totalStock, filteredTypes, filteredStock };
   }, [items, filtered]);
@@ -168,20 +221,24 @@ export default function ItemsPage() {
   const handleDelete = async (item) => {
     if (!confirm('මකා දැමීම තහවුරු කරන්න?')) return;
     try {
-      if (online && !item.id?.startsWith('local_')) {
-        // Online: Delete from Firestore + Storage (original behavior)
+      const itemId = item.id || item.localId || item.firestoreId;
+      if (online && db && !String(itemId).startsWith('local_')) {
         const paths = Array.isArray(item.imagePaths) ? item.imagePaths : [];
-        await Promise.all(paths.map((p) => deleteImageFromStorage(p)));
-        await deleteDoc(doc(db, 'items', item.id));
+        await Promise.all(paths.map((p) => deleteImageFromStorage(p))).catch(() => {});
+        await deleteDoc(doc(db, 'items', itemId)).catch(() => {});
       } else {
-        // ★ OFFLINE: Queue delete + remove from local cache
-        await addToSyncQueue(user.uid, 'delete', 'items', {}, item.firestoreId || item.id);
-        await deleteItemLocal(item.localId || item.id);
-        // Remove from UI immediately
-        setItems(prev => prev.filter(i =>
-          (i.localId || i.id) !== (item.localId || item.id)
-        ));
+        await addToSyncQueue(user.uid, 'delete', 'items', {}, item.firestoreId || itemId);
       }
+      
+      await deleteItemLocal(itemId);
+      try {
+        await ensureDbOpen();
+        if (localDb.isOpen() && localDb.items) {
+          await localDb.items.delete(itemId);
+        }
+      } catch (_) {}
+
+      setItems((prev) => prev.filter((i) => (i.localId || i.id) !== itemId));
       await refreshSyncCount();
     } catch (e) {
       alert('Error: ' + e.message);
@@ -248,8 +305,7 @@ export default function ItemsPage() {
         </div>
 
         <input
-          className="w-full p-3 border-2 rounded-xl
-                     focus:border-blue-400 outline-none"
+          className="w-full p-3 border-2 rounded-xl focus:border-blue-400 outline-none"
           placeholder="🔍 සොයන්න (නම, කේතය, බාර්කෝඩ්, සන්නාමය...)..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
@@ -276,23 +332,18 @@ export default function ItemsPage() {
 
         {/* ★ OFFLINE: Status banners */}
         {!online && (
-          <div className="mt-2 p-2 bg-orange-100 border border-orange-300
-                          rounded-lg text-orange-800 text-sm font-bold
-                          flex items-center gap-2">
+          <div className="mt-2 p-2 bg-orange-100 border border-orange-300 rounded-lg text-orange-800 text-sm font-bold flex items-center gap-2">
             <span>📡</span>
             <span>Offline Mode — 💾 Local දත්ත පෙන්වයි</span>
             {syncCount > 0 && (
-              <span className="bg-orange-500 text-white text-xs px-2 py-0.5
-                               rounded-full ml-auto">
+              <span className="bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full ml-auto">
                 ⏳ {syncCount} pending
               </span>
             )}
           </div>
         )}
         {syncMsg && (
-          <div className="mt-2 p-2 bg-blue-100 border border-blue-300
-                          rounded-lg text-blue-800 text-sm font-bold
-                          flex items-center gap-2">
+          <div className="mt-2 p-2 bg-blue-100 border border-blue-300 rounded-lg text-blue-800 text-sm font-bold flex items-center gap-2">
             <span>{syncMsg}</span>
           </div>
         )}
@@ -308,43 +359,38 @@ export default function ItemsPage() {
             භාණ්ඩ නොමැත
           </div>
         ) : filtered.map((item) => {
-          const price    = parseFloat(item.sellingPriceRetail || 0);
-          const stock    = parseFloat(item.currentStock ?? item.stock ?? 0);
-          const img      = getSafeImageUrl(item);
+          const price    = parseFloat(item.sellingPriceRetail || item.sellingPrice || 0);
+          const stock    = parseFloat(item.currentStock ?? item.stock ?? item.quantity ?? 0);
+          const img      = getSafeImageUrl ? getSafeImageUrl(item) : (item.imageUrl || item.image || DEFAULT_IMG);
           const imgCount = item.images?.length || (item.picture ? 1 : 0);
-          // ★ OFFLINE: Check if this is a local-only item
-          const isLocal  = item._offlineSaved || item.id?.startsWith('local_');
+          const isLocal  = item._offlineSaved || String(item.id || '').startsWith('local_');
+          const itemId   = item.firestoreId || item.id || item.localId;
 
           return (
             <div
               key={item.localId || item.id}
-              className={`bg-white p-4 rounded-xl shadow-sm flex gap-4
-                         border hover:shadow-md transition-shadow
-                         ${isLocal ? 'border-orange-300 bg-orange-50/30' : ''}`}
+              className={`bg-white p-4 rounded-xl shadow-sm flex gap-4 border hover:shadow-md transition-shadow ${isLocal ? 'border-orange-300 bg-orange-50/30' : ''}`}
             >
-              <div className="w-20 h-20 bg-gray-100 rounded-lg
-                              overflow-hidden border shrink-0 relative">
+              <div className="w-20 h-20 bg-gray-100 rounded-lg overflow-hidden border shrink-0 relative">
                 <img
                   src={img}
+                  loading="lazy"
                   className="w-full h-full object-cover"
                   onError={(e) => {
-                    e.target.onerror = null;
-                    e.target.src = DEFAULT_DEFAULT_IMG || DEFAULT_IMG;
+                    // 404 infinite network loop වැළැක්වීම
+                    e.currentTarget.onerror = null;
+                    e.currentTarget.src = DEFAULT_IMG;
                   }}
-                  alt={item.name}
+                  alt={item.name || 'Item'}
                 />
                 {imgCount > 1 && (
-                  <div className="absolute bottom-0 right-0 bg-black/60
-                                  text-white text-xs px-1.5 py-0.5
-                                  rounded-tl-lg font-bold">
+                  <div className="absolute bottom-0 right-0 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded-tl-lg font-bold">
                     +{imgCount - 1}
                   </div>
                 )}
                 {/* ★ OFFLINE: Local indicator */}
                 {isLocal && (
-                  <div className="absolute top-0 left-0 bg-orange-500
-                                  text-white text-[8px] px-1 py-0.5
-                                  rounded-br-lg font-bold">
+                  <div className="absolute top-0 left-0 bg-orange-500 text-white text-[8px] px-1 py-0.5 rounded-br-lg font-bold">
                     💾
                   </div>
                 )}
@@ -365,21 +411,18 @@ export default function ItemsPage() {
                 </div>
                 <div className="flex flex-wrap gap-1 mt-1.5">
                   {item.isHidden && (
-                    <span className="text-[10px] bg-red-100 text-red-700
-                                     px-1.5 py-0.5 rounded font-bold">
+                    <span className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold">
                       🚫 Hidden
                     </span>
                   )}
                   {item.warrantyPeriod && (
-                    <span className="text-[10px] bg-amber-100 text-amber-700
-                                     px-1.5 py-0.5 rounded font-bold">
+                    <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-bold">
                       🛡️ {item.warrantyPeriod}
                     </span>
                   )}
                   {/* ★ OFFLINE: Pending sync badge */}
                   {isLocal && (
-                    <span className="text-[10px] bg-orange-100 text-orange-700
-                                     px-1.5 py-0.5 rounded font-bold">
+                    <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-bold">
                       ⏳ Sync Pending
                     </span>
                   )}
@@ -393,19 +436,18 @@ export default function ItemsPage() {
               </div>
 
               <div className="flex flex-col gap-2 justify-center">
+                {/* ✅ Static Export & Electron Safe Edit Route */}
                 <button
-                  onClick={() => router.push(
-                    `/items/edit/${item.firestoreId || item.id}`
-                  )}
-                  className="bg-blue-100 text-blue-700 px-3 py-2
-                             rounded text-sm font-bold hover:bg-blue-200"
+                  onClick={() => router.push(`/items/edit?id=${itemId}`)}
+                  className="bg-blue-100 text-blue-700 px-3 py-2 rounded text-sm font-bold hover:bg-blue-200"
+                  title="Edit Item"
                 >
                   ✏️
                 </button>
                 <button
                   onClick={() => handleDelete(item)}
-                  className="bg-red-100 text-red-700 px-3 py-2
-                             rounded text-sm font-bold hover:bg-red-200"
+                  className="bg-red-100 text-red-700 px-3 py-2 rounded text-sm font-bold hover:bg-red-200"
+                  title="Delete Item"
                 >
                   🗑️
                 </button>

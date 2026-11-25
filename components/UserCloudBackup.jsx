@@ -1,7 +1,9 @@
+// components/UserCloudBackup.jsx
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import localDb, {
+  ensureDbOpen,
   setupBackupDirectory,
   manualBackupToDisk,
   listBackupFiles,
@@ -28,16 +30,23 @@ export default function UserCloudBackup({ user: propUser }) {
   const [restoring, setRestoring] = useState(false);
 
   const fileInputRef = useRef(null);
+  const isMountedRef = useRef(true);
   const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
 
   /* ── Auth State Listener ── */
   useEffect(() => {
+    isMountedRef.current = true;
     if (propUser) {
       setUser(propUser);
       return;
     }
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
-    return () => unsub();
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (isMountedRef.current) setUser(u);
+    });
+    return () => {
+      isMountedRef.current = false;
+      unsub();
+    };
   }, [propUser]);
 
   /* ── Load Saved Backup Path ── */
@@ -50,39 +59,55 @@ export default function UserCloudBackup({ user: propUser }) {
     }
   }, []);
 
-  /* ── 1. Load Local PC Hard Disc Stats ── */
+  /* ── 1. Load Local PC Hard Disk Stats (Crash-Proof with ensureDbOpen) ── */
   const loadStats = useCallback(async () => {
     try {
+      // 1. First ensure IndexedDB is opened safely
+      const database = await ensureDbOpen();
       const uid = user?.uid;
       const tables = ['invoices', 'customers', 'items', 'purchases', 'suppliers'];
       const s = { invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, _total: 0 };
 
       for (const t of tables) {
         try {
-          if (localDb && localDb[t]) {
+          if (database && database[t]) {
             if (uid) {
-              s[t] = await localDb[t].filter((item) => item.uid === uid || item.userId === uid).count();
+              // Try indexing by uid first for maximum speed and safety
+              try {
+                s[t] = await database[t].where('uid').equals(uid).count();
+              } catch {
+                s[t] = await database[t].filter((item) => item.uid === uid || item.userId === uid).count();
+              }
             } else {
-              s[t] = await localDb[t].count();
+              s[t] = await database[t].count();
             }
           } else {
             s[t] = 0;
           }
-        } catch {
+        } catch (tableErr) {
+          console.warn(`[UserCloudBackup] Count warning for table ${t}:`, tableErr?.message || tableErr);
           s[t] = 0;
         }
       }
-      s._total = Object.values(s).reduce((a, b) => a + b, 0);
-      setStats(s);
+
+      s._total = (s.invoices || 0) + (s.customers || 0) + (s.items || 0) + (s.purchases || 0) + (s.suppliers || 0);
+      if (isMountedRef.current) {
+        setStats(s);
+      }
     } catch (e) {
-      console.warn('Error loading local stats:', e);
+      console.warn('[UserCloudBackup] Error loading local stats:', e);
     }
   }, [user]);
 
-  /* ── 2. Load Real-time Cloud Counts (Firestore) ── */
+  /* ── 2. Load Real-time Cloud Counts (Firestore with Quota Safety) ── */
   const loadFirebaseCounts = useCallback(async () => {
     if (!user?.uid) return;
-    setLoadingCloud(true);
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return; // Offline නම් Cloud Queries ධාවනය නොකරයි
+    }
+
+    if (isMountedRef.current) setLoadingCloud(true);
+
     try {
       const counts = { invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, _total: 0 };
 
@@ -92,7 +117,9 @@ export default function UserCloudBackup({ user: propUser }) {
           const q = query(collection(db, col), where('uid', '==', user.uid));
           const snap = await getDocs(q);
           counts.invoices += snap.size;
-        } catch (e) {}
+        } catch (e) {
+          if (e?.code === 'resource-exhausted') break;
+        }
       }
 
       // Customers
@@ -124,11 +151,13 @@ export default function UserCloudBackup({ user: propUser }) {
       } catch (e) {}
 
       counts._total = counts.invoices + counts.customers + counts.items + counts.purchases + counts.suppliers;
-      setFirebaseCounts(counts);
+      if (isMountedRef.current) {
+        setFirebaseCounts(counts);
+      }
     } catch (e) {
-      console.error('Firebase count error:', e);
+      console.warn('[UserCloudBackup] Firebase count error:', e?.message || e);
     } finally {
-      setLoadingCloud(false);
+      if (isMountedRef.current) setLoadingCloud(false);
     }
   }, [user]);
 
@@ -166,7 +195,7 @@ export default function UserCloudBackup({ user: propUser }) {
       }
     } catch (err) {
       setStatus('error');
-      setStatusMessage('❌ Folder selection error: ' + err.message);
+      setStatusMessage('❌ Folder selection error: ' + (err?.message || err));
     }
   };
 
@@ -180,15 +209,14 @@ export default function UserCloudBackup({ user: propUser }) {
       if (fileName) {
         setStatus('success');
         setStatusMessage(`✅ Backup saved: ${fileName}`);
-        loadStats();
-        loadFirebaseCounts();
+        await loadStats();
       } else {
         setStatus('error');
         setStatusMessage('❌ Export failed');
       }
     } catch (error) {
       setStatus('error');
-      setStatusMessage('❌ Export failed: ' + error.message);
+      setStatusMessage('❌ Export failed: ' + (error?.message || error));
     }
   };
 
@@ -215,9 +243,9 @@ export default function UserCloudBackup({ user: propUser }) {
         window.location.reload();
       }
     } catch (e) {
-      alert('❌ Restore error: ' + e.message);
+      alert('❌ Restore error: ' + (e?.message || e));
     } finally {
-      setRestoring(false);
+      if (isMountedRef.current) setRestoring(false);
     }
   };
 
@@ -241,9 +269,9 @@ export default function UserCloudBackup({ user: propUser }) {
         alert('⚠️ Restore කිරීමට නොහැකි විය. File structure එක පරීක්ෂා කරන්න.');
       }
     } catch (err) {
-      alert('❌ File Restore error: ' + err.message);
+      alert('❌ File Restore error: ' + (err?.message || err));
     } finally {
-      setRestoring(false);
+      if (isMountedRef.current) setRestoring(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };

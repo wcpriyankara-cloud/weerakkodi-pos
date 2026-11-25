@@ -1,11 +1,11 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import {
   initializeFirestore,
+  getFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
   disableNetwork,
   enableNetwork,
-  terminate,
   setLogLevel,
 } from "firebase/firestore";
 import {
@@ -25,10 +25,11 @@ export const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "1:109876543210:web:abcdef1234567890",
 };
 
+// නිහඬ log මට්ටම තබා ගැනීම
 setLogLevel("silent");
 
 // =============================================
-// SUPPRESS ALL NETWORK ERROR NOISE
+// SUPPRESS ALL NETWORK ERROR NOISE (ELECTRON STABILITY)
 // =============================================
 if (typeof window !== "undefined") {
   const origErr = console.error;
@@ -55,7 +56,8 @@ if (typeof window !== "undefined") {
       msg.includes("firestore.googleapis.com") ||
       msg.includes("firebasestorage.googleapis.com") ||
       msg.includes("securetoken.googleapis.com") ||
-      msg.includes("identitytoolkit.googleapis.com")
+      msg.includes("identitytoolkit.googleapis.com") ||
+      msg.includes("Listen/channel")
     )
       return;
     return origErr.apply(console, args);
@@ -79,9 +81,9 @@ if (typeof window !== "undefined") {
     return origWarn.apply(console, args);
   };
 
-  // Suppress unhandled promise rejections from Firebase network failures
+  // Unhandled network rejections handle කිරීම
   window.addEventListener("unhandledrejection", (e) => {
-    const msg = String(e.reason);
+    const msg = String(e.reason || "");
     if (
       msg.includes("ERR_") ||
       msg.includes("offline") ||
@@ -89,7 +91,8 @@ if (typeof window !== "undefined") {
       msg.includes("Could not reach") ||
       msg.includes("Failed to get") ||
       msg.includes("firestore.googleapis.com") ||
-      msg.includes("Network error")
+      msg.includes("Network error") ||
+      msg.includes("Bad Request")
     ) {
       e.preventDefault();
     }
@@ -97,28 +100,36 @@ if (typeof window !== "undefined") {
 }
 
 // =============================================
-// FIREBASE INIT
+// FIREBASE APP & FIRESTORE INIT (SINGLETON SAFE)
 // =============================================
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-let db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-  useFetchStreams: false,
-  localCache: persistentLocalCache({
-    tabManager: persistentMultipleTabManager(),
-  }),
-});
+let firestoreInstance;
+try {
+  firestoreInstance = initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+    useFetchStreams: false,
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager(),
+    }),
+  });
+} catch (e) {
+  // Hot-reloading හෝ already initialized අවස්ථාවකදී
+  firestoreInstance = getFirestore(app);
+}
 
-const auth = getAuth(app);
+export const db = firestoreInstance;
+
+export const auth = getAuth(app);
 if (typeof window !== "undefined") {
   setPersistence(auth, indexedDBLocalPersistence).catch(() => {});
 }
 
-const storage = getStorage(app);
-const googleProvider = new GoogleAuthProvider();
+export const storage = getStorage(app);
+export const googleProvider = new GoogleAuthProvider();
 
 // =============================================
-// AUTO OFFLINE / ONLINE DETECTION
+// AUTO OFFLINE / ONLINE DETECTION (SAFE TOGGLE)
 // =============================================
 let _isOfflineMode = false;
 
@@ -127,17 +138,11 @@ export const isOffline = () => _isOfflineMode;
 export const goOfflineMode = async () => {
   if (_isOfflineMode) return;
   _isOfflineMode = true;
-  console.log("[Firebase] 🔌 Offline mode — local cache only");
+  console.log("[Firebase] 🔌 Offline mode — local cache active");
   try {
     await disableNetwork(db);
   } catch (e) {
-    // If disableNetwork fails, try terminate (nuclear option)
-    try {
-      await terminate(db);
-      console.log("[Firebase] 🔌 Firestore terminated (offline)");
-    } catch (e2) {
-      // ignore
-    }
+    // Already disabled නම් ignore කරන්න
   }
 };
 
@@ -148,19 +153,7 @@ export const goOnlineMode = async () => {
   try {
     await enableNetwork(db);
   } catch (e) {
-    // If enableNetwork fails (because we terminated), re-initialize
-    try {
-      db = initializeFirestore(app, {
-        experimentalForceLongPolling: true,
-        useFetchStreams: false,
-        localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager(),
-        }),
-      });
-      console.log("[Firebase] 🌐 Firestore re-initialized");
-    } catch (e2) {
-      // ignore
-    }
+    // Network reconnect failure ignore කරන්න
   }
 };
 
@@ -170,7 +163,7 @@ if (typeof window !== "undefined") {
     goOfflineMode();
   }
 
-  // Auto-detect network changes
+  // Network event listeners
   window.addEventListener("offline", () => {
     goOfflineMode();
   });
@@ -179,7 +172,7 @@ if (typeof window !== "undefined") {
     goOnlineMode();
   });
 
-  // Listen for Electron main process network status (more reliable than navigator.onLine)
+  // Electron IPC main process network listener
   if (window.electronAPI && window.electronAPI.onNetworkStatus) {
     window.electronAPI.onNetworkStatus((online) => {
       if (online) {
@@ -191,5 +184,4 @@ if (typeof window !== "undefined") {
   }
 }
 
-export { app, db, auth, storage, googleProvider };
 export default app;

@@ -1,29 +1,61 @@
 // C:\Users\chandana\StudioProjects\weerakkodi_pos_app\main.js
+// ✅ Weerakkodi POS - Ultra-Stable Electron Main Process
+// ✅ Safe from Quota DB Lock, Multi-Instance Conflicts, GPU Crashes & Route 404s
 
 const { app, BrowserWindow, ipcMain, dialog, shell, session, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
 
-// 1. Process Environment ආරක්ෂිත කිරීම සහ Security Warnings සංවර්ධන කාලයේදී සඟවා තැබීම
+// ══════════════════════════════════════════════════════
+// 1. Process Environment & Performance Optimization
+// ══════════════════════════════════════════════════════
 delete process.env.NODE_OPTIONS;
 process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true';
 
-// 2. Network / GPU Flags
+// ══════════════════════════════════════════════════════
+// 2. GPU & Chromium Cache Flags (Crash Prevention)
+// ══════════════════════════════════════════════════════
+app.commandLine.appendSwitch('disable-gpu');
+app.commandLine.appendSwitch('disable-gpu-cache');
+app.commandLine.appendSwitch('disk-cache-size', '0');
+app.commandLine.appendSwitch('disable-software-rasterizer');
+app.commandLine.appendSwitch('no-sandbox');
 app.commandLine.appendSwitch('disable-features', 'IsolateOrigins,site-per-process');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
-app.commandLine.appendSwitch('disable-gpu');
-app.commandLine.appendSwitch('disable-software-rasterizer');
-app.commandLine.appendSwitch('no-sandbox');
-
-let mainWindow;
-let localServer;
-let networkCheckInterval = null;
 
 // ══════════════════════════════════════════════════════
-// 🚫 OFFLINE REQUEST BLOCKING (Electron Network Level)
+// 3. Single Instance Lock (Prevents IndexedDB Locks)
+// ══════════════════════════════════════════════════════
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+  process.exit(0);
+}
+
+let mainWindow = null;
+let localServer = null;
+let networkCheckInterval = null;
+
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
+// Crash-proof process guards
+process.on('uncaughtException', (err) => {
+  console.warn('[Electron Uncaught Exception]:', err?.message || err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.warn('[Electron Unhandled Rejection]:', reason);
+});
+
+// ══════════════════════════════════════════════════════
+// 4. Offline Request Blocking (Firebase Network Guard)
 // ══════════════════════════════════════════════════════
 function blockOfflineRequests(win) {
   const firebaseUrls = [
@@ -32,16 +64,19 @@ function blockOfflineRequests(win) {
     '*://securetoken.googleapis.com/*',
     '*://identitytoolkit.googleapis.com/*',
     '*://www.googleapis.com/*',
-    '*://www.google.com/images/*',
     '*://*.googleapis.com/*',
   ];
 
   win.webContents.session.webRequest.onBeforeRequest(
     { urls: firebaseUrls },
     (details, callback) => {
-      if (!net.isOnline()) {
-        callback({ cancel: true });
-      } else {
+      try {
+        if (!net.isOnline()) {
+          callback({ cancel: true });
+        } else {
+          callback({ cancel: false });
+        }
+      } catch (e) {
         callback({ cancel: false });
       }
     }
@@ -57,55 +92,83 @@ function blockOfflineRequests(win) {
 }
 
 // ══════════════════════════════════════════════════════
-// 🌐 Static Local HTTP Server for Next.js Export (out/)
+// 5. Robust Static Local HTTP Server for Next.js (out/)
 // ══════════════════════════════════════════════════════
 function startLocalServer(dir, port) {
   return new Promise((resolve, reject) => {
     const mimeTypes = {
-      '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
-      '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
-      '.gif': 'image/gif', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
-      '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
-      '.webp': 'image/webp', '.map': 'application/json'
+      '.html': 'text/html; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon',
+      '.woff': 'font/woff',
+      '.woff2': 'font/woff2',
+      '.ttf': 'font/ttf',
+      '.webp': 'image/webp',
+      '.map': 'application/json'
     };
 
     localServer = http.createServer((req, res) => {
-      let urlPath = req.url.split('?')[0];
-      let filePath = path.join(dir, urlPath === '/' ? 'index.html' : urlPath);
+      try {
+        let urlPath = req.url.split('?')[0];
+        let filePath = path.join(dir, urlPath === '/' ? 'index.html' : urlPath);
 
-      if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-        if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
-          filePath = path.join(filePath, 'index.html');
-        }
+        // Smart route resolution for Next.js static exports
         if (!fs.existsSync(filePath)) {
-          filePath = path.join(dir, 'index.html');
+          if (fs.existsSync(filePath + '.html')) {
+            filePath = filePath + '.html';
+          } else if (fs.existsSync(path.join(filePath, 'index.html'))) {
+            filePath = path.join(filePath, 'index.html');
+          } else {
+            // SPA Fallback to root index.html
+            filePath = path.join(dir, 'index.html');
+          }
+        } else if (fs.statSync(filePath).isDirectory()) {
+          filePath = path.join(filePath, 'index.html');
+          if (!fs.existsSync(filePath)) {
+            filePath = path.join(dir, 'index.html');
+          }
         }
-      }
 
-      const ext = path.extname(filePath).toLowerCase();
-      const contentType = mimeTypes[ext] || 'application/octet-stream';
-      fs.readFile(filePath, (err, data) => {
-        if (err) {
-          fs.readFile(path.join(dir, 'index.html'), (err2, data2) => {
-            if (err2) { res.writeHead(404); res.end('Not found'); return; }
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(data2);
-          });
-          return;
-        }
-        res.writeHead(200, { 'Content-Type': contentType });
-        res.end(data);
-      });
+        const ext = path.extname(filePath).toLowerCase();
+        const contentType = mimeTypes[ext] || 'application/octet-stream';
+
+        fs.readFile(filePath, (err, data) => {
+          if (err) {
+            fs.readFile(path.join(dir, 'index.html'), (err2, data2) => {
+              if (err2) {
+                res.writeHead(404, { 'Content-Type': 'text/plain' });
+                res.end('404: Not Found');
+                return;
+              }
+              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+              res.end(data2);
+            });
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': contentType });
+          res.end(data);
+        });
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('500: Internal Server Error');
+      }
     });
 
     localServer.listen(port, '127.0.0.1', () => {
-      console.log('[Server] Running on http://127.0.0.1:' + port);
+      console.log('[Server] Local static server active on http://127.0.0.1:' + port);
       resolve(port);
     });
 
     localServer.on('error', (e) => {
       if (e.code === 'EADDRINUSE') {
-        console.log('[Server] Port ' + port + ' in use, reusing');
+        console.log('[Server] Port ' + port + ' in use, reusing instance');
         resolve(port);
       } else {
         reject(e);
@@ -114,17 +177,27 @@ function startLocalServer(dir, port) {
   });
 }
 
-// === Backup Directory Helpers ===
+// ══════════════════════════════════════════════════════
+// 6. User-Friendly Backup Directory Resolvers
+// ══════════════════════════════════════════════════════
 function getBackupDirectory() {
-  const dDrivePath = 'D:\\Weerakkodi_POS_Backups';
+  // 1st Preference: D:\Weerakkodi_POS_Backups
   try {
     if (fs.existsSync('D:\\')) {
+      const dDrivePath = 'D:\\Weerakkodi_POS_Backups';
       if (!fs.existsSync(dDrivePath)) fs.mkdirSync(dDrivePath, { recursive: true });
       return dDrivePath;
     }
-  } catch (e) {
-    console.warn('D: drive not accessible:', e.message);
-  }
+  } catch (e) {}
+
+  // 2nd Preference: C:\Weerakkodi_POS_Backups (Easy for store owners to access)
+  try {
+    const cDrivePath = 'C:\\Weerakkodi_POS_Backups';
+    if (!fs.existsSync(cDrivePath)) fs.mkdirSync(cDrivePath, { recursive: true });
+    return cDrivePath;
+  } catch (e) {}
+
+  // 3rd Preference: AppData directory
   const fallbackPath = path.join(app.getPath('userData'), 'Weerakkodi_Backups');
   if (!fs.existsSync(fallbackPath)) fs.mkdirSync(fallbackPath, { recursive: true });
   return fallbackPath;
@@ -142,6 +215,9 @@ function resolveBackupDir(customPath) {
   return getBackupDirectory();
 }
 
+// ══════════════════════════════════════════════════════
+// 7. Window Creation & Configuration
+// ══════════════════════════════════════════════════════
 function createWindow(port) {
   mainWindow = new BrowserWindow({
     width: 1366,
@@ -151,8 +227,9 @@ function createWindow(port) {
     title: 'Weerakkodi POS System',
     backgroundColor: '#0f172a',
     show: false,
+    autoHideMenuBar: true, // Clean POS UI
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'), // Root preload.js එකට සම්බන්ධ කරයි
+      preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
       webSecurity: false,
@@ -188,7 +265,7 @@ function createWindow(port) {
         }
       });
     };
-    setTimeout(() => tryLoad(3), 1500);
+    setTimeout(() => tryLoad(3), 1000);
   }
 
   mainWindow.once('ready-to-show', () => {
@@ -203,7 +280,7 @@ function createWindow(port) {
 }
 
 // ══════════════════════════════════════════════════════
-// App Lifecycle
+// 8. App Lifecycle Handlers
 // ══════════════════════════════════════════════════════
 app.whenReady().then(async () => {
   try {
@@ -227,7 +304,9 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (localServer) localServer.close();
+  if (localServer) {
+    try { localServer.close(); } catch(e) {}
+  }
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -236,9 +315,10 @@ app.on('activate', () => {
 });
 
 // ══════════════════════════════════════════════════════
-// IPC HANDLERS - Offline Local Hard Disk Backups & Sync
+// 9. IPC HANDLERS - Hard Disk Backups, Printing & System
 // ══════════════════════════════════════════════════════
 
+// Save general JSON data to local PC disk
 ipcMain.handle('save-local-data', async (_event, { key, data, customPath }) => {
   try {
     const backupDir = resolveBackupDir(customPath);
@@ -248,9 +328,12 @@ ipcMain.handle('save-local-data', async (_event, { key, data, customPath }) => {
     const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
     await fs.promises.writeFile(filePath, content, 'utf-8');
     return { success: true, path: filePath };
-  } catch (err) { return { success: false, error: err.message }; }
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
+// Save single invoice backup JSON
 ipcMain.handle('save-backup-invoice', async (_event, invoiceData) => {
   try {
     const backupDir = getBackupDirectory();
@@ -260,9 +343,12 @@ ipcMain.handle('save-backup-invoice', async (_event, invoiceData) => {
     const filePath = path.join(invoicesDir, fileName);
     await fs.promises.writeFile(filePath, JSON.stringify(invoiceData, null, 2), 'utf-8');
     return { success: true, path: filePath };
-  } catch (err) { return { success: false, error: err.message }; }
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
+// Load JSON data from local PC disk
 ipcMain.handle('load-local-data', async (_event, { key, customPath }) => {
   try {
     const backupDir = resolveBackupDir(customPath);
@@ -270,17 +356,23 @@ ipcMain.handle('load-local-data', async (_event, { key, customPath }) => {
     const filePath = path.join(backupDir, fileName);
     if (!fs.existsSync(filePath)) return null;
     return await fs.promises.readFile(filePath, 'utf-8');
-  } catch (err) { return null; }
+  } catch (err) {
+    return null;
+  }
 });
 
+// Open backup folder in Windows File Explorer
 ipcMain.handle('open-backup-folder', async (_event, args) => {
   try {
     const backupDir = resolveBackupDir(args?.customPath);
     await shell.openPath(backupDir);
     return { success: true, path: backupDir };
-  } catch (err) { return { success: false, error: err.message }; }
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
+// Select custom folder dialog
 ipcMain.handle('select-backup-folder', async () => {
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -290,9 +382,44 @@ ipcMain.handle('select-backup-folder', async () => {
     });
     if (result.canceled || result.filePaths.length === 0) return { success: false, canceled: true };
     return { success: true, path: result.filePaths[0] };
-  } catch (err) { return { success: false, error: err.message }; }
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
+// 🖨️ POS Thermal Printer Handlers
+ipcMain.handle('get-printers', async () => {
+  try {
+    if (!mainWindow) return [];
+    return await mainWindow.webContents.getPrintersAsync();
+  } catch (e) {
+    return [];
+  }
+});
+
+ipcMain.handle('print-silent', async (_event, { printerName }) => {
+  try {
+    if (!mainWindow) return { success: false, error: 'No active window' };
+    const printOptions = {
+      silent: true,
+      printBackground: true,
+      deviceName: printerName || ''
+    };
+    return new Promise((resolve) => {
+      mainWindow.webContents.print(printOptions, (success, failureReason) => {
+        if (!success) {
+          resolve({ success: false, error: failureReason });
+        } else {
+          resolve({ success: true });
+        }
+      });
+    });
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// System Info
 ipcMain.handle('get-backup-path', async () => getBackupDirectory());
 ipcMain.handle('is-online', () => net.isOnline());
 ipcMain.handle('get-app-version', () => app.getVersion());
