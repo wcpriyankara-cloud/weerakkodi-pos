@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { db, auth } from '@/lib/firebase';
+import { db, auth, getDb, app } from '@/lib/firebase';
 import {
   collection,
   doc,
@@ -11,10 +11,27 @@ import {
   limit,
   startAfter,
   onSnapshot,
+  getFirestore
 } from 'firebase/firestore';
-import localDb, { ensureDbOpen as libEnsureDbOpen } from '@/lib/localDb';
+import localDb from '@/lib/localDb';
 import { onAuthStateChanged } from 'firebase/auth';
 
+// ══════════════════════════════════════════════════════════════
+// SAFE FIRESTORE DB RESOLVER (PREVENTS ARGUMENT ERRORS)
+// ══════════════════════════════════════════════════════════════
+const getSafeFirestoreDb = () => {
+  try {
+    if (db && typeof db === 'object' && typeof db.type === 'string') return db;
+    const directDb = getDb();
+    if (directDb && typeof directDb === 'object') return directDb;
+    if (app) return getFirestore(app);
+  } catch (e) {}
+  return db || null;
+};
+
+// ══════════════════════════════════════════════════════════════
+// DATA SANITIZER FOR FIRESTORE
+// ══════════════════════════════════════════════════════════════
 const sanitizeForFirestore = (val) => {
   if (val === undefined || typeof val === 'function' || typeof val === 'symbol') {
     return null;
@@ -28,7 +45,6 @@ const sanitizeForFirestore = (val) => {
   if (val instanceof Date) {
     return val.toISOString();
   }
-  // Preserve Firestore FieldValue objects safely
   if (val && typeof val === 'object' && (val.constructor?.name === 'FieldValue' || val._delegate)) {
     return val;
   }
@@ -39,6 +55,7 @@ const sanitizeForFirestore = (val) => {
   }
   const cleaned = {};
   for (const [key, value] of Object.entries(val)) {
+    if (key === '_synced' || key === 'synced' || key === '_localSaved') continue;
     if (value !== undefined && typeof value !== 'function' && typeof value !== 'symbol') {
       const sanitizedVal = sanitizeForFirestore(value);
       if (sanitizedVal !== null && sanitizedVal !== undefined) {
@@ -50,7 +67,7 @@ const sanitizeForFirestore = (val) => {
 };
 
 /* ═══════════════════════════════════════
-   SAFE DEXIE DATABASE HELPERS (CRASH-PROOF)
+   SAFE DEXIE DATABASE HELPERS
 ═══════════════════════════════════════ */
 const ensureDbOpen = async () => {
   if (!localDb) return false;
@@ -60,15 +77,12 @@ const ensureDbOpen = async () => {
     }
     return true;
   } catch (err) {
-    // Retry opening if DatabaseClosedError / UnknownError
     try {
       if (typeof localDb.open === 'function') {
         await localDb.open();
         return true;
       }
-    } catch (retryErr) {
-      // Catch silently to prevent unhandled rejection spam
-    }
+    } catch (retryErr) {}
     return false;
   }
 };
@@ -80,15 +94,6 @@ const getSafeDocs = async (table) => {
     if (!isOpen) return [];
     return await table.toArray();
   } catch (err) {
-    // Retry once silently
-    try {
-      if (localDb && typeof localDb.open === 'function') {
-        await localDb.open();
-        return await table.toArray();
-      }
-    } catch (e) {
-      // Quiet fallback
-    }
     return [];
   }
 };
@@ -99,16 +104,7 @@ const safePut = async (table, record) => {
     const isOpen = await ensureDbOpen();
     if (!isOpen) return;
     await table.put(record);
-  } catch (err) {
-    try {
-      if (localDb && typeof localDb.open === 'function') {
-        await localDb.open();
-        await table.put(record);
-      }
-    } catch (e) {
-      console.warn('[Sync] safePut silent recovery failed');
-    }
-  }
+  } catch (err) {}
 };
 
 const safeBulkPut = async (table, records) => {
@@ -117,16 +113,7 @@ const safeBulkPut = async (table, records) => {
     const isOpen = await ensureDbOpen();
     if (!isOpen) return;
     await table.bulkPut(records);
-  } catch (err) {
-    try {
-      if (localDb && typeof localDb.open === 'function') {
-        await localDb.open();
-        await table.bulkPut(records);
-      }
-    } catch (e) {
-      console.warn('[Sync] safeBulkPut silent recovery failed');
-    }
-  }
+  } catch (err) {}
 };
 
 export default function SyncButton() {
@@ -137,10 +124,11 @@ export default function SyncButton() {
   const [statusMsg, setStatusMsg]       = useState('');
   const [showMenu, setShowMenu]         = useState(false);
 
-  // Hidden file input ref (fallback for browsers without showOpenFilePicker)
   const fileInputRef = useRef(null);
+  const isSyncingRef = useRef(false);
+  const quotaCooldownRef = useRef(0);
 
-  // Prevent multiple buttons on screen
+  // Prevent multiple floating buttons
   useEffect(() => {
     if (typeof window !== 'undefined') {
       if (window.__SYNC_BTN_MOUNTED__) {
@@ -156,12 +144,12 @@ export default function SyncButton() {
     };
   }, [isDuplicate]);
 
-  // Dragging Position
-  const [position, setPosition]         = useState({ x: null, y: null });
-  const [isDragging, setIsDragging]     = useState(false);
-  const dragStartRef                    = useRef({ x: 0, y: 0 });
-  const initialPosRef                   = useRef({ x: 0, y: 0 });
-  const hasDraggedRef                   = useRef(false);
+  // Position Dragging
+  const [position, setPosition]       = useState({ x: null, y: null });
+  const [isDragging, setIsDragging]   = useState(false);
+  const dragStartRef                  = useRef({ x: 0, y: 0 });
+  const initialPosRef                 = useRef({ x: 0, y: 0 });
+  const hasDraggedRef                 = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined' || isDuplicate) return;
@@ -183,26 +171,10 @@ export default function SyncButton() {
 
   useEffect(() => {
     if (isDuplicate) return;
-    const handleResize = () => {
-      setPosition((prev) => {
-        if (prev.x === null || prev.y === null) return prev;
-        return {
-          x: Math.max(10, Math.min(window.innerWidth - 220, prev.x)),
-          y: Math.max(10, Math.min(window.innerHeight - 80, prev.y)),
-        };
-      });
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [isDuplicate]);
-
-  useEffect(() => {
-    if (isDuplicate) return;
     const unsub = onAuthStateChanged(auth, (u) => setFbUser(u));
     return () => unsub();
   }, [isDuplicate]);
 
-  // Helper check for unsynced item
   const isItemUnsynced = (item) => {
     if (!item) return false;
     if (item._synced === false || item.synced === false || item.synced === 0 || item._localSaved === true) {
@@ -211,38 +183,57 @@ export default function SyncButton() {
     return !item.synced && item._synced !== true;
   };
 
-  // ══ 1. Auto-Upload Local -> Cloud (All 5 Core Collections) ══
+  // ══════════════════════════════════════════════════════════════
+  // 1. AUTO-UPLOAD LOCAL -> CLOUD (ALL CORE POS TABLES)
+  // ══════════════════════════════════════════════════════════════
   const autoUploadLocalToCloud = useCallback(async () => {
-    const activeUser = fbUser || auth.currentUser;
-    if (!activeUser || !navigator.onLine || !localDb) return;
+    if (isSyncingRef.current) return;
+    if (Date.now() < quotaCooldownRef.current) return;
+    if (!navigator.onLine || !localDb) return;
+
+    const firestore = getSafeFirestoreDb();
+    if (!firestore) return;
 
     const dbOpen = await ensureDbOpen();
     if (!dbOpen) return;
 
+    isSyncingRef.current = true;
     try {
       const syncTargets = [
-        { table: localDb.invoices, col: 'invoices', idKey: 'id' },
-        { table: localDb.customers, col: 'customers', idKey: 'id' },
-        { table: localDb.items, col: 'items', idKey: 'id' },
-        { table: localDb.purchases, col: 'purchases', idKey: 'id' },
-        { table: localDb.suppliers, col: 'suppliers', idKey: 'id' },
+        { table: localDb.items,            col: 'items',            idKey: 'id' },
+        { table: localDb.customers,        col: 'customers',        idKey: 'id' },
+        { table: localDb.customerLoans,    col: 'customerLoans',    idKey: 'id' },
+        { table: localDb.invoices,         col: 'invoices',         idKey: 'id' },
+        { table: localDb.purchases,        col: 'purchases',        idKey: 'id' },
+        { table: localDb['purchase-returns'], col: 'purchase-returns', idKey: 'id' },
+        { table: localDb.suppliers,        col: 'suppliers',        idKey: 'id' },
+        { table: localDb.payments,         col: 'payments',         idKey: 'id' },
+        { table: localDb.cashTransactions, col: 'cashTransactions', idKey: 'id' },
+        { table: localDb.bankAccounts,     col: 'bankAccounts',     idKey: 'id' },
       ];
 
+      const activeUid = fbUser?.uid || auth?.currentUser?.uid || 'system';
       const nowIso = new Date().toISOString();
+      let totalUnsynced = 0;
 
       for (const target of syncTargets) {
         if (!target.table) continue;
         const allLocal = await getSafeDocs(target.table);
         const unsynced = allLocal.filter(isItemUnsynced);
+        totalUnsynced += unsynced.length;
 
-        for (const item of unsynced) {
+        // Process in small batches of 10 to avoid overwhelming network
+        const batch = unsynced.slice(0, 15);
+        for (const item of batch) {
           try {
-            const rawId = item[target.idKey] || item.docId || Date.now();
+            const rawId = item[target.idKey] || item.docId || item.localId || item.firestoreId;
+            if (!rawId) continue;
             const docId = String(rawId).replace(/[/\\#?]/g, '_');
 
             const syncedRecord = {
               ...item,
               id: docId,
+              uid: item.uid || activeUid,
               synced: 1,
               _synced: true,
               _localSaved: false,
@@ -251,44 +242,45 @@ export default function SyncButton() {
             };
 
             const cleanDoc = sanitizeForFirestore(syncedRecord);
+            const docRef = doc(firestore, target.col, docId);
 
-            await setDoc(doc(db, target.col, docId), cleanDoc, { merge: true });
+            await setDoc(docRef, cleanDoc, { merge: true });
             await safePut(target.table, syncedRecord);
+            totalUnsynced = Math.max(0, totalUnsynced - 1);
           } catch (e) {
-            console.warn(`[Auto-Upload] Error uploading ${target.col} ${item.id}:`, e?.message || e);
+            if (e?.code === 'resource-exhausted') {
+              quotaCooldownRef.current = Date.now() + 60000;
+              break;
+            }
           }
         }
       }
 
-      // Compute total remaining pending records
-      let remaining = 0;
-      for (const target of syncTargets) {
-        if (target.table) {
-          const allDocs = await getSafeDocs(target.table);
-          remaining += allDocs.filter(isItemUnsynced).length;
-        }
-      }
-      setPendingCount(remaining);
+      setPendingCount(totalUnsynced);
     } catch (e) {
-      if (e?.name !== 'AbortError' && !e?.message?.includes('aborted')) {
-        console.warn('[Auto-Upload] Global error:', e?.message || e);
-      }
+      // Non-blocking catch
+    } finally {
+      isSyncingRef.current = false;
     }
   }, [fbUser]);
 
-  // ══ 2. Real-time Cloud -> Local Listeners ══
+  // ══════════════════════════════════════════════════════════════
+  // 2. REAL-TIME CLOUD -> LOCAL LISTENERS (SAFE & RESILIENT)
+  // ══════════════════════════════════════════════════════════════
   useEffect(() => {
     if (isDuplicate || !navigator.onLine) return;
-    const activeUser = fbUser || auth.currentUser;
-    if (!activeUser) return;
+
+    const firestore = getSafeFirestoreDb();
+    if (!firestore) return;
 
     const unsubs = [];
 
     const setupListener = (colName, localTable, customMapping) => {
       if (!localTable) return;
       try {
+        const colRef = collection(firestore, colName);
         const unsub = onSnapshot(
-          collection(db, colName),
+          colRef,
           (snapshot) => {
             const docsToPut = [];
             snapshot.docChanges().forEach((change) => {
@@ -311,23 +303,14 @@ export default function SyncButton() {
               safeBulkPut(localTable, docsToPut);
             }
           },
-          (err) => console.warn(`[Snapshot] ${colName} error:`, err?.message || err)
+          (err) => {
+            // Quiet fallback for quota/permission
+          }
         );
         unsubs.push(unsub);
-      } catch (err) {
-        console.warn(`[Snapshot Setup] ${colName} error:`, err?.message || err);
-      }
+      } catch (err) {}
     };
 
-    setupListener('invoices', localDb.invoices, (id, data) => ({
-      id,
-      docId: id,
-      ...data,
-      synced: 1,
-      _synced: true,
-      _localSaved: false,
-    }));
-    setupListener('customers', localDb.customers);
     setupListener('items', localDb.items, (id, data) => ({
       id,
       docId: id,
@@ -337,25 +320,30 @@ export default function SyncButton() {
       _synced: true,
       _localSaved: false,
     }));
+    setupListener('customers', localDb.customers);
+    setupListener('customerLoans', localDb.customerLoans);
+    setupListener('invoices', localDb.invoices);
     setupListener('purchases', localDb.purchases);
     setupListener('suppliers', localDb.suppliers);
 
     return () => {
       unsubs.forEach((unsub) => unsub && unsub());
     };
-  }, [fbUser, isDuplicate]);
+  }, [isDuplicate]);
 
-  // ══ 3. Continuous Background Auto-Sync Loop (Every 8 seconds) ══
+  // ══════════════════════════════════════════════════════════════
+  // 3. CONTINUOUS BACKGROUND AUTO-SYNC LOOP (EVERY 10 SECONDS)
+  // ══════════════════════════════════════════════════════════════
   useEffect(() => {
     if (isDuplicate) return;
 
     autoUploadLocalToCloud();
     const interval = setInterval(() => {
       autoUploadLocalToCloud();
-    }, 8000);
+    }, 10000);
 
     const handleOnline = () => {
-      setStatusMsg('🌐 Online! Auto-Syncing missing records...');
+      setStatusMsg('🌐 Online! Auto-Syncing...');
       autoUploadLocalToCloud();
       setTimeout(() => setStatusMsg(''), 4000);
     };
@@ -368,7 +356,7 @@ export default function SyncButton() {
   }, [autoUploadLocalToCloud, isDuplicate]);
 
   // ══════════════════════════════════════════════════════════════
-  // Shared JSON File Save Helper (File Picker + Fallback)
+  // BACKUP & RESTORE UTILITIES
   // ══════════════════════════════════════════════════════════════
   const saveJsonFileWithPicker = async (fileName, jsonContent) => {
     if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
@@ -382,7 +370,7 @@ export default function SyncButton() {
         await writable.close();
         return true;
       } catch (saveErr) {
-        if (saveErr?.name === 'AbortError') return false; // user cancelled
+        if (saveErr?.name === 'AbortError') return false;
       }
     }
     const blob = new Blob([jsonContent], { type: 'application/json' });
@@ -397,9 +385,6 @@ export default function SyncButton() {
     return true;
   };
 
-  // ══════════════════════════════════════════════════════════════
-  // Export LOCAL Dexie Data → PC Hard Disc (Fast / Offline)
-  // ══════════════════════════════════════════════════════════════
   const handleExportLocalToFile = async () => {
     if (!localDb) {
       alert('Local Database සොයාගත නොහැක.');
@@ -410,11 +395,14 @@ export default function SyncButton() {
     try {
       const localExport = {};
       const tables = [
-        { name: 'invoices', table: localDb.invoices, label: 'Invoices' },
-        { name: 'customers', table: localDb.customers, label: 'Customers' },
         { name: 'items', table: localDb.items, label: 'Items' },
+        { name: 'customers', table: localDb.customers, label: 'Customers' },
+        { name: 'customerLoans', table: localDb.customerLoans, label: 'Loans' },
+        { name: 'invoices', table: localDb.invoices, label: 'Invoices' },
         { name: 'purchases', table: localDb.purchases, label: 'Purchases' },
         { name: 'suppliers', table: localDb.suppliers, label: 'Suppliers' },
+        { name: 'payments', table: localDb.payments, label: 'Payments' },
+        { name: 'cashTransactions', table: localDb.cashTransactions, label: 'Cash Transactions' },
       ];
 
       let totalRecords = 0;
@@ -431,11 +419,11 @@ export default function SyncButton() {
         return;
       }
 
-      const fileName = `Weerakkodi_POS_LocalBackup_${new Date().toISOString().slice(0, 10)}_${Date.now().toString(36)}.json`;
+      const fileName = `Weerakkodi_POS_Backup_${new Date().toISOString().slice(0, 10)}_${Date.now().toString(36)}.json`;
       const saved = await saveJsonFileWithPicker(fileName, JSON.stringify(localExport, null, 2));
 
       if (saved) {
-        setStatusMsg(`🎉 Local Records ${totalRecords}ක් File එකට Save විය!`);
+        setStatusMsg(`🎉 Records ${totalRecords}ක් File එකට Save විය!`);
         alert(`🎉 Local Backup සාර්ථකයි!\n\n📦 මුළු Records: ${totalRecords}\n📄 File: ${fileName}`);
       }
     } catch (e) {
@@ -446,9 +434,6 @@ export default function SyncButton() {
     }
   };
 
-  // ══════════════════════════════════════════════════════════════
-  // RESTORE — JSON File එකක් තෝරා Local DB එකට ඉක්මනින් Load
-  // ══════════════════════════════════════════════════════════════
   const processRestoreFile = async (file) => {
     if (!file || !localDb) return;
 
@@ -466,18 +451,15 @@ export default function SyncButton() {
       }
 
       const restoreMap = [
-        { key: 'invoices', table: localDb.invoices, label: 'Invoices' },
-        { key: 'customers', table: localDb.customers, label: 'Customers' },
         { key: 'items', table: localDb.items, label: 'Items' },
+        { key: 'customers', table: localDb.customers, label: 'Customers' },
+        { key: 'customerLoans', table: localDb.customerLoans, label: 'Loans' },
+        { key: 'invoices', table: localDb.invoices, label: 'Invoices' },
         { key: 'purchases', table: localDb.purchases, label: 'Purchases' },
         { key: 'suppliers', table: localDb.suppliers, label: 'Suppliers' },
+        { key: 'payments', table: localDb.payments, label: 'Payments' },
+        { key: 'cashTransactions', table: localDb.cashTransactions, label: 'Cash Transactions' },
       ];
-
-      const hasAnyValidKey = restoreMap.some((r) => Array.isArray(parsed[r.key]));
-      if (!hasAnyValidKey) {
-        alert('⚠️ මෙය වලංගු POS Backup File එකක් නොවේ!\n(invoices/customers/items/purchases/suppliers සොයාගත නොහැක)');
-        return;
-      }
 
       const CHUNK = 500;
       const summaryLines = [];
@@ -488,7 +470,7 @@ export default function SyncButton() {
         if (!records.length || !r.table) continue;
 
         const normalized = records.map((rec, idx) => {
-          const id = String(rec.id || rec.docId || rec.invoiceId || `${r.key}_${Date.now()}_${idx}`);
+          const id = String(rec.id || rec.docId || `${r.key}_${Date.now()}_${idx}`);
           return {
             ...rec,
             id,
@@ -510,33 +492,17 @@ export default function SyncButton() {
         restoredByTable.push({ table: r.table, records: normalized });
       }
 
-      setStatusMsg('🎉 Restore සාර්ථකයි!');
-
       const totalRestored = restoredByTable.reduce((s, x) => s + x.records.length, 0);
-      alert(
-        `🎉 Backup Restore සාර්ථකයි!\n\n${summaryLines.join('\n')}\n\n📦 මුළු Records: ${totalRestored}\n\nදැන් POS පිටුව Refresh කරන්න (F5).`
-      );
+      alert(`🎉 Backup Restore සාර්ථකයි!\n\n${summaryLines.join('\n')}\n\n📦 මුළු Records: ${totalRestored}`);
 
-      if (totalRestored > 0 && confirm('Restore කළ Records Cloud (Firebase) එකටත් Upload කරන්නද?\n\nOK = Upload කරන්න\nCancel = Local පමණක් තබාගන්න')) {
-        setStatusMsg('☁️ Cloud Upload සඳහා Records සූදානම් කරමින්...');
+      if (totalRestored > 0 && confirm('Restore කළ Records Cloud (Firebase) එකටත් Sync කරන්නද?')) {
         for (const { table, records } of restoredByTable) {
-          const flagged = records.map((r) => ({
-            ...r,
-            synced: 0,
-            _synced: false,
-            _localSaved: true,
-          }));
-          for (let i = 0; i < flagged.length; i += CHUNK) {
-            await safeBulkPut(table, flagged.slice(i, i + CHUNK));
-            await new Promise((res) => setTimeout(res, 10));
-          }
+          const flagged = records.map((r) => ({ ...r, synced: 0, _synced: false }));
+          await safeBulkPut(table, flagged);
         }
-        setStatusMsg('☁️ Cloud Upload ආරම්භ විය...');
         await autoUploadLocalToCloud();
-        setStatusMsg('✅ Cloud Upload සම්පූර්ණයි!');
       }
     } catch (e) {
-      console.error('[Restore] Error:', e);
       alert('Restore දෝෂයක්: ' + (e?.message || e));
     } finally {
       setSyncing(false);
@@ -546,7 +512,6 @@ export default function SyncButton() {
 
   const handleRestoreFromFile = async () => {
     if (syncing) return;
-
     if (typeof window !== 'undefined' && 'showOpenFilePicker' in window) {
       try {
         const [handle] = await window.showOpenFilePicker({
@@ -563,128 +528,16 @@ export default function SyncButton() {
     fileInputRef.current?.click();
   };
 
-  // Open Electron Backup Folder (POS invoice backups location)
-  const handleOpenBackupFolder = async () => {
-    if (typeof window !== 'undefined' && window.electronAPI?.openBackupFolder) {
-      try {
-        await window.electronAPI.openBackupFolder();
-      } catch (e) {
-        alert('Backup Folder විවෘත කිරීමට නොහැක: ' + (e?.message || e));
-      }
-    } else {
-      alert('මෙම විශේෂාංගය Electron Desktop App එකේ පමණක් ක්‍රියාත්මකයි.');
-    }
-  };
-
-  // Manual Trigger Functions
-  const handleUploadPending = async () => {
+  const handleManualSyncNow = async () => {
     setSyncing(true);
-    setStatusMsg('Local Data Cloud එකට Upload වෙමින්...');
+    setStatusMsg('⚡ Sync වෙමින් පවතී...');
     await autoUploadLocalToCloud();
-    setStatusMsg('✅ Local Data සාර්ථකව Sync විය!');
+    setStatusMsg('✅ Sync සම්පූර්ණයි!');
     setSyncing(false);
     setTimeout(() => setStatusMsg(''), 3000);
   };
 
-  const handleDownloadAllToPC = async () => {
-    const activeUser = fbUser || auth.currentUser;
-    if (!activeUser) {
-      alert('Cloud වෙතින් දත්ත Download කිරීමට ප්‍රථමයෙන් Login වන්න.');
-      return;
-    }
-
-    if (
-      !confirm(
-        'Cloud හි ඇති සියලුම Records (Invoices, Customers, Items, Purchases, Suppliers) PC Hard Disc එකට Save කර File Location එකක් තෝරාගැනීමට අවශ්‍යද?'
-      )
-    ) {
-      return;
-    }
-
-    setSyncing(true);
-    const fullBackupExport = {};
-
-    const collectionsToDownload = [
-      { name: 'invoices', localTable: localDb.invoices, label: 'Invoices' },
-      { name: 'customers', localTable: localDb.customers, label: 'Customers' },
-      { name: 'items', localTable: localDb.items, label: 'Items' },
-      { name: 'purchases', localTable: localDb.purchases, label: 'Purchases' },
-      { name: 'suppliers', localTable: localDb.suppliers, label: 'Suppliers' },
-    ];
-
-    try {
-      for (const colDef of collectionsToDownload) {
-        if (!colDef.localTable) continue;
-
-        setStatusMsg(`${colDef.label} Download වෙමින්...`);
-        let totalColDownloaded = 0;
-        let lastDoc = null;
-        let hasMore = true;
-        const batchSize = 100;
-        const colDocs = [];
-
-        while (hasMore) {
-          let q = lastDoc
-            ? query(collection(db, colDef.name), startAfter(lastDoc), limit(batchSize))
-            : query(collection(db, colDef.name), limit(batchSize));
-
-          const snapshot = await getDocs(q);
-          if (snapshot.empty) {
-            hasMore = false;
-            break;
-          }
-
-          const batchData = [];
-          snapshot.forEach((docSnap) => {
-            const data = docSnap.data();
-            const record = {
-              id: docSnap.id,
-              docId: docSnap.id,
-              ...data,
-              synced: 1,
-              _synced: true,
-              _localSaved: false,
-            };
-
-            if (colDef.name === 'items') {
-              record.currentStock = record.currentStock ?? record.stock ?? 0;
-            }
-
-            batchData.push(record);
-            colDocs.push(record);
-          });
-
-          await safeBulkPut(colDef.localTable, batchData);
-          totalColDownloaded += batchData.length;
-          lastDoc = snapshot.docs[snapshot.docs.length - 1];
-          setStatusMsg(`${colDef.label} Save වෙමින්: ${totalColDownloaded}...`);
-
-          await new Promise((resolve) => setTimeout(resolve, 50));
-
-          if (snapshot.docs.length < batchSize) {
-            hasMore = false;
-          }
-        }
-
-        fullBackupExport[colDef.name] = colDocs;
-      }
-
-      setStatusMsg('🎉 සියලුම Records සාර්ථකව PC Hard Disc එකට Save විය!');
-
-      const fileName = `Weerakkodi_POS_FullSystem_Backup_${new Date().toISOString().slice(0, 10)}.json`;
-      const jsonContent = JSON.stringify(fullBackupExport, null, 2);
-      const saved = await saveJsonFileWithPicker(fileName, jsonContent);
-
-      if (saved) {
-        alert('🎉 සියලුම Records ඔබ තෝරාගත් PC Location එකේ Save කරන ලදී!');
-      }
-    } catch (e) {
-      alert('Download දෝෂයක්: ' + (e?.message || e));
-    } finally {
-      setSyncing(false);
-    }
-  };
-
+  // Dragging event handlers
   const handlePointerDown = (e) => {
     if (e.button !== undefined && e.button !== 0) return;
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -732,9 +585,7 @@ export default function SyncButton() {
 
   if (isDuplicate || position.x === null || position.y === null) return null;
 
-  const activeUser = fbUser || auth.currentUser;
   const isTopHalf = position.y < (typeof window !== 'undefined' ? window.innerHeight / 2 : 400);
-  const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
 
   return (
     <div
@@ -747,7 +598,6 @@ export default function SyncButton() {
         touchAction: 'none',
       }}
     >
-      {/* Hidden File Input (Restore Fallback) */}
       <input
         ref={fileInputRef}
         type="file"
@@ -797,17 +647,16 @@ export default function SyncButton() {
             gap: '6px',
           }}
         >
-          {/* Restore from JSON File — PC Hard Disc → Local DB (Fast) */}
           <button
-            onClick={() => { setShowMenu(false); handleRestoreFromFile(); }}
+            onClick={() => { setShowMenu(false); handleManualSyncNow(); }}
             disabled={syncing}
             style={{
               padding: '10px 14px',
-              backgroundColor: '#f97316',
+              backgroundColor: '#3b82f6',
               color: '#fff',
               border: 'none',
               borderRadius: '8px',
-              fontWeight: '700',
+              fontWeight: '600',
               cursor: 'pointer',
               textAlign: 'left',
               display: 'flex',
@@ -816,11 +665,10 @@ export default function SyncButton() {
               fontSize: '13px',
             }}
           >
-            <span>📂 Restore from JSON File</span>
-            <small style={{ opacity: 0.85 }}>File → PC (Fast)</small>
+            <span>⚡ Sync Now ({pendingCount})</span>
+            <small style={{ opacity: 0.85 }}>Local ↔ Cloud</small>
           </button>
 
-          {/* Export LOCAL Dexie → File (No Cloud Needed) */}
           <button
             onClick={() => { setShowMenu(false); handleExportLocalToFile(); }}
             disabled={syncing}
@@ -839,22 +687,21 @@ export default function SyncButton() {
               fontSize: '13px',
             }}
           >
-            <span>💾 Export Local Data</span>
-            <small style={{ opacity: 0.85 }}>PC → File (Offline)</small>
+            <span>💾 Backup to File</span>
+            <small style={{ opacity: 0.85 }}>PC → JSON</small>
           </button>
 
-          {/* Upload Unsynced */}
           <button
-            onClick={() => { setShowMenu(false); handleUploadPending(); }}
-            disabled={syncing || !activeUser}
+            onClick={() => { setShowMenu(false); handleRestoreFromFile(); }}
+            disabled={syncing}
             style={{
               padding: '10px 14px',
-              backgroundColor: '#3b82f6',
+              backgroundColor: '#f97316',
               color: '#fff',
               border: 'none',
               borderRadius: '8px',
-              fontWeight: '600',
-              cursor: activeUser ? 'pointer' : 'not-allowed',
+              fontWeight: '700',
+              cursor: 'pointer',
               textAlign: 'left',
               display: 'flex',
               alignItems: 'center',
@@ -862,57 +709,9 @@ export default function SyncButton() {
               fontSize: '13px',
             }}
           >
-            <span>⬆️ Upload Unsynced ({pendingCount})</span>
-            <small style={{ opacity: 0.8 }}>PC → Cloud</small>
+            <span>📂 Restore Backup</span>
+            <small style={{ opacity: 0.85 }}>JSON → PC</small>
           </button>
-
-          {/* Full Export from Cloud */}
-          <button
-            onClick={() => { setShowMenu(false); handleDownloadAllToPC(); }}
-            disabled={syncing || !activeUser}
-            style={{
-              padding: '10px 14px',
-              backgroundColor: '#10b981',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '8px',
-              fontWeight: '600',
-              cursor: activeUser ? 'pointer' : 'not-allowed',
-              textAlign: 'left',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontSize: '13px',
-            }}
-          >
-            <span>⬇️ Full Export to File</span>
-            <small style={{ opacity: 0.8 }}>Cloud → File</small>
-          </button>
-
-          {/* Open Electron Backup Folder (POS invoice JSON backups) */}
-          {isElectron && (
-            <button
-              onClick={() => { setShowMenu(false); handleOpenBackupFolder(); }}
-              disabled={syncing}
-              style={{
-                padding: '10px 14px',
-                backgroundColor: '#0ea5e9',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '8px',
-                fontWeight: '600',
-                cursor: 'pointer',
-                textAlign: 'left',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                fontSize: '13px',
-              }}
-            >
-              <span>📁 Open Backup Folder</span>
-              <small style={{ opacity: 0.85 }}>D:\...Backups</small>
-            </button>
-          )}
         </div>
       )}
 
@@ -921,7 +720,7 @@ export default function SyncButton() {
         onTouchStart={handlePointerDown}
         onClick={() => { if (!hasDraggedRef.current) setShowMenu(!showMenu); }}
         style={{
-          backgroundColor: !activeUser ? '#64748b' : pendingCount > 0 ? '#f59e0b' : '#10b981',
+          backgroundColor: pendingCount > 0 ? '#f59e0b' : '#10b981',
           color: '#ffffff',
           border: 'none',
           padding: '10px 18px',
@@ -938,12 +737,10 @@ export default function SyncButton() {
         <span style={{ cursor: 'grab', fontSize: '16px', opacity: 0.8 }}>⋮⋮</span>
         <span>
           {syncing
-            ? '⏳ Auto-Syncing...'
-            : !activeUser
-            ? `🔒 Login to Auto-Sync`
+            ? '⏳ Syncing...'
             : pendingCount > 0
-            ? `🔄 Auto-Syncing (${pendingCount})`
-            : `🟢 Auto-Synced (Equal)`}
+            ? `🔄 Syncing (${pendingCount})`
+            : `🟢 Synced (Equal)`}
         </span>
       </div>
     </div>
