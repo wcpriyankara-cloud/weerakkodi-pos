@@ -1,5 +1,4 @@
-// C:\Users\chandana\StudioProjects\weerakkodi_pos_app\context\UserContext.jsx
-
+// context/UserContext.jsx
 'use client';
 
 import React, {
@@ -72,27 +71,10 @@ const normalizeUser = (firebaseUser) => {
   };
 };
 
-/* ══ CRITICAL: Dexie Cleanup on User Switch/Logout (Safe & Guarded) ══ */
+/* ══ 🛡️ DATA PROTECTION: NEVER DELETE DEXIE HARD DISK DATA ON LOGOUT/USER SWITCH ══ */
 const cleanupUserDexieData = async (uid) => {
-  if (!uid || uid === 'wlknSmbTOEbcxp527cqGBnc3yu93') return;
-  try {
-    await ensureDbOpen();
-    if (!isDbReady()) return;
-
-    const tables = ['items', 'customers', 'invoices', 'customerLoans', 'cashTransactions'];
-    for (const t of tables) {
-      try {
-        if (localDb[t]) {
-          await localDb[t].where('uid').equals(uid).delete();
-        }
-      } catch (err) {
-        // Table delete error bypass
-      }
-    }
-    console.log(`[Auth] ✅ Cleaned Dexie data safely for uid=${uid}`);
-  } catch (e) {
-    console.warn('[Auth] Dexie cleanup deferred:', e?.message || e);
-  }
+  // Offline-first POS පද්ධතියක Hard Disk හි ඇති භාණ්ඩ, පාරිභෝගිකයින්, ණය, බිල්පත් කිසිවිටෙකත් මකා නොදමයි.
+  return;
 };
 
 /* ══ Firebase error → සිංහල පණිවිඩ ══ */
@@ -127,7 +109,6 @@ export function UserAuthContextProvider({ children }) {
   const [loading, setLoading]   = useState(true);
   const prevUidRef              = useRef(null);
 
-  // Background (non-blocking) profile load with Quota-Exceeded protection
   const loadUserData = useCallback(async (firebaseUser) => {
     if (!firebaseUser?.uid) return null;
 
@@ -148,7 +129,6 @@ export function UserAuthContextProvider({ children }) {
         return data;
       }
     } catch (e) {
-      // Firebase Quota exceeded හෝ Network offline වූ විට app crash වීම වළකයි
       console.warn('[UserContext] Profile load offline fallback:', e?.message);
     }
     return null;
@@ -158,7 +138,6 @@ export function UserAuthContextProvider({ children }) {
     if (typeof window === 'undefined') return;
     let isMounted = true;
 
-    // Hard safety timeout: Max 1.5s waiting for auth
     const safetyTimer = setTimeout(() => {
       if (isMounted) setLoading(false);
     }, 1500);
@@ -173,14 +152,12 @@ export function UserAuthContextProvider({ children }) {
 
         if (oldUid && oldUid !== newUid) {
           clearUserCache();
-          cleanupUserDexieData(oldUid).catch(() => {});
           setUserData(null);
         }
 
         prevUidRef.current = newUid;
         setUser(norm);
 
-        // Safe Database Write with ensureDbOpen guard
         try {
           localStorage.setItem('weerakkodi_last_uid', norm.uid);
           await ensureDbOpen();
@@ -203,7 +180,6 @@ export function UserAuthContextProvider({ children }) {
 
         loadUserData(firebaseUser);
       } else {
-        // Safe check for Electron & Offline state
         const isElectronEnv = typeof window !== 'undefined' && (
           Boolean(window.process?.versions?.electron) ||
           Boolean(window.navigator?.userAgent?.includes('Electron')) ||
@@ -212,7 +188,6 @@ export function UserAuthContextProvider({ children }) {
         const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
 
         if (isElectronEnv && isOffline) {
-          // Strictly inside Electron AND Offline: use local saved user or fallback
           try {
             await ensureDbOpen();
             const localUser = isDbReady() ? await localDb.settings.get('current_user') : null;
@@ -240,7 +215,6 @@ export function UserAuthContextProvider({ children }) {
             });
           }
         } else {
-          // Web browser OR Online Electron: set user to null so Login page displays
           setUser(null);
           setUserData(null);
           prevUidRef.current = null;
@@ -256,7 +230,6 @@ export function UserAuthContextProvider({ children }) {
     };
   }, [loadUserData]);
 
-  // Email / Password Login
   const loginWithEmail = useCallback(async (email, password) => {
     try {
       const cleanEmail = (email || '').trim();
@@ -268,7 +241,6 @@ export function UserAuthContextProvider({ children }) {
         const oldUid = prevUidRef.current;
         if (oldUid && oldUid !== norm.uid) {
           clearUserCache();
-          cleanupUserDexieData(oldUid).catch(() => {});
         }
         prevUidRef.current = norm.uid;
 
@@ -311,7 +283,6 @@ export function UserAuthContextProvider({ children }) {
     }
   }, [loadUserData]);
 
-  // Google Login
   const signInWithGoogle = useCallback(async () => {
     try {
       let result;
@@ -332,7 +303,6 @@ export function UserAuthContextProvider({ children }) {
       const oldUid = prevUidRef.current;
       if (oldUid && oldUid !== norm.uid) {
         clearUserCache();
-        cleanupUserDexieData(oldUid).catch(() => {});
       }
       prevUidRef.current = norm.uid;
 
@@ -357,7 +327,6 @@ export function UserAuthContextProvider({ children }) {
         }
       } catch (e) {}
 
-      // Non-blocking Firestore user sync
       setDoc(doc(db, 'users', firebaseUser.uid), {
         uid:         norm.uid,
         displayName: norm.displayName,
@@ -373,9 +342,7 @@ export function UserAuthContextProvider({ children }) {
     }
   }, [loadUserData]);
 
-  // Logout
   const logOut = useCallback(async () => {
-    const oldUid = prevUidRef.current;
     prevUidRef.current = null;
     setUser(null);
     setUserData(null);
@@ -386,12 +353,9 @@ export function UserAuthContextProvider({ children }) {
       if (isDbReady()) {
         await localDb.settings.delete('current_user').catch(() => {});
       }
-      if (oldUid) {
-        await cleanupUserDexieData(oldUid).catch(() => {});
-      }
       await signOut(auth).catch(() => {});
     } catch (e) {
-      console.warn('Logout cleanup error:', e);
+      console.warn('Logout notice:', e);
     }
   }, []);
 
@@ -427,4 +391,5 @@ export function useUserAuth() {
   return ctx;
 }
 
+export const useAuth = useUserAuth;
 export default UserAuthContextProvider;
