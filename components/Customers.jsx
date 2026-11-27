@@ -1,84 +1,22 @@
 'use client';
 
-// components/Customers.jsx  ·  v5.1 (Data Isolation + Offline Sync Engine Integration)
-// ✅ Canonical @/lib/firebase import
-// ✅ Explicit synced: 0 flag on offline updates for instant SyncButton pickup
-// ✅ Per-user backup files: customers_<uid>.json
-// ✅ UID-filtered local & cloud queries (Data Isolation)
-// ✅ Integrated with separate Customer Loan Management system
-// ✅ Real InvoiceOutputManager import
-// ✅ Portal payment support + Loan Quick Status Link
-// 🚀 Profile picture upload with automatic compression & Telegraph cloud upload
-// 🚀 Mobile contacts integration (Contact Picker API)
-// 🚀 OFFLINE-FIRST: Auto Dexie DB sync, disk backup, background cloud migration
-
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-
-// ✅ Safe Firebase import with null fallback
-let db = null;
-let collection, query, where, addDoc, updateDoc, doc, getDocs, getDoc, setDoc;
-let serverTimestamp, increment, onSnapshot, Timestamp, getFirestore;
-
-try {
-  const firestore = require('firebase/firestore');
-  collection = firestore.collection;
-  query = firestore.query;
-  where = firestore.where;
-  addDoc = firestore.addDoc;
-  updateDoc = firestore.updateDoc;
-  doc = firestore.doc;
-  getDocs = firestore.getDocs;
-  getDoc = firestore.getDoc;
-  setDoc = firestore.setDoc;
-  serverTimestamp = firestore.serverTimestamp;
-  increment = firestore.increment;
-  onSnapshot = firestore.onSnapshot;
-  Timestamp = firestore.Timestamp;
-  getFirestore = firestore.getFirestore;
-
-  // Step 1: Try named export from @/lib/firebase
-  try {
-    const fb = require('@/lib/firebase');
-    db = fb.db || (fb.default && fb.default.db) || null;
-  } catch {}
-
-  // Step 2: Validate — if db is NOT a Firestore instance, discard it
-  if (db && typeof db._databaseId === 'undefined' && db.type !== 'firestore' && !db.app) {
-    console.warn('[Customers] db is not a Firestore instance, discarding:', typeof db);
-    db = null;
-  }
-
-  // Step 3: Fallback — getFirestore() from the initialized app
-  if (!db && getFirestore) {
-    try {
-      db = getFirestore();
-      console.log('[Customers] ✅ db resolved via getFirestore()');
-    } catch (e) {
-      console.warn('[Customers] getFirestore() failed:', e.message);
-    }
-  }
-
-  if (db) {
-    console.log('[Customers] ✅ Firestore connected');
-  } else {
-    console.warn('[Customers] ⚠️ No Firestore — offline mode');
-  }
-} catch (e) {
-  console.warn('Firebase SDK not reachable. Customers running in offline mode.', e);
-}
-
-// Safe db check - handles CJS/ESM interop
-const isValidDb = () => {
-  if (!db) return false;
-  if (db.app) return true;
-  if (typeof db._databaseId !== 'undefined') return true;
-  if (db.type === 'firestore') return true;
-  return false;
-};
-
-// ✅ Safe wrapper — use this instead of raw `db` checks
-const canUseCloud = () => navigator.onLine && isValidDb() && collection && query;
-
+import { db, auth } from '@/lib/firebase';
+import {
+  collection,
+  query,
+  where,
+  addDoc,
+  updateDoc,
+  doc,
+  getDocs,
+  getDoc,
+  setDoc,
+  serverTimestamp,
+  increment,
+  onSnapshot,
+  Timestamp,
+} from 'firebase/firestore';
 import { useUserAuth } from '@/context/UserContext';
 import { localDb } from '@/lib/localDb';
 import { normalizeDate } from '@/lib/utils';
@@ -91,31 +29,27 @@ const nn = (v) => {
   const n = parseFloat(String(v ?? 0).replace(/,/g, ''));
   return isNaN(n) ? 0 : n;
 };
-
 const fmt = (v) =>
   nn(v).toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-
 const pad2 = (n) => String(n).padStart(2, '0');
-
 const nowHHMM24 = () => {
   const d = new Date();
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
-
 const localDateStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 };
-
 const slugify = (s) =>
   String(s || 'customer').toLowerCase().trim()
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-
 const makePortalKey = (name) =>
   `${slugify(name)}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+const canUseCloud = () => navigator.onLine && db && typeof collection === 'function';
 
 /* ════════════════════════════════════════
    TRANSLATIONS
@@ -203,19 +137,18 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
           setFreshBal(bal);
           if (bal > 0) setAmount((Number(bal) || 0).toFixed(2));
         }
-
-        if (canUseCloud() && getDoc && doc) {
+        if (canUseCloud()) {
           const snap = await getDoc(doc(db, 'customers', customer.id));
           if (!active) return;
           if (snap.exists()) {
             const bal = nn(snap.data().currentBalance);
             setFreshBal(bal);
             if (bal > 0) setAmount((Number(bal) || 0).toFixed(2));
-            await localDb.customers.update(customer.id, { currentBalance: bal });
+            await localDb.customers.update(customer.id, { currentBalance: bal }).catch(() => {});
           }
         }
       } catch (e) {
-        console.error('Fresh balance error:', e);
+        console.warn('Fresh balance check notice:', e?.message || e);
       } finally {
         if (active) setFetchingBal(false);
       }
@@ -233,7 +166,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
 
     const prevBal = currentBal;
     const newBal  = prevBal - payAmt;
-
     setSaving(true);
     try {
       const refNo    = `PAY${Date.now().toString(36).toUpperCase().slice(-8)}`;
@@ -243,7 +175,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
       const now      = new Date();
       let cusTxnId   = `txn_${Date.now()}`;
 
-      // Update Dexie local storage with synced: 0 for instant SyncButton pickup
       await localDb.customers.update(customer.id, {
         currentBalance: newBal,
         updatedAt: now.toISOString(),
@@ -270,12 +201,7 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
         });
       }
 
-      if (window.electronAPI?.saveLocalData) {
-        const userCus = await localDb.customers.where('uid').equals(user.uid).toArray();
-        await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
-      }
-
-      if (canUseCloud() && addDoc && updateDoc && doc) {
+      if (canUseCloud()) {
         try {
           const cusTxnRef = await addDoc(collection(db, 'customerTransactions'), {
             uid: user.uid,
@@ -326,14 +252,13 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
             isAutomatic: true,
           });
 
-          await localDb.customers.update(customer.id, { synced: 1 });
+          await localDb.customers.update(customer.id, { synced: 1 }).catch(() => {});
         } catch (cloudErr) {
-          console.warn("Deferred cloud payment registration:", cloudErr.message);
+          console.warn("Deferred cloud payment registration:", cloudErr?.message || cloudErr);
         }
       }
 
       const methodMap = { cash: 'cash', bank: 'etransfer', card: 'card', cheque: 'cheque', online: 'etransfer' };
-
       const synthetic = {
         _isReceipt: true, _receiptType: 'payment',
         id: `payment-${refNo}`, invoiceNo: refNo, invoiceCode: `PAY-${refNo}`,
@@ -355,7 +280,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
         date: dateStr, status: 'completed', type: 'receipt',
         _collection: 'customerTransactions',
       };
-
       onSuccess(synthetic);
     } catch (e) {
       console.error('Payment error:', e);
@@ -396,7 +320,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
               )}
             </div>
           </div>
-
           <div style={{ marginBottom: 14 }}>
             <label style={S.label}>{t.amountReceived} *</label>
             <input type="number" autoFocus placeholder="0.00"
@@ -423,7 +346,6 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
               </div>
             )}
           </div>
-
           <div style={{ marginBottom: 14 }}>
             <label style={S.label}>{t.paymentMethod}</label>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6 }}>
@@ -443,17 +365,14 @@ function PaymentModal({ customer, onClose, onSuccess, t, user }) {
               ))}
             </div>
           </div>
-
           <div style={{ marginBottom: 14 }}>
             <label style={S.label}>{t.paymentNote}</label>
             <input type="text" value={note} onChange={(e) => setNote(e.target.value)}
               style={S.input} placeholder="ගෙවීම් විස්තරය..." />
           </div>
-
           <div style={{ marginBottom: 16, padding: '10px 14px', background: '#eff6ff', borderRadius: 10, border: '1px solid #bfdbfe', fontSize: 12, color: '#1e40af' }}>
             ℹ️ {t.paymentInfoMsg}
           </div>
-
           <div style={{ display: 'flex', gap: 10 }}>
             <button onClick={onClose} style={S.cancelBtn}>{t.cancel}</button>
             <button onClick={handleSave} disabled={saving || nn(amount) <= 0 || fetchingBal}
@@ -486,13 +405,12 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
         if (active && localRecord) {
           setFreshBal(nn(localRecord.currentBalance));
         }
-
-        if (canUseCloud() && getDoc && doc) {
+        if (canUseCloud()) {
           const snap = await getDoc(doc(db, 'customers', customer.id));
           if (!active) return;
           const bal = snap.exists() ? nn(snap.data().currentBalance) : nn(customer.currentBalance);
           setFreshBal(bal);
-          await localDb.customers.update(customer.id, { currentBalance: bal });
+          await localDb.customers.update(customer.id, { currentBalance: bal }).catch(() => {});
         }
       } catch {
         setFreshBal(nn(customer.currentBalance));
@@ -513,7 +431,6 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
 
     const prevBal = currentBal;
     const newBal  = prevBal + creditAmt;
-
     setSaving(true);
     try {
       const refNo   = `CRD${Date.now().toString(36).toUpperCase().slice(-8)}`;
@@ -523,7 +440,6 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
       const now     = new Date();
       let cusTxnId  = `txn_${Date.now()}`;
 
-      // Update Dexie with synced: 0 for instant auto-syncpickup
       await localDb.customers.update(customer.id, {
         currentBalance: newBal,
         updatedAt: now.toISOString(),
@@ -550,12 +466,7 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
         });
       }
 
-      if (window.electronAPI?.saveLocalData) {
-        const userCus = await localDb.customers.where('uid').equals(user.uid).toArray();
-        await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
-      }
-
-      if (canUseCloud() && addDoc && updateDoc && doc) {
+      if (canUseCloud()) {
         try {
           const cusTxnRef = await addDoc(collection(db, 'customerTransactions'), {
             uid: user.uid,
@@ -594,9 +505,9 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
             uid: user.uid, isAutomatic: true,
           });
 
-          await localDb.customers.update(customer.id, { synced: 1 });
+          await localDb.customers.update(customer.id, { synced: 1 }).catch(() => {});
         } catch (cloudErr) {
-          console.warn("Deferred cloud credit registration:", cloudErr.message);
+          console.warn("Deferred cloud credit registration:", cloudErr?.message || cloudErr);
         }
       }
 
@@ -621,7 +532,6 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
         date: dateStr, status: 'completed', type: 'receipt',
         _collection: 'customerTransactions',
       };
-
       onSuccess(synthetic);
     } catch (e) {
       console.error('Credit error:', e);
@@ -664,7 +574,6 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
               )}
             </div>
           </div>
-
           <div style={{ marginBottom: 14 }}>
             <label style={S.label}>{t.creditAmount} *</label>
             <input type="number" autoFocus placeholder="0.00"
@@ -679,17 +588,14 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
               </div>
             )}
           </div>
-
           <div style={{ marginBottom: 16 }}>
             <label style={S.label}>{t.creditNote}</label>
             <input type="text" value={note} onChange={(e) => setNote(e.target.value)}
               style={S.input} placeholder="භාණ්ඩ / සේවා විස්තරය..." />
           </div>
-
           <div style={{ marginBottom: 16, padding: '10px 14px', background: '#fffbeb', borderRadius: 10, border: '1px solid #fde68a', fontSize: 12, color: '#92400e' }}>
             ℹ️ {t.creditInfoMsg}
           </div>
-
           <div style={{ display: 'flex', gap: 10 }}>
             <button onClick={onClose} style={S.cancelBtn}>{t.cancel}</button>
             <button onClick={handleSave} disabled={saving || nn(amount) <= 0 || fetchingBal}
@@ -704,55 +610,11 @@ function CreditModal({ customer, onClose, onSuccess, t, user }) {
 }
 
 /* ════════════════════════════════════════
-   IMAGE UPLOAD HELPER
-════════════════════════════════════════ */
-const handleAddLogoUpload = (e, setNewCust, showToast) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  if (file.size > 5 * 1024 * 1024) { showToast('❌ Image එක විශාල වැඩියි. (Max: 5MB)'); return; }
-
-  const reader = new FileReader();
-  reader.onload = (event) => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const MAX_WIDTH = 150, MAX_HEIGHT = 150;
-      let width = img.width, height = img.height;
-      if (width > height) { if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; } }
-      else { if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; } }
-      canvas.width = width; canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, width, height);
-      canvas.toBlob(async (blob) => {
-        if (!blob) return;
-        try {
-          const formData = new FormData();
-          formData.append('file', blob, 'customer_avatar.jpg');
-          const res = await fetch('https://telegra.ph/upload', { method: 'POST', body: formData });
-          if (!res.ok) throw new Error('Cloud storage failed');
-          const data = await res.json();
-          if (Array.isArray(data) && data[0]?.src) {
-            setNewCust(prev => ({ ...prev, profilePicture: `https://telegra.ph${data[0].src}` }));
-            showToast('✅ Profile Photo එක සාර්ථකව සකසා ගත්තා!');
-          }
-        } catch {
-          setNewCust(prev => ({ ...prev, profilePicture: canvas.toDataURL('image/jpeg', 0.8) }));
-          showToast('⚠️ Cloud upload අසාර්ථකයි. Base64 ලෙස එක් විය.');
-        }
-      }, 'image/jpeg', 0.8);
-    };
-    img.src = event.target.result;
-  };
-  reader.readAsDataURL(file);
-};
-
-/* ════════════════════════════════════════
    MAIN COMPONENT
 ════════════════════════════════════════ */
 export default function Customers({ lang = 'si' }) {
   const t = T[lang] || T.si;
   const { user, loading: authLoading } = useUserAuth();
-
   const [customers,      setCustomers    ] = useState([]);
   const [activeLoans,    setActiveLoans  ] = useState([]);
   const [loading,        setLoading      ] = useState(true);
@@ -764,48 +626,42 @@ export default function Customers({ lang = 'si' }) {
   const [viewMode,       setViewMode     ] = useState('table');
   const [page,           setPage         ] = useState(1);
   const [perPage,        setPerPage      ] = useState(25);
-
   const [showAddModal,  setShowAddModal ] = useState(false);
   const [newCust,       setNewCust      ] = useState({ name: '', phone: '', address: '', email: '', nic: '', notes: '', profilePicture: '' });
   const [phoneSuffix,   setPhoneSuffix  ] = useState('');
   const [isSaving,      setIsSaving     ] = useState(false);
-
   const [paymentCust,   setPaymentCust  ] = useState(null);
   const [creditCust,    setCreditCust   ] = useState(null);
-
   const [outputInvoice, setOutputInvoice] = useState(null);
   const [toastMsg,      setToastMsg     ] = useState('');
-
   const showToast = useCallback((m) => { setToastMsg(m); setTimeout(() => setToastMsg(''), 3000); }, []);
 
-  /* ── Fetch customers (UID-Filtered, Offline-First) ── */
+  /* ── Fetch customers (Inclusive Local Hard Disk Load - Shows all legacy 324 records) ── */
   const fetchCustomers = useCallback(async (force = false) => {
-    if (!user?.uid) { setCustomers([]); setLoading(false); return; }
     setFetchErrMsg('');
     setLoading(true);
-
     try {
-      let localData;
-      try {
-        localData = await localDb.customers.where('uid').equals(user.uid).toArray();
-      } catch (filterErr) {
-        const allLocal = await localDb.customers.toArray();
-        localData = allLocal.filter(c => c.uid === user.uid);
-      }
+      // 1. Load ALL records from Dexie Hard Disk (No records left behind)
+      const allLocal = await localDb.customers.toArray();
+      const currentUid = user?.uid;
 
-      if (localData.length === 0 && window.electronAPI?.loadLocalData) {
-        try {
-          const backupData = await window.electronAPI.loadLocalData(`customers_${user.uid}.json`);
-          if (backupData && Array.isArray(backupData)) {
-            localData = backupData.filter(c => c.uid === user.uid);
-            for (const cust of localData) { await localDb.customers.put(cust); }
-          }
-        } catch (e) {
-          console.warn('Disk backup hydration skipped:', e.message);
+      let displayList = allLocal;
+      if (currentUid) {
+        const userMatched = allLocal.filter(c => !c.uid || c.uid === currentUid || c.uid === 'system' || c.uid === 'all' || c.uid === 'local_user');
+        displayList = userMatched.length > 0 ? userMatched : allLocal;
+
+        // Auto-adopt legacy unassigned customers to current user
+        const unassigned = allLocal.filter(c => !c.uid || c.uid === 'system' || c.uid === 'local_user');
+        if (unassigned.length > 0) {
+          localDb.transaction('rw', localDb.customers, async () => {
+            for (const item of unassigned) {
+              await localDb.customers.update(item.id, { uid: currentUid });
+            }
+          }).catch(() => {});
         }
       }
 
-      const sortedLocal = localData.map(c => ({
+      const sortedLocal = displayList.map(c => ({
         ...c,
         currentBalance: nn(c.currentBalance),
         createdAt: normalizeDate(c.createdAt),
@@ -815,162 +671,49 @@ export default function Customers({ lang = 'si' }) {
       setCustomers(sortedLocal);
       setLastFetchTs(Date.now());
 
-      if (canUseCloud() && where && getDocs) {
+      // 2. Safe Cloud sync
+      if (canUseCloud() && currentUid) {
         try {
-          const snap = await getDocs(query(collection(db, 'customers'), where('uid', '==', user.uid)));
-          const cloudList = snap.docs.map(d => ({
-            id: d.id, ...d.data(),
-            currentBalance: nn(d.data().currentBalance),
-            synced: true
-          }));
+          const snap = await getDocs(query(collection(db, 'customers'), where('uid', '==', currentUid)));
+          if (!snap.empty) {
+            const cloudList = snap.docs.map(d => ({
+              id: d.id, ...d.data(),
+              currentBalance: nn(d.data().currentBalance),
+              synced: 1,
+              _synced: true
+            }));
 
-          for (const cloudCust of cloudList) {
-            const existing = await localDb.customers.get(cloudCust.id);
-            if (!existing) {
-              await localDb.customers.put({ ...cloudCust, synced: 1 });
-            } else {
-              const localBal = nn(existing.currentBalance);
-              const cloudBal = nn(cloudCust.currentBalance);
-              const localTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
-              const cloudRaw = cloudCust.updatedAt;
-              const cloudTime = cloudRaw?.toDate
-                ? cloudRaw.toDate().getTime()
-                : new Date(cloudRaw || cloudCust.createdAt || 0).getTime();
-
-              if (Math.abs(localBal - cloudBal) > 0.01 && localTime > cloudTime) {
-                // ✅ Local is newer — keep local balance, push to cloud
-                if (navigator.onLine && db && updateDoc && doc && serverTimestamp) {
-                  try {
-                    await updateDoc(doc(db, 'customers', cloudCust.id), {
-                      currentBalance: localBal,
-                      updatedAt: serverTimestamp(),
-                    });
-                    await localDb.customers.update(cloudCust.id, { synced: 1 });
-                    console.log(`[Sync] ✅ Pushed Rs.${localBal} → cloud for ${existing.name}`);
-                  } catch (pushErr) {
-                    console.warn(`[Sync] Push failed for ${existing.name}:`, pushErr.message);
-                  }
+            await localDb.transaction('rw', localDb.customers, async () => {
+              for (const cloudCust of cloudList) {
+                const existing = await localDb.customers.get(cloudCust.id);
+                if (!existing || existing.synced === 1) {
+                  await localDb.customers.put(cloudCust);
                 }
-              } else if (cloudTime > localTime) {
-                // Cloud is newer — update local
-                await localDb.customers.put({ ...cloudCust, synced: 1 });
               }
-            }
-          }
+            });
 
-          let mergedList;
-          try {
-            mergedList = await localDb.customers.where('uid').equals(user.uid).toArray();
-          } catch {
-            const all = await localDb.customers.toArray();
-            mergedList = all.filter(c => c.uid === user.uid);
-          }
-
-          const sortedMerged = mergedList.map(c => ({
-            ...c,
-            currentBalance: nn(c.currentBalance),
-            createdAt: normalizeDate(c.createdAt),
-            updatedAt: normalizeDate(c.updatedAt)
-          })).sort((a, b) => b.createdAt - a.createdAt);
-
-          setCustomers(sortedMerged);
-
-          if (window.electronAPI?.saveLocalData) {
-            const userCus = await localDb.customers.where('uid').equals(user.uid).toArray();
-            await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
+            const refreshed = await localDb.customers.toArray();
+            setCustomers(refreshed.map(c => ({
+              ...c,
+              currentBalance: nn(c.currentBalance),
+              createdAt: normalizeDate(c.createdAt),
+              updatedAt: normalizeDate(c.updatedAt)
+            })).sort((a, b) => b.createdAt - a.createdAt));
           }
         } catch (cloudErr) {
-          console.warn("Cloud synchronization deferred:", cloudErr);
           setFetchErrMsg(cloudErr.code === 'resource-exhausted' ? t.quotaMsg : t.offlineMsg);
         }
-      } else {
-        setFetchErrMsg(t.offlineMsg);
       }
     } catch (err) {
-      console.error("Local database retrieval failed:", err);
+      console.warn("Local database retrieval notice:", err);
     } finally {
       setLoading(false);
     }
   }, [user?.uid, t.quotaMsg, t.offlineMsg]);
 
-  /* ── Sync pending local balances to cloud (runs on reconnect) ── */
-  const syncBalancesToCloud = useCallback(async () => {
-    if (!navigator.onLine || !user?.uid || !isValidDb() || !updateDoc || !doc || !serverTimestamp || !getDocs || !collection || !query || !where) return;
-
-    try {
-      let localCustomers;
-      try {
-        localCustomers = await localDb.customers.where('uid').equals(user.uid).toArray();
-      } catch {
-        const all = await localDb.customers.toArray();
-        localCustomers = all.filter(c => c.uid === user.uid);
-      }
-      if (localCustomers.length === 0) return;
-
-      const cloudSnap = await getDocs(query(collection(db, 'customers'), where('uid', '==', user.uid)));
-      const cloudMap = new Map(cloudSnap.docs.map(d => [d.id, d.data()]));
-
-      let syncCount = 0;
-      for (const local of localCustomers) {
-        const cloud = cloudMap.get(local.id);
-
-        if (!cloud) {
-          if ((local.synced === 0 || local.synced === false) && navigator.onLine && db && setDoc && doc && serverTimestamp) {
-            try {
-              await setDoc(doc(db, 'customers', local.id), {
-                ...local,
-                synced: true,
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              });
-              await localDb.customers.update(local.id, { synced: 1 });
-              syncCount++;
-              console.log(`[BalanceSync] ✅ New customer pushed: ${local.name}`);
-            } catch (e) {
-              console.warn(`[BalanceSync] Push new customer failed: ${local.name}`, e.message);
-            }
-          }
-          continue;
-        }
-
-        const localBal = nn(local.currentBalance);
-        const cloudBal = nn(cloud.currentBalance);
-
-        if (Math.abs(localBal - cloudBal) > 0.01) {
-          const localTime = new Date(local.updatedAt || local.createdAt || 0).getTime();
-          const cloudRaw = cloud.updatedAt;
-          const cloudTime = cloudRaw?.toDate
-            ? cloudRaw.toDate().getTime()
-            : new Date(cloudRaw || cloud.createdAt || 0).getTime();
-
-          if (localTime >= cloudTime) {
-            try {
-              await updateDoc(doc(db, 'customers', local.id), {
-                currentBalance: localBal,
-                updatedAt: serverTimestamp(),
-              });
-              await localDb.customers.update(local.id, { synced: 1 });
-              syncCount++;
-              console.log(`[BalanceSync] ${local.name}: Rs.${cloudBal} → Rs.${localBal}`);
-            } catch (e) {
-              console.warn(`[BalanceSync] Failed for ${local.name}:`, e.message);
-            }
-          }
-        }
-      }
-
-      if (syncCount > 0) {
-        console.log(`[BalanceSync] ✅ Synced ${syncCount} customer balances to cloud`);
-        showToast(`✅ ණය ශේෂ ${syncCount}ක් cloud වෙත sync විය`);
-      }
-    } catch (e) {
-      console.warn('[BalanceSync] Error:', e.message);
-    }
-  }, [user?.uid, showToast]);
-
-  /* ── Realtime Sync: Active Loans ── */
+  /* ── Safe Realtime Sync: Active Loans ── */
   useEffect(() => {
-    if (!user?.uid || !isValidDb() || !collection || !query || !where || !onSnapshot) return;
+    if (!user?.uid || !canUseCloud()) return;
     try {
       const q = query(
         collection(db, `users/${user.uid}/customerLoans`),
@@ -978,44 +721,30 @@ export default function Customers({ lang = 'si' }) {
       );
       const unsub = onSnapshot(q,
         snap => setActiveLoans(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-        err  => console.warn('Loans listener:', err.message)
+        err  => console.warn('Loans listener safe notice:', err?.message || err)
       );
       return () => unsub();
     } catch (e) {
-      console.warn('Loans listener setup failed:', e.message);
+      // Safe fallback
     }
   }, [user?.uid]);
 
-  useEffect(() => { if (!authLoading) fetchCustomers(); }, [authLoading, fetchCustomers]);
-
-  /* ── Auto-sync balances when coming back online ── */
   useEffect(() => {
-    const handleOnline = () => {
-      console.log('[Network] 🔌 Back online — syncing customer balances...');
-      setTimeout(() => {
-        syncBalancesToCloud();
-        fetchCustomers(true);
-      }, 3000);
-    };
+    if (!authLoading) fetchCustomers();
+  }, [authLoading, fetchCustomers]);
 
-    window.addEventListener('online', handleOnline);
-    return () => window.removeEventListener('online', handleOnline);
-  }, [syncBalancesToCloud, fetchCustomers]);
-
-  /* ── Add customer (UID-Scoped) ── */
+  /* ── Add customer ── */
   const handleAdd = async (e) => {
     if (e) e.preventDefault();
     if (!newCust.name || !phoneSuffix) return alert('Name + Phone required');
-    if (!user?.uid) return alert(t.loginRequired);
 
     setIsSaving(true);
     const customerId = 'cust_' + Date.now();
     const timestamp = new Date().toISOString();
     const fullPhone = `+94${phoneSuffix}`;
-
     const newCustomerObj = {
       id: customerId,
-      uid: user.uid,
+      uid: user?.uid || 'system',
       name: newCust.name.trim(),
       phone: fullPhone,
       address: newCust.address || '',
@@ -1025,30 +754,23 @@ export default function Customers({ lang = 'si' }) {
       profilePicture: newCust.profilePicture || '',
       currentBalance: 0,
       portalAccessKey: makePortalKey(newCust.name),
-      synced: 0, // Explicit numeric flag for auto-sync engine lookup
+      synced: 0,
       createdAt: timestamp,
       updatedAt: timestamp
     };
 
     try {
       await localDb.customers.put(newCustomerObj);
-
       setCustomers(prev => [
         { ...newCustomerObj, createdAt: new Date(timestamp), updatedAt: new Date(timestamp) },
         ...prev
       ]);
-
       setShowAddModal(false);
       setNewCust({ name: '', phone: '', address: '', email: '', nic: '', notes: '', profilePicture: '' });
       setPhoneSuffix('');
       showToast(t.success);
 
-      if (window.electronAPI?.saveLocalData) {
-        const userCus = await localDb.customers.where('uid').equals(user.uid).toArray();
-        await window.electronAPI.saveLocalData(`customers_${user.uid}.json`, userCus);
-      }
-
-      if (canUseCloud() && setDoc && doc && serverTimestamp) {
+      if (canUseCloud()) {
         try {
           await setDoc(doc(db, 'customers', customerId), {
             ...newCustomerObj,
@@ -1057,38 +779,14 @@ export default function Customers({ lang = 'si' }) {
             updatedAt: serverTimestamp()
           });
           await localDb.customers.update(customerId, { synced: 1 });
-          setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, synced: 1 } : c));
         } catch (firebaseErr) {
-          console.warn("Deferred cloud synchronization:", firebaseErr.message);
+          console.warn("Deferred cloud customer save:", firebaseErr?.message || firebaseErr);
         }
       }
     } catch (err) {
-      console.error("Local save failed:", err);
       alert('Error: ' + err.message);
     } finally {
       setIsSaving(false);
-    }
-  };
-
-  /* ── Contact Picker ── */
-  const handleImportContact = async () => {
-    const isSupported = ('contacts' in navigator && 'ContactsManager' in window);
-    if (!isSupported) { showToast(t.contactPickerNotSupported); return; }
-    try {
-      const contacts = await navigator.contacts.select(['name', 'tel'], { multiple: false });
-      if (contacts?.length > 0) {
-        const contact = contacts[0];
-        let cleanTel = (contact.tel?.[0] || '').replace(/\D/g, '');
-        if (cleanTel.startsWith('94') && cleanTel.length === 11) cleanTel = cleanTel.substring(2);
-        else if (cleanTel.startsWith('0') && cleanTel.length === 10) cleanTel = cleanTel.substring(1);
-        else if (cleanTel.length > 9) cleanTel = cleanTel.slice(-9);
-        setNewCust(prev => ({ ...prev, name: contact.name?.[0] || '' }));
-        setPhoneSuffix(cleanTel);
-        showToast('✅ Contact එක සාර්ථකව ඇතුළත් කළා!');
-      }
-    } catch (err) {
-      console.error(err);
-      showToast(t.contactPickerError);
     }
   };
 
@@ -1128,59 +826,33 @@ export default function Customers({ lang = 'si' }) {
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
   const paged = useMemo(() => filtered.slice((page - 1) * perPage, page * perPage), [filtered, page, perPage]);
-  useEffect(() => { setPage(1); }, [searchTerm, showCreditOnly, sortBy, perPage]);
 
   const BalBadge = ({ bal }) => {
     const b = nn(bal);
     if (b > 0.01)  return <div style={{ fontWeight: 800, color: '#dc2626', fontSize: 16 }}>Rs.{fmt(b)}</div>;
-    if (b < -0.01) return <div style={{ fontWeight: 800, color: '#2563eb', fontSize: 14 }}>-Rs.{fmt(Math.abs(b))} <span style={{ fontSize: 10, background: '#eff6ff', color: '#2563eb', padding: '1px 5px', borderRadius: 8 }}>💰 {t.overpaid}</span></div>;
+    if (b < -0.01) return <div style={{ fontWeight: 800, color: '#2563eb', fontSize: 14 }}>-Rs.{fmt(Math.abs(b))}</div>;
     return <div style={{ fontWeight: 600, color: '#16a34a', fontSize: 13, background: '#dcfce7', padding: '4px 12px', borderRadius: 20, display: 'inline-block' }}>✅ {t.settled}</div>;
   };
 
-  /* ══════════════════════════════════════
-     🔐 AUTH GUARDS
-  ══════════════════════════════════════ */
   if (authLoading || loading) return (
     <div style={{ padding: 40, textAlign: 'center', color: '#64748b', fontSize: 18, fontWeight: 600 }}>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-      <div style={{ width: 40, height: 40, border: '4px solid #e2e8f0', borderTopColor: '#3b82f6', borderRadius: '50%', animation: 'spin .8s linear infinite', margin: '0 auto 12px' }} />
       {t.loading}
     </div>
   );
-
-  if (!user?.uid) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', padding: 20 }}>
-        <div style={{ background: 'white', borderRadius: 20, padding: 40, maxWidth: 400, width: '100%', textAlign: 'center', boxShadow: '0 10px 40px rgba(0,0,0,0.08)' }}>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
-          <h2 style={{ fontSize: 20, fontWeight: 800, color: '#1e293b', marginBottom: 8 }}>Login අවශ්‍යයි</h2>
-          <p style={{ fontSize: 14, color: '#64748b', marginBottom: 20 }}>
-            පාරිභෝගිකයින් බැලීමට පළමුව ඔබගේ ගිණුමට Login වන්න.
-          </p>
-          <a href="/" style={{ display: 'inline-block', padding: '12px 24px', background: '#3b82f6', color: 'white', borderRadius: 10, fontWeight: 700, textDecoration: 'none' }}>
-            Login පිටුවට යන්න
-          </a>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div style={S.container}>
       {toastMsg && (
         <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)', background:'#1e293b', color:'#fff', padding:'10px 20px', borderRadius:10, zIndex:10002, fontWeight:700, fontSize:14, boxShadow:'0 4px 20px rgba(0,0,0,0.4)', whiteSpace:'nowrap' }}>{toastMsg}</div>
       )}
-
       {outputInvoice && (
         <InvoiceOutputManager invoice={outputInvoice} initialMode="whatsapp" onClose={() => setOutputInvoice(null)} />
       )}
-
       {paymentCust && (
         <PaymentModal customer={paymentCust} t={t} user={user}
           onClose={() => setPaymentCust(null)}
           onSuccess={(synthetic) => { setPaymentCust(null); setOutputInvoice(synthetic); fetchCustomers(true); }} />
       )}
-
       {creditCust && (
         <CreditModal customer={creditCust} t={t} user={user}
           onClose={() => setCreditCust(null)}
@@ -1195,9 +867,6 @@ export default function Customers({ lang = 'si' }) {
             <h2 style={S.title}>{t.title}</h2>
             <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
               {stats.total} {t.totalCustomers}
-              <span style={{ marginLeft: 8, color: '#3b82f6', fontWeight: 700 }}>
-                👤 {user?.email?.split('@')[0] || user?.uid?.slice(0, 8)}
-              </span>
             </p>
           </div>
         </div>
@@ -1213,12 +882,6 @@ export default function Customers({ lang = 'si' }) {
       {fetchErrMsg && (
         <div style={{ background: '#fef3c7', border: '1px solid #fde068', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#92400e', fontWeight: 600 }}>
           {fetchErrMsg}
-        </div>
-      )}
-
-      {lastFetchTs > 0 && (
-        <div style={{ fontSize: 11, color: '#94a3b8', textAlign: 'right', marginBottom: 8 }}>
-          ⏱️ {t.lastUpdated}: {new Date(lastFetchTs).toLocaleTimeString()}
         </div>
       )}
 
@@ -1244,9 +907,6 @@ export default function Customers({ lang = 'si' }) {
           <input type="text" placeholder={t.search} value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
             style={{ padding: '11px 32px 11px 38px', borderRadius: 10, border: '2px solid #e2e8f0', fontSize: 14, outline: 'none', width: '100%', boxSizing: 'border-box', background: 'white' }} />
-          {searchTerm && (
-            <button onClick={() => setSearchTerm('')} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: '#94a3b8' }}>✕</button>
-          )}
         </div>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer', background: showCreditOnly ? '#fef2f2' : 'white', padding: '8px 14px', borderRadius: 10, border: `2px solid ${showCreditOnly ? '#dc2626' : '#e2e8f0'}`, userSelect: 'none' }}>
           <input type="checkbox" checked={showCreditOnly} onChange={e => setShowCreditOnly(e.target.checked)} style={{ width: 16, height: 16, accentColor: '#dc2626' }} />
@@ -1259,175 +919,64 @@ export default function Customers({ lang = 'si' }) {
           <option value="nameAZ">🔤 {t.sortNameAZ}</option>
           <option value="nameZA">🔤 {t.sortNameZA}</option>
         </select>
-        <div style={{ display: 'flex', background: '#f1f5f9', borderRadius: 8, padding: 3 }}>
-          {[{ v: 'table', i: '📋' }, { v: 'cards', i: '🃏' }].map(m => (
-            <button key={m.v} onClick={() => setViewMode(m.v)}
-              style={{ width: 36, height: 36, border: 'none', borderRadius: 6, background: viewMode === m.v ? 'white' : 'transparent', cursor: 'pointer', fontSize: 16, boxShadow: viewMode === m.v ? '0 1px 3px rgba(0,0,0,.1)' : 'none' }}>
-              {m.i}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ fontSize: 13, color: '#64748b', fontWeight: 600, marginBottom: 12 }}>
-        {t.showing} {paged.length} {t.of} {filtered.length}
       </div>
 
       {/* ── TABLE VIEW ── */}
-      {viewMode === 'table' && (
-        <div style={{ overflowX: 'auto', borderRadius: 12, border: '1px solid #e2e8f0', background: 'white' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-            <thead>
-              <tr style={{ background: '#f8fafc' }}>
-                {['#', '', t.name, t.mobile, t.address, t.balance, t.action].map((h, i) => (
-                  <th key={i} style={{ padding: '14px 12px', borderBottom: '2px solid #e2e8f0', color: '#475569', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, textAlign: i === 5 ? 'right' : 'left' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {paged.length === 0 ? (
-                <tr><td colSpan="7" style={{ padding: 50, textAlign: 'center', color: '#94a3b8' }}>
-                  <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div><div>{t.noData}</div>
-                </td></tr>
-              ) : paged.map((cus, idx) => {
-                const activeLoan = getCustomerActiveLoan(cus.phone);
-                const isUnsynced = cus.synced === 0 || cus.synced === false;
-                return (
-                  <tr key={cus.id} style={{ borderBottom: '1px solid #f1f5f9', transition: 'background 0.15s' }}
-                    onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
-                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                    <td style={S.td}>{(page - 1) * perPage + idx + 1}</td>
-                    <td style={S.td}>
-                      {cus.profilePicture ? (
-                        <img src={cus.profilePicture} style={{ width: 42, height: 42, borderRadius: '50%', objectFit: 'cover', border: '2px solid #e2e8f0' }} alt="" />
-                      ) : (
-                        <div style={{ width: 42, height: 42, borderRadius: '50%', background: 'linear-gradient(135deg,#3b82f6,#6366f1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: 'white', fontSize: 16 }}>
-                          {(cus.name || '?')[0].toUpperCase()}
-                        </div>
-                      )}
-                    </td>
-                    <td style={{ ...S.td, cursor: 'pointer' }} onClick={() => window.location.href = `/customers/${cus.id}`}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <span style={{ fontWeight: 700, color: '#1e293b', fontSize: 15 }}>{cus.name}</span>
-                        {activeLoan && (
-                          <span onClick={(e) => { e.stopPropagation(); window.location.href = '/loans'; }}
-                            style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #86efac', padding: '2px 6px', borderRadius: 6, fontSize: 10, fontWeight: 800, cursor: 'pointer' }}
-                            title={`Remaining: Rs.${fmt(activeLoan.remainingBalance)}`}>{t.activeLoan}</span>
-                        )}
-                        {isUnsynced && (
-                          <span style={{ background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a', padding: '2px 6px', borderRadius: 6, fontSize: 10, fontWeight: 800 }}>Offline Only</span>
-                        )}
+      <div style={{ overflowX: 'auto', borderRadius: 12, border: '1px solid #e2e8f0', background: 'white' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+          <thead>
+            <tr style={{ background: '#f8fafc' }}>
+              {['#', '', t.name, t.mobile, t.address, t.balance, t.action].map((h, i) => (
+                <th key={i} style={{ padding: '14px 12px', borderBottom: '2px solid #e2e8f0', color: '#475569', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, textAlign: i === 5 ? 'right' : 'left' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {paged.length === 0 ? (
+              <tr><td colSpan="7" style={{ padding: 50, textAlign: 'center', color: '#94a3b8' }}>
+                <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div><div>{t.noData}</div>
+              </td></tr>
+            ) : paged.map((cus, idx) => {
+              const activeLoan = getCustomerActiveLoan(cus.phone);
+              return (
+                <tr key={cus.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                  <td style={S.td}>{(page - 1) * perPage + idx + 1}</td>
+                  <td style={S.td}>
+                    {cus.profilePicture ? (
+                      <img src={cus.profilePicture} style={{ width: 42, height: 42, borderRadius: '50%', objectFit: 'cover' }} alt="" />
+                    ) : (
+                      <div style={{ width: 42, height: 42, borderRadius: '50%', background: '#3b82f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: 'white', fontSize: 16 }}>
+                        {(cus.name || '?')[0].toUpperCase()}
                       </div>
-                      {cus.email && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>📧 {cus.email}</div>}
-                    </td>
-                    <td style={S.td}>{cus.phone || '-'}</td>
-                    <td style={S.td}>{cus.address || '-'}</td>
-                    <td style={{ ...S.td, textAlign: 'right' }}><BalBadge bal={cus.currentBalance} /></td>
-                    <td style={{ ...S.td, textAlign: 'center' }}>
-                      <div style={{ display: 'flex', justifyContent: 'center', gap: 6 }}>
-                        <button onClick={e => { e.stopPropagation(); setCreditCust(cus); }}
-                          style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5', whiteSpace: 'nowrap' }}>
-                          ➕ {t.addCreditTitle}
-                        </button>
-                        <button onClick={e => { e.stopPropagation(); setPaymentCust(cus); }}
-                          style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#dcfce7', color: '#16a34a', border: '1px solid #86efac', whiteSpace: 'nowrap' }}>
-                          💰 {t.receivePayment}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* ── CARDS VIEW ── */}
-      {viewMode === 'cards' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(320px,1fr))', gap: 12 }}>
-          {paged.length === 0 ? (
-            <div style={{ gridColumn: '1/-1', textAlign: 'center', padding: 50, color: '#94a3b8' }}>
-              <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div><div>{t.noData}</div>
-            </div>
-          ) : paged.map(cus => {
-            const activeLoan = getCustomerActiveLoan(cus.phone);
-            const isUnsynced = cus.synced === 0 || cus.synced === false;
-            return (
-              <div key={cus.id} style={{ background: 'white', borderRadius: 14, padding: 16, border: '1px solid #e2e8f0', borderLeft: `5px solid ${nn(cus.currentBalance) > 0.01 ? '#dc2626' : nn(cus.currentBalance) < -0.01 ? '#2563eb' : '#16a34a'}` }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, cursor: 'pointer' }}
-                  onClick={() => window.location.href = `/customers/${cus.id}`}>
-                  {cus.profilePicture ? (
-                    <img src={cus.profilePicture} style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover' }} alt="" />
-                  ) : (
-                    <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'linear-gradient(135deg,#3b82f6,#6366f1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: 'white', fontSize: 20 }}>
-                      {(cus.name || '?')[0].toUpperCase()}
+                    )}
+                  </td>
+                  <td style={S.td}>
+                    <div style={{ fontWeight: 700, color: '#1e293b', fontSize: 15 }}>{cus.name}</div>
+                    {cus.email && <div style={{ fontSize: 11, color: '#94a3b8' }}>📧 {cus.email}</div>}
+                  </td>
+                  <td style={S.td}>{cus.phone || '-'}</td>
+                  <td style={S.td}>{cus.address || '-'}</td>
+                  <td style={{ ...S.td, textAlign: 'right' }}><BalBadge bal={cus.currentBalance} /></td>
+                  <td style={{ ...S.td, textAlign: 'center' }}>
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: 6 }}>
+                      <button onClick={() => setCreditCust(cus)}
+                        style={{ padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5' }}>
+                        ➕ {t.addCreditTitle}
+                      </button>
+                      <button onClick={() => setPaymentCust(cus)}
+                        style={{ padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#dcfce7', color: '#16a34a', border: '1px solid #86efac' }}>
+                        💰 {t.receivePayment}
+                      </button>
                     </div>
-                  )}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <div style={{ fontWeight: 700, fontSize: 16, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cus.name}</div>
-                      {isUnsynced && (
-                        <span style={{ fontSize: 9, background: '#fffbeb', color: '#b45309', padding: '1px 4px', borderRadius: 4, fontWeight: 800 }}>Offline</span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>{cus.phone || '-'}</div>
-                  </div>
-                  <BalBadge bal={cus.currentBalance} />
-                </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
-                {activeLoan && (
-                  <div 
-                    onClick={() => window.location.href = '/loans'}
-                    style={{ marginBottom: 10, padding: '8px 12px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 10, fontSize: 11, fontWeight: 700, color: '#16a34a', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
-                  >
-                    <span>💸 {t.activeLoan} ({activeLoan.collectionMethod?.toUpperCase() || '-'})</span>
-                    <span>Rs.{fmt(activeLoan.remainingBalance)} ➡️</span>
-                  </div>
-                )}
-
-                {cus.address && <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>📍 {cus.address}</div>}
-                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                  <button onClick={e => { e.stopPropagation(); setCreditCust(cus); }}
-                    style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #fca5a5', background: '#fef2f2', color: '#dc2626', fontSize: 13, cursor: 'pointer', fontWeight: 700 }}>
-                    ➕ {t.addCreditTitle}
-                  </button>
-                  <button onClick={e => { e.stopPropagation(); setPaymentCust(cus); }}
-                    style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #86efac', background: '#dcfce7', color: '#16a34a', fontSize: 13, cursor: 'pointer', fontWeight: 700 }}>
-                    💰 {t.receivePayment}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ── PAGINATION ── */}
-      {totalPages > 1 && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, padding: '14px 16px', background: 'white', borderRadius: 12, border: '1px solid #e2e8f0', marginTop: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 12, color: '#64748b' }}>{t.perPage}:</span>
-            <select value={perPage} onChange={e => setPerPage(Number(e.target.value))}
-              style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}>
-              {[10, 25, 50, 100].map(v => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </div>
-          <div style={{ display: 'flex', gap: 4 }}>
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-              style={{ padding: '7px 14px', borderRadius: 6, border: '1px solid #d1d5db', background: 'white', cursor: 'pointer', opacity: page === 1 ? 0.4 : 1 }}>
-              ◀ {t.prev}
-            </button>
-            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-              style={{ padding: '7px 14px', borderRadius: 6, border: '1px solid #d1d5db', background: 'white', cursor: 'pointer', opacity: page === totalPages ? 0.4 : 1 }}>
-              {t.next} ▶
-            </button>
-          </div>
-          <span style={{ fontSize: 12, color: '#64748b' }}>{t.page} {page} / {totalPages}</span>
-        </div>
-      )}
-
-      {/* ── ADD CUSTOMER MODAL ── */}
+      {/* Add Modal */}
       {showAddModal && (
         <div style={S.overlay}>
           <div style={S.modal}>
@@ -1435,32 +984,7 @@ export default function Customers({ lang = 'si' }) {
               <h3 style={{ margin: 0, fontSize: 18 }}>👤 {t.addNew}</h3>
               <button onClick={() => setShowAddModal(false)} style={S.closeBtn}>✕</button>
             </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-              <div style={{ position: 'relative', width: 85, height: 85 }}>
-                {newCust.profilePicture ? (
-                  <img src={newCust.profilePicture} style={{ width: 85, height: 85, borderRadius: '50%', objectFit: 'cover', border: '3px solid #3b82f6' }} alt="" />
-                ) : (
-                  <div style={{ width: 85, height: 85, borderRadius: '50%', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, color: '#94a3b8', border: '1px solid #cbd5e1' }}>👤</div>
-                )}
-                {newCust.profilePicture && (
-                  <button type="button" onClick={() => setNewCust(p => ({ ...p, profilePicture: '' }))}
-                    style={{ position: 'absolute', top: 0, right: 0, background: '#ef4444', color: 'white', border: 'none', borderRadius: '50%', width: 22, height: 22, cursor: 'pointer', fontSize: 11, fontWeight: 'bold' }}>✕</button>
-                )}
-              </div>
-              <input type="file" accept="image/*" id="add-profile-pic-input" style={{ display: 'none' }}
-                onChange={(e) => handleAddLogoUpload(e, setNewCust, showToast)} />
-              <button type="button" onClick={() => document.getElementById('add-profile-pic-input').click()}
-                style={{ padding: '6px 12px', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer', color: '#475569' }}>
-                📷 Photo එකක් තෝරන්න (Select Image)
-              </button>
-            </div>
-
             <form onSubmit={handleAdd} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <button type="button" onClick={handleImportContact}
-                style={{ width: '100%', padding: '12px', borderRadius: 10, background: '#f0f9ff', border: '2px solid #bfdbfe', color: '#0369a1', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                {t.importContact}
-              </button>
               <div>
                 <label style={S.label}>{t.name} *</label>
                 <input style={S.input} value={newCust.name}
@@ -1469,22 +993,16 @@ export default function Customers({ lang = 'si' }) {
               </div>
               <div>
                 <label style={S.label}>{t.mobile} *</label>
-                <div style={{ display: 'flex', alignItems: 'center', border: '2px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: 'white' }}>
-                  <span style={{ padding: '10px 12px', background: '#f1f5f9', fontWeight: 'bold', color: '#475569', fontSize: 14, borderRight: '2px solid #e2e8f0' }}>+94</span>
-                  <input style={{ ...S.input, border: 'none', borderRadius: 0, paddingLeft: 8 }} type="tel"
+                <div style={{ display: 'flex', alignItems: 'center', border: '2px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+                  <span style={{ padding: '10px 12px', background: '#f1f5f9', fontWeight: 'bold' }}>+94</span>
+                  <input style={{ ...S.input, border: 'none' }} type="tel"
                     value={phoneSuffix} onChange={e => setPhoneSuffix(e.target.value.replace(/\D/g, ''))}
                     placeholder="771234567" required maxLength={9} />
                 </div>
               </div>
-              <div>
-                <label style={S.label}>{t.address}</label>
-                <textarea style={{ ...S.input, height: 60, resize: 'vertical' }}
-                  value={newCust.address} onChange={e => setNewCust({ ...newCust, address: e.target.value })}
-                  placeholder={t.address} />
-              </div>
               <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
                 <button type="button" onClick={() => setShowAddModal(false)} style={S.cancelBtn}>{t.cancel}</button>
-                <button type="submit" disabled={isSaving} style={{ ...S.saveBtn, opacity: isSaving ? 0.6 : 1 }}>
+                <button type="submit" disabled={isSaving} style={S.saveBtn}>
                   {isSaving ? `⏳ ${t.adding}` : `💾 ${t.save}`}
                 </button>
               </div>
@@ -1496,22 +1014,19 @@ export default function Customers({ lang = 'si' }) {
   );
 }
 
-/* ════════════════════════════════════════
-   STYLES
-════════════════════════════════════════ */
 const S = {
-  container: { padding: 20, maxWidth: 1400, margin: '0 auto', fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif' },
+  container: { padding: 20, maxWidth: 1400, margin: '0 auto' },
   header:    { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 },
   title:     { margin: 0, color: '#1e293b', fontSize: 24, fontWeight: 800 },
-  addBtn:    { padding: '10px 20px', background: 'linear-gradient(135deg,#3b82f6,#2563eb)', color: 'white', border: 'none', borderRadius: 10, cursor: 'pointer', fontWeight: 700, fontSize: 14, boxShadow: '0 4px 12px rgba(59,130,246,0.3)', whiteSpace: 'nowrap' },
-  td:        { padding: '12px 12px', color: '#334155', verticalAlign: 'middle' },
-  overlay:   { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 },
-  modal:     { background: 'white', padding: 28, borderRadius: 20, width: '100%', maxWidth: 480, maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.15)' },
-  modalHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, paddingBottom: 14, borderBottom: '2px solid #f1f5f9' },
-  closeBtn:  { background: '#f1f5f9', border: 'none', width: 34, height: 34, borderRadius: '50%', fontSize: 16, cursor: 'pointer', color: '#64748b', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' },
-  input:     { width: '100%', padding: 12, borderRadius: 10, border: '2px solid #e2e8f0', fontSize: 14, boxSizing: 'border-box', outline: 'none' },
-  label:     { display: 'block', marginBottom: 5, fontWeight: 700, fontSize: 13, color: '#475569' },
-  cancelBtn: { flex: 1, padding: 13, background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 10, cursor: 'pointer', fontWeight: 700, fontSize: 14 },
-  saveBtn:   { flex: 1, padding: 13, background: 'linear-gradient(135deg,#10b981,#059669)', color: 'white', border: 'none', borderRadius: 10, cursor: 'pointer', fontWeight: 700, fontSize: 14 },
-  quickBtn:  { flex: 1, padding: '6px 4px', borderRadius: 8, border: '1px solid #86efac', background: '#f0fdf4', color: '#16a34a', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' },
+  addBtn:    { padding: '10px 20px', background: '#2563eb', color: 'white', border: 'none', borderRadius: 10, cursor: 'pointer', fontWeight: 700 },
+  td:        { padding: '12px 12px', color: '#334155' },
+  overlay:   { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+  modal:     { background: 'white', padding: 24, borderRadius: 16, width: '100%', maxWidth: 440 },
+  modalHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  closeBtn:  { background: '#f1f5f9', border: 'none', width: 32, height: 32, borderRadius: '50%', cursor: 'pointer', fontWeight: 'bold' },
+  input:     { width: '100%', padding: 10, borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 14, boxSizing: 'border-box' },
+  label:     { display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 13, color: '#475569' },
+  cancelBtn: { flex: 1, padding: 10, background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 },
+  saveBtn:   { flex: 1, padding: 10, background: '#10b981', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 },
+  quickBtn:  { padding: '4px 8px', borderRadius: 6, border: '1px solid #86efac', background: '#f0fdf4', color: '#16a34a', fontSize: 11, fontWeight: 700, cursor: 'pointer' },
 };
