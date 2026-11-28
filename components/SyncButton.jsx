@@ -1,8 +1,3 @@
-'use client';
-// components/SyncButton.jsx · v5.3 (Strict User-Only Cloud Sync & Multi-Tenant Isolation)
-// 🛡️ GUARANTEE: Only the logged-in user's data is listened/downloaded from Firebase to PC Hard Disk.
-// 🛡️ Zero cross-tenant data leakage.
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { db, auth, getDb, app } from '@/lib/firebase';
 import {
@@ -12,8 +7,6 @@ import {
   getDocs,
   query,
   where,
-  limit,
-  startAfter,
   onSnapshot,
   getFirestore
 } from 'firebase/firestore';
@@ -190,7 +183,87 @@ export default function SyncButton() {
   };
 
   // ══════════════════════════════════════════════════════════════
-  // 1. AUTO-UPLOAD LOCAL -> CLOUD (LOGGED-IN USER ONLY)
+  // 1. 🛡️ DOWNLOAD / PULL CLOUD -> LOCAL PC HARD DISK (USER-ONLY)
+  // ══════════════════════════════════════════════════════════════
+  const downloadCloudToLocal = useCallback(async (forcedUid) => {
+    const uidToUse = String(forcedUid || activeUid || '').trim();
+    if (!uidToUse || !navigator.onLine || !localDb) return { success: false, total: 0 };
+
+    const firestore = getSafeFirestoreDb();
+    if (!firestore) return { success: false, total: 0 };
+
+    const dbOpen = await ensureDbOpen();
+    if (!dbOpen) return { success: false, total: 0 };
+
+    let totalDownloaded = 0;
+    const syncTargets = [
+      {
+        col: 'items',
+        table: localDb.items,
+        customMap: (id, d) => ({
+          id,
+          docId: id,
+          ...d,
+          currentStock: d.currentStock ?? d.stock ?? 0,
+        }),
+      },
+      { col: 'customers', table: localDb.customers },
+      { col: 'customerLoans', table: localDb.customerLoans },
+      { col: 'invoices', table: localDb.invoices },
+      { col: 'purchases', table: localDb.purchases },
+      { col: 'purchase-returns', table: localDb['purchase-returns'] || localDb.purchaseReturns },
+      { col: 'suppliers', table: localDb.suppliers },
+      { col: 'payments', table: localDb.payments },
+      { col: 'cashTransactions', table: localDb.cashTransactions },
+      { col: 'bankAccounts', table: localDb.bankAccounts },
+    ];
+
+    for (const target of syncTargets) {
+      if (!target.table) continue;
+      try {
+        const q1 = query(collection(firestore, target.col), where('uid', '==', uidToUse));
+        const snap1 = await getDocs(q1);
+
+        const docsMap = new Map();
+        snap1.docs.forEach((d) => docsMap.set(d.id, d.data()));
+
+        // Fallback for legacy userId key
+        try {
+          const q2 = query(collection(firestore, target.col), where('userId', '==', uidToUse));
+          const snap2 = await getDocs(q2);
+          snap2.docs.forEach((d) => {
+            if (!docsMap.has(d.id)) docsMap.set(d.id, d.data());
+          });
+        } catch (e) {}
+
+        const docsToSave = [];
+        for (const [docId, rawData] of docsMap.entries()) {
+          const mapped = target.customMap ? target.customMap(docId, rawData) : { id: docId, ...rawData };
+          docsToSave.push({
+            ...mapped,
+            id: String(mapped.id || docId),
+            docId: String(mapped.docId || docId),
+            uid: uidToUse,
+            synced: 1,
+            _synced: true,
+            _localSaved: false,
+          });
+        }
+
+        if (docsToSave.length > 0) {
+          await safeBulkPut(target.table, docsToSave);
+          totalDownloaded += docsToSave.length;
+        }
+      } catch (err) {
+        console.warn(`[SyncButton] Download error for ${target.col}:`, err?.message || err);
+      }
+    }
+
+    return { success: true, total: totalDownloaded };
+  }, [activeUid]);
+
+  // ══════════════════════════════════════════════════════════════
+  // 2. AUTO-UPLOAD LOCAL -> CLOUD (LOGGED-IN USER ONLY)
   // ══════════════════════════════════════════════════════════════
   const autoUploadLocalToCloud = useCallback(async () => {
     if (isSyncingRef.current || !activeUid) return;
@@ -211,7 +284,7 @@ export default function SyncButton() {
         { table: localDb.customerLoans,     col: 'customerLoans',     idKey: 'id' },
         { table: localDb.invoices,          col: 'invoices',          idKey: 'id' },
         { table: localDb.purchases,         col: 'purchases',         idKey: 'id' },
-        { table: localDb['purchase-returns'], col: 'purchase-returns', idKey: 'id' },
+        { table: localDb['purchase-returns'] || localDb.purchaseReturns, col: 'purchase-returns', idKey: 'id' },
         { table: localDb.suppliers,         col: 'suppliers',         idKey: 'id' },
         { table: localDb.payments,          col: 'payments',          idKey: 'id' },
         { table: localDb.cashTransactions,  col: 'cashTransactions',  idKey: 'id' },
@@ -227,13 +300,13 @@ export default function SyncButton() {
         
         // 🛡️ Strict filter: Upload ONLY active logged-in user's unsynced records
         const unsynced = allLocal.filter(r => 
-          (String(r.uid || '').trim() === activeUid || r.uid === 'pos_local_user' || !r.uid) && 
+          (String(r.uid || r.userId || '').trim() === activeUid || r.uid === 'pos_local_user' || !r.uid) && 
           isItemUnsynced(r)
         );
 
         totalUnsynced += unsynced.length;
 
-        const batch = unsynced.slice(0, 15);
+        const batch = unsynced.slice(0, 20);
         for (const item of batch) {
           try {
             const rawId = item[target.idKey] || item.docId || item.localId || item.firestoreId;
@@ -243,7 +316,8 @@ export default function SyncButton() {
             const syncedRecord = {
               ...item,
               id: docId,
-              uid: activeUid, // Strictly assign active UID
+              docId,
+              uid: activeUid,
               synced: 1,
               _synced: true,
               _localSaved: false,
@@ -275,10 +349,9 @@ export default function SyncButton() {
   }, [activeUid]);
 
   // ══════════════════════════════════════════════════════════════
-  // 2. 🛡️ REAL-TIME CLOUD -> LOCAL LISTENERS (STRICT USER ISOLATION)
+  // 3. 🛡️ REAL-TIME CLOUD -> LOCAL LISTENERS (STRICT USER ISOLATION)
   // ══════════════════════════════════════════════════════════════
   useEffect(() => {
-    // 🛡️ If user is not logged in or duplicate, DO NOT listen or download anything!
     if (isDuplicate || !navigator.onLine || !activeUid) return;
 
     const firestore = getSafeFirestoreDb();
@@ -289,7 +362,6 @@ export default function SyncButton() {
     const setupListener = (colName, localTable, customMapping) => {
       if (!localTable) return;
       try {
-        // 🛡️ STRICT QUERY: Listen ONLY to documents belonging to activeUid
         const q = query(
           collection(firestore, colName),
           where('uid', '==', activeUid)
@@ -304,13 +376,14 @@ export default function SyncButton() {
                 const data = change.doc.data();
                 
                 // 🛡️ DOUBLE CHECK: Strictly reject any doc that does not match activeUid
-                if (String(data.uid || '').trim() !== activeUid) return;
+                if (String(data.uid || data.userId || '').trim() !== activeUid) return;
 
                 docsToPut.push(
                   customMapping
                     ? customMapping(change.doc.id, data)
                     : {
                         id: change.doc.id,
+                        docId: change.doc.id,
                         ...data,
                         uid: activeUid,
                         synced: 1,
@@ -325,15 +398,12 @@ export default function SyncButton() {
               safeBulkPut(localTable, docsToPut);
             }
           },
-          (err) => {
-            // Quiet fallback for quota/permission
-          }
+          () => {}
         );
         unsubs.push(unsub);
       } catch (err) {}
     };
 
-    // Setup strict user-filtered listeners for all collections
     setupListener('items', localDb.items, (id, data) => ({
       id,
       docId: id,
@@ -348,7 +418,11 @@ export default function SyncButton() {
     setupListener('customerLoans', localDb.customerLoans);
     setupListener('invoices', localDb.invoices);
     setupListener('purchases', localDb.purchases);
+    setupListener('purchase-returns', localDb['purchase-returns'] || localDb.purchaseReturns);
     setupListener('suppliers', localDb.suppliers);
+    setupListener('payments', localDb.payments);
+    setupListener('cashTransactions', localDb.cashTransactions);
+    setupListener('bankAccounts', localDb.bankAccounts);
 
     return () => {
       unsubs.forEach((unsub) => unsub && unsub());
@@ -356,7 +430,7 @@ export default function SyncButton() {
   }, [isDuplicate, activeUid]);
 
   // ══════════════════════════════════════════════════════════════
-  // 3. CONTINUOUS BACKGROUND AUTO-SYNC LOOP
+  // 4. CONTINUOUS BACKGROUND AUTO-SYNC LOOP
   // ══════════════════════════════════════════════════════════════
   useEffect(() => {
     if (isDuplicate || !activeUid) return;
@@ -368,7 +442,7 @@ export default function SyncButton() {
 
     const handleOnline = () => {
       setStatusMsg('🌐 Online! Auto-Syncing...');
-      autoUploadLocalToCloud();
+      downloadCloudToLocal(activeUid).then(() => autoUploadLocalToCloud());
       setTimeout(() => setStatusMsg(''), 4000);
     };
 
@@ -377,7 +451,49 @@ export default function SyncButton() {
       clearInterval(interval);
       window.removeEventListener('online', handleOnline);
     };
-  }, [autoUploadLocalToCloud, isDuplicate, activeUid]);
+  }, [autoUploadLocalToCloud, downloadCloudToLocal, isDuplicate, activeUid]);
+
+  // ══════════════════════════════════════════════════════════════
+  // 5. MANUAL BI-DIRECTIONAL SYNC NOW HANDLER
+  // ══════════════════════════════════════════════════════════════
+  const handleManualSyncNow = async () => {
+    if (!activeUid) {
+      alert('කරුණාකර පළමුව Login වන්න.');
+      return;
+    }
+    setSyncing(true);
+    setStatusMsg('📥 Cloud ➔ PC Hard Disk Download වෙමින්...');
+    try {
+      const dlResult = await downloadCloudToLocal(activeUid);
+      setStatusMsg('📤 PC ➔ Cloud Upload වෙමින්...');
+      await autoUploadLocalToCloud();
+      setStatusMsg(`✅ Sync සාර්ථකයි! (${dlResult.total} Cloud Records Download විය)`);
+    } catch (e) {
+      setStatusMsg('⚠️ Sync දෝෂයක්: ' + (e?.message || e));
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setStatusMsg(''), 4000);
+    }
+  };
+
+  const handleOnlyDownloadCloud = async () => {
+    if (!activeUid) {
+      alert('කරුණාකර පළමුව Login වන්න.');
+      return;
+    }
+    setSyncing(true);
+    setStatusMsg('📥 Firebase Cloud දත්ත PC එකට බාගත වෙමින්...');
+    try {
+      const res = await downloadCloudToLocal(activeUid);
+      setStatusMsg(`✅ Cloud දත්ත ${res.total}ක් PC Hard Disk එකට Save විය!`);
+      alert(`🎉 බාගත කිරීම සාර්ථකයි!\n\n☁️ Cloud වෙතින් PC Hard Disk එකට Records ${res.total}ක් සාර්ථකව ඇතුළත් විය.`);
+    } catch (e) {
+      alert('Download දෝෂයක්: ' + (e?.message || e));
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setStatusMsg(''), 4000);
+    }
+  };
 
   // ══════════════════════════════════════════════════════════════
   // BACKUP & RESTORE UTILITIES (SCOPED TO ACTIVE USER)
@@ -434,7 +550,7 @@ export default function SyncButton() {
         if (!t.table) continue;
         setStatusMsg(`💾 Local ${t.label} කියවමින්...`);
         const docs = await getSafeDocs(t.table);
-        const userDocs = docs.filter(d => String(d.uid || '').trim() === activeUid);
+        const userDocs = docs.filter(d => String(d.uid || d.userId || '').trim() === activeUid);
         localExport[t.name] = userDocs;
         totalRecords += userDocs.length;
       }
@@ -501,7 +617,7 @@ export default function SyncButton() {
             ...rec,
             id,
             docId: id,
-            uid: activeUid, // Enforce active user UID
+            uid: activeUid,
             synced: rec.synced ?? 1,
             _synced: rec._synced ?? true,
             _localSaved: false,
@@ -553,19 +669,6 @@ export default function SyncButton() {
       }
     }
     fileInputRef.current?.click();
-  };
-
-  const handleManualSyncNow = async () => {
-    if (!activeUid) {
-      alert('කරුණාකර පළමුව Login වන්න.');
-      return;
-    }
-    setSyncing(true);
-    setStatusMsg('⚡ Sync වෙමින් පවතී...');
-    await autoUploadLocalToCloud();
-    setStatusMsg('✅ Sync සම්පූර්ණයි!');
-    setSyncing(false);
-    setTimeout(() => setStatusMsg(''), 3000);
   };
 
   // Dragging event handlers
@@ -669,21 +772,22 @@ export default function SyncButton() {
             right: '0',
             backgroundColor: '#ffffff',
             borderRadius: '12px',
-            boxShadow: '0 10px 25px rgba(0,0,0,0.2)',
-            border: '1px solid #e2e8f0',
+            boxShadow: '0 10px 25px rgba(0,0,0,0.25)',
+            border: '1px solid #cbd5e1',
             padding: '8px',
-            minWidth: '260px',
+            minWidth: '270px',
             display: 'flex',
             flexDirection: 'column',
             gap: '6px',
           }}
         >
+          {/* Full Bi-Directional Sync */}
           <button
             onClick={() => { setShowMenu(false); handleManualSyncNow(); }}
             disabled={syncing}
             style={{
               padding: '10px 14px',
-              backgroundColor: '#3b82f6',
+              backgroundColor: '#2563eb',
               color: '#fff',
               border: 'none',
               borderRadius: '8px',
@@ -696,16 +800,40 @@ export default function SyncButton() {
               fontSize: '13px',
             }}
           >
-            <span>⚡ Sync Now ({pendingCount})</span>
-            <small style={{ opacity: 0.85 }}>Local ↔ Cloud</small>
+            <span>⚡ Full Sync Now ({pendingCount})</span>
+            <small style={{ opacity: 0.85 }}>Cloud ⇄ Local</small>
           </button>
 
+          {/* Direct Download Cloud to PC */}
+          <button
+            onClick={() => { setShowMenu(false); handleOnlyDownloadCloud(); }}
+            disabled={syncing}
+            style={{
+              padding: '10px 14px',
+              backgroundColor: '#0284c7',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              textAlign: 'left',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '13px',
+            }}
+          >
+            <span>📥 Download Cloud Data</span>
+            <small style={{ opacity: 0.85 }}>Cloud ➔ PC</small>
+          </button>
+
+          {/* Backup to File */}
           <button
             onClick={() => { setShowMenu(false); handleExportLocalToFile(); }}
             disabled={syncing}
             style={{
               padding: '10px 14px',
-              backgroundColor: '#8b5cf6',
+              backgroundColor: '#7c3aed',
               color: '#fff',
               border: 'none',
               borderRadius: '8px',
@@ -719,15 +847,16 @@ export default function SyncButton() {
             }}
           >
             <span>💾 Backup to File</span>
-            <small style={{ opacity: 0.85 }}>PC → JSON</small>
+            <small style={{ opacity: 0.85 }}>PC ➔ JSON</small>
           </button>
 
+          {/* Restore File */}
           <button
             onClick={() => { setShowMenu(false); handleRestoreFromFile(); }}
             disabled={syncing}
             style={{
               padding: '10px 14px',
-              backgroundColor: '#f97316',
+              backgroundColor: '#ea580c',
               color: '#fff',
               border: 'none',
               borderRadius: '8px',
@@ -741,7 +870,7 @@ export default function SyncButton() {
             }}
           >
             <span>📂 Restore Backup</span>
-            <small style={{ opacity: 0.85 }}>JSON → PC</small>
+            <small style={{ opacity: 0.85 }}>JSON ➔ PC</small>
           </button>
         </div>
       )}

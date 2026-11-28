@@ -1,4 +1,3 @@
-// components/UserCloudBackup.jsx
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -26,6 +25,7 @@ export default function UserCloudBackup({ user: propUser }) {
   const [backupFiles, setBackupFiles] = useState([]);
   const [showFileList, setShowFileList] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [pulling, setPulling] = useState(false);
 
   const fileInputRef = useRef(null);
   const isMountedRef = useRef(true);
@@ -76,14 +76,12 @@ export default function UserCloudBackup({ user: propUser }) {
       for (const t of tables) {
         try {
           if (database && database[t]) {
-            // 🛡️ Strict filter: count ONLY active logged-in user's records
             const allRecords = await database[t].toArray();
             s[t] = allRecords.filter(r => r && String(r.uid || r.userId || '').trim() === cleanUid).length;
           } else {
             s[t] = 0;
           }
         } catch (tableErr) {
-          console.warn(`[UserCloudBackup] Count warning for table ${t}:`, tableErr?.message || tableErr);
           s[t] = 0;
         }
       }
@@ -92,17 +90,13 @@ export default function UserCloudBackup({ user: propUser }) {
       if (isMountedRef.current) {
         setStats(s);
       }
-    } catch (e) {
-      console.warn('[UserCloudBackup] Error loading local stats:', e);
-    }
+    } catch (e) {}
   }, [cleanUid]);
 
   /* ── 2. Load Real-time Cloud Counts (STRICT FIRESTORE FILTER) ── */
   const loadFirebaseCounts = useCallback(async () => {
     if (!cleanUid) return;
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      return; // Offline mode
-    }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
 
     if (isMountedRef.current) setLoadingCloud(true);
 
@@ -116,10 +110,7 @@ export default function UserCloudBackup({ user: propUser }) {
           const snap = await getDocs(q);
           counts[col] = snap.size;
         } catch (e) {
-          if (e?.code === 'resource-exhausted') {
-            console.warn(`[UserCloudBackup] Quota exceeded on cloud counts for ${col}`);
-            break;
-          }
+          if (e?.code === 'resource-exhausted') break;
         }
       }
 
@@ -128,7 +119,6 @@ export default function UserCloudBackup({ user: propUser }) {
         setFirebaseCounts(counts);
       }
     } catch (e) {
-      console.warn('[UserCloudBackup] Firebase count error:', e?.message || e);
     } finally {
       if (isMountedRef.current) setLoadingCloud(false);
     }
@@ -138,6 +128,77 @@ export default function UserCloudBackup({ user: propUser }) {
     loadStats();
     loadFirebaseCounts();
   }, [loadStats, loadFirebaseCounts]);
+
+  /* ── 3. DIRECT CLOUD -> PC HARD DISC PULL (STRICT ACTIVE USER) ── */
+  const handlePullCloudToPc = async () => {
+    if (!cleanUid) {
+      alert('කරුණාකර පළමුව Login වන්න.');
+      return;
+    }
+    if (!window.navigator.onLine) {
+      alert('⚠️ ඔබ Offline වේ. Cloud දත්ත බාගත කිරීමට අන්තර්ජාලය අවශ්‍ය වේ.');
+      return;
+    }
+
+    setPulling(true);
+    setStatus('exporting');
+    setStatusMessage('📥 Cloud (Firebase) වෙතින් PC Hard Disk එකට දත්ත බාගත වෙමින් පවතී...');
+
+    try {
+      const database = await ensureDbOpen();
+      const collections = [
+        { col: 'items', table: database.items, map: (id, d) => ({ id, docId: id, ...d, currentStock: d.currentStock ?? d.stock ?? 0 }) },
+        { col: 'customers', table: database.customers },
+        { col: 'customerLoans', table: database.customerLoans },
+        { col: 'invoices', table: database.invoices },
+        { col: 'purchases', table: database.purchases },
+        { col: 'suppliers', table: database.suppliers },
+      ];
+
+      let downloadedTotal = 0;
+
+      for (const target of collections) {
+        if (!target.table) continue;
+        try {
+          const q = query(collection(db, target.col), where('uid', '==', cleanUid));
+          const snap = await getDocs(q);
+
+          const docsToPut = [];
+          snap.docs.forEach((docSnap) => {
+            const data = docSnap.data();
+            const mapped = target.map ? target.map(docSnap.id, data) : { id: docSnap.id, ...data };
+            docsToPut.push({
+              ...mapped,
+              id: String(mapped.id || docSnap.id),
+              docId: String(mapped.docId || docSnap.id),
+              uid: cleanUid,
+              synced: 1,
+              _synced: true,
+              _localSaved: false,
+            });
+          });
+
+          if (docsToPut.length > 0) {
+            await target.table.bulkPut(docsToPut);
+            downloadedTotal += docsToPut.length;
+          }
+        } catch (colErr) {
+          console.warn(`[PullCloud] Error fetching ${target.col}:`, colErr);
+        }
+      }
+
+      await loadStats();
+      await loadFirebaseCounts();
+      setStatus('success');
+      setStatusMessage(`✅ බාගත කිරීම සාර්ථකයි! Records ${downloadedTotal}ක් PC Hard Disk එකට Save විය.`);
+      alert(`🎉 සාර්ථකයි!\n\n☁️ Cloud වෙතින් PC Hard Disk එකට Records ${downloadedTotal}ක් බාගත කර Save කරන ලදී.`);
+    } catch (e) {
+      setStatus('error');
+      setStatusMessage('❌ Download දෝෂයක්: ' + (e?.message || e));
+    } finally {
+      if (isMountedRef.current) setPulling(false);
+    }
+  };
 
   /* ── Select Backup Folder ── */
   const handleSelectBackupPath = async () => {
@@ -172,7 +233,7 @@ export default function UserCloudBackup({ user: propUser }) {
     }
   };
 
-  /* ── Manual Export (Scoped to Logged-in User Only) ── */
+  /* ── Manual Export ── */
   const handleExport = async () => {
     if (!cleanUid) {
       alert('කරුණාකර පළමුව Login වන්න.');
@@ -197,13 +258,12 @@ export default function UserCloudBackup({ user: propUser }) {
     }
   };
 
-  /* ── View Saved Backup Files (Filtered by Active UID) ── */
+  /* ── View Saved Backup Files ── */
   const loadBackupFiles = useCallback(async () => {
     if (!cleanUid) return;
     try {
       const files = await listBackupFiles();
       const shortUid = cleanUid.slice(0, 8);
-      // 🛡️ Filter only this user's backup files
       const userFiles = Array.isArray(files) 
         ? files.filter(f => {
             const name = f?.name || String(f);
@@ -225,8 +285,6 @@ export default function UserCloudBackup({ user: propUser }) {
     setRestoring(true);
     try {
       const backupData = await readBackupFile(fileName);
-      
-      // Enforce active user UID across all tables
       if (backupData && typeof backupData === 'object') {
         for (const tbl of Object.keys(backupData)) {
           if (Array.isArray(backupData[tbl])) {
@@ -260,7 +318,6 @@ export default function UserCloudBackup({ user: propUser }) {
       const text = await file.text();
       const backupData = JSON.parse(text);
 
-      // Enforce active user UID
       if (backupData && typeof backupData === 'object') {
         for (const tbl of Object.keys(backupData)) {
           if (Array.isArray(backupData[tbl])) {
@@ -286,7 +343,6 @@ export default function UserCloudBackup({ user: propUser }) {
   return (
     <div style={{ background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)', borderRadius: '16px', padding: '24px', color: '#ffffff', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
       
-      {/* Hidden File Input for Direct File Restore */}
       <input
         ref={fileInputRef}
         type="file"
@@ -314,7 +370,7 @@ export default function UserCloudBackup({ user: propUser }) {
         </button>
       </div>
 
-      {/* ══ Dual Comparison Cards ══ */}
+      {/* Dual Comparison Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px', marginBottom: '20px' }}>
         
         {/* Card 1: PC Hard Disc (Local) */}
@@ -352,20 +408,32 @@ export default function UserCloudBackup({ user: propUser }) {
       </div>
 
       {/* Action Buttons */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', marginBottom: '16px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px', marginBottom: '16px' }}>
+        
+        {/* DIRECT CLOUD DOWNLOAD BUTTON */}
+        <button
+          onClick={handlePullCloudToPc}
+          disabled={pulling}
+          style={{ padding: '12px', borderRadius: '10px', border: 'none', background: '#0284c7', color: 'white', fontWeight: '700', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+        >
+          {pulling ? '⏳ බාගත වෙමින්...' : '☁️ ➔ 💻 Pull Cloud Data to PC'}
+        </button>
+
         <button
           onClick={handleExport}
           disabled={status === 'exporting'}
           style={{ padding: '12px', borderRadius: '10px', border: 'none', background: '#10b981', color: 'white', fontWeight: '700', cursor: 'pointer' }}
         >
-          📥 Download PC Local Backup
+          📥 Download PC Local Backup (.JSON)
         </button>
+
         <button
           onClick={loadBackupFiles}
           style={{ padding: '12px', borderRadius: '10px', border: 'none', background: '#6366f1', color: 'white', fontWeight: '700', cursor: 'pointer' }}
         >
           📋 View Saved Backup Files
         </button>
+
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={restoring}
