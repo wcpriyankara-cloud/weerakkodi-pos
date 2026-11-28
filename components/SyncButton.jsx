@@ -1,3 +1,5 @@
+'use client';
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { db, auth, getDb, app } from '@/lib/firebase';
 import {
@@ -227,7 +229,6 @@ export default function SyncButton() {
         const docsMap = new Map();
         snap1.docs.forEach((d) => docsMap.set(d.id, d.data()));
 
-        // Fallback for legacy userId key
         try {
           const q2 = query(collection(firestore, target.col), where('userId', '==', uidToUse));
           const snap2 = await getDocs(q2);
@@ -298,7 +299,6 @@ export default function SyncButton() {
         if (!target.table) continue;
         const allLocal = await getSafeDocs(target.table);
         
-        // 🛡️ Strict filter: Upload ONLY active logged-in user's unsynced records
         const unsynced = allLocal.filter(r => 
           (String(r.uid || r.userId || '').trim() === activeUid || r.uid === 'pos_local_user' || !r.uid) && 
           isItemUnsynced(r)
@@ -342,7 +342,6 @@ export default function SyncButton() {
 
       setPendingCount(totalUnsynced);
     } catch (e) {
-      // Safe non-blocking catch
     } finally {
       isSyncingRef.current = false;
     }
@@ -375,7 +374,6 @@ export default function SyncButton() {
               if (change.type === 'added' || change.type === 'modified') {
                 const data = change.doc.data();
                 
-                // 🛡️ DOUBLE CHECK: Strictly reject any doc that does not match activeUid
                 if (String(data.uid || data.userId || '').trim() !== activeUid) return;
 
                 docsToPut.push(
