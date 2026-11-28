@@ -15,11 +15,9 @@ import { db, auth } from '@/lib/firebase';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 
-const INVOICE_COLLECTIONS = ['customerTransactions', 'invoices', 'drafts'];
-
 export default function UserCloudBackup({ user: propUser }) {
   const [user, setUser] = useState(propUser || null);
-  const [stats, setStats] = useState({ invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, _total: 0 });
+  const [stats, setStats] = useState({ invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, customerLoans: 0, _total: 0 });
   const [firebaseCounts, setFirebaseCounts] = useState(null);
   const [loadingCloud, setLoadingCloud] = useState(false);
   const [status, setStatus] = useState('idle');
@@ -32,6 +30,8 @@ export default function UserCloudBackup({ user: propUser }) {
   const fileInputRef = useRef(null);
   const isMountedRef = useRef(true);
   const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
+
+  const cleanUid = String(user?.uid || '').trim();
 
   /* ── Auth State Listener ── */
   useEffect(() => {
@@ -59,28 +59,26 @@ export default function UserCloudBackup({ user: propUser }) {
     }
   }, []);
 
-  /* ── 1. Load Local PC Hard Disk Stats (Crash-Proof with ensureDbOpen) ── */
+  /* ── 1. Load Local PC Hard Disk Stats (STRICT USER ISOLATION) ── */
   const loadStats = useCallback(async () => {
+    if (!cleanUid) {
+      if (isMountedRef.current) {
+        setStats({ invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, customerLoans: 0, _total: 0 });
+      }
+      return;
+    }
+
     try {
-      // 1. First ensure IndexedDB is opened safely
       const database = await ensureDbOpen();
-      const uid = user?.uid;
-      const tables = ['invoices', 'customers', 'items', 'purchases', 'suppliers'];
-      const s = { invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, _total: 0 };
+      const tables = ['invoices', 'customers', 'items', 'purchases', 'suppliers', 'customerLoans'];
+      const s = { invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, customerLoans: 0, _total: 0 };
 
       for (const t of tables) {
         try {
           if (database && database[t]) {
-            if (uid) {
-              // Try indexing by uid first for maximum speed and safety
-              try {
-                s[t] = await database[t].where('uid').equals(uid).count();
-              } catch {
-                s[t] = await database[t].filter((item) => item.uid === uid || item.userId === uid).count();
-              }
-            } else {
-              s[t] = await database[t].count();
-            }
+            // 🛡️ Strict filter: count ONLY active logged-in user's records
+            const allRecords = await database[t].toArray();
+            s[t] = allRecords.filter(r => r && String(r.uid || r.userId || '').trim() === cleanUid).length;
           } else {
             s[t] = 0;
           }
@@ -90,67 +88,42 @@ export default function UserCloudBackup({ user: propUser }) {
         }
       }
 
-      s._total = (s.invoices || 0) + (s.customers || 0) + (s.items || 0) + (s.purchases || 0) + (s.suppliers || 0);
+      s._total = s.invoices + s.customers + s.items + s.purchases + s.suppliers + s.customerLoans;
       if (isMountedRef.current) {
         setStats(s);
       }
     } catch (e) {
       console.warn('[UserCloudBackup] Error loading local stats:', e);
     }
-  }, [user]);
+  }, [cleanUid]);
 
-  /* ── 2. Load Real-time Cloud Counts (Firestore with Quota Safety) ── */
+  /* ── 2. Load Real-time Cloud Counts (STRICT FIRESTORE FILTER) ── */
   const loadFirebaseCounts = useCallback(async () => {
-    if (!user?.uid) return;
+    if (!cleanUid) return;
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      return; // Offline නම් Cloud Queries ධාවනය නොකරයි
+      return; // Offline mode
     }
 
     if (isMountedRef.current) setLoadingCloud(true);
 
     try {
-      const counts = { invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, _total: 0 };
+      const counts = { invoices: 0, customers: 0, items: 0, purchases: 0, suppliers: 0, customerLoans: 0, _total: 0 };
+      const collections = ['invoices', 'customers', 'items', 'purchases', 'suppliers', 'customerLoans'];
 
-      // Invoices & Drafts
-      for (const col of INVOICE_COLLECTIONS) {
+      for (const col of collections) {
         try {
-          const q = query(collection(db, col), where('uid', '==', user.uid));
+          const q = query(collection(db, col), where('uid', '==', cleanUid));
           const snap = await getDocs(q);
-          counts.invoices += snap.size;
+          counts[col] = snap.size;
         } catch (e) {
-          if (e?.code === 'resource-exhausted') break;
+          if (e?.code === 'resource-exhausted') {
+            console.warn(`[UserCloudBackup] Quota exceeded on cloud counts for ${col}`);
+            break;
+          }
         }
       }
 
-      // Customers
-      try {
-        const cq = query(collection(db, 'customers'), where('uid', '==', user.uid));
-        const csnap = await getDocs(cq);
-        counts.customers = csnap.size;
-      } catch (e) {}
-
-      // Items
-      try {
-        const iq = query(collection(db, 'items'), where('uid', '==', user.uid));
-        const isnap = await getDocs(iq);
-        counts.items = isnap.size;
-      } catch (e) {}
-
-      // Purchases
-      try {
-        const pq = query(collection(db, 'purchases'), where('uid', '==', user.uid));
-        const psnap = await getDocs(pq);
-        counts.purchases = psnap.size;
-      } catch (e) {}
-
-      // Suppliers
-      try {
-        const sq = query(collection(db, 'suppliers'), where('uid', '==', user.uid));
-        const ssnap = await getDocs(sq);
-        counts.suppliers = ssnap.size;
-      } catch (e) {}
-
-      counts._total = counts.invoices + counts.customers + counts.items + counts.purchases + counts.suppliers;
+      counts._total = counts.invoices + counts.customers + counts.items + counts.purchases + counts.suppliers + counts.customerLoans;
       if (isMountedRef.current) {
         setFirebaseCounts(counts);
       }
@@ -159,7 +132,7 @@ export default function UserCloudBackup({ user: propUser }) {
     } finally {
       if (isMountedRef.current) setLoadingCloud(false);
     }
-  }, [user]);
+  }, [cleanUid]);
 
   useEffect(() => {
     loadStats();
@@ -199,13 +172,17 @@ export default function UserCloudBackup({ user: propUser }) {
     }
   };
 
-  /* ── Manual Export ── */
+  /* ── Manual Export (Scoped to Logged-in User Only) ── */
   const handleExport = async () => {
+    if (!cleanUid) {
+      alert('කරුණාකර පළමුව Login වන්න.');
+      return;
+    }
+
     setStatus('exporting');
     setStatusMessage('📦 Backup file generate කරමින්...');
     try {
-      const userId = user?.uid || 'local_user';
-      const fileName = await manualBackupToDisk(userId, 'manual');
+      const fileName = await manualBackupToDisk(cleanUid, 'manual');
       if (fileName) {
         setStatus('success');
         setStatusMessage(`✅ Backup saved: ${fileName}`);
@@ -220,24 +197,44 @@ export default function UserCloudBackup({ user: propUser }) {
     }
   };
 
-  /* ── View Saved Backup Files ── */
+  /* ── View Saved Backup Files (Filtered by Active UID) ── */
   const loadBackupFiles = useCallback(async () => {
+    if (!cleanUid) return;
     try {
       const files = await listBackupFiles();
-      setBackupFiles(Array.isArray(files) ? files : []);
+      const shortUid = cleanUid.slice(0, 8);
+      // 🛡️ Filter only this user's backup files
+      const userFiles = Array.isArray(files) 
+        ? files.filter(f => {
+            const name = f?.name || String(f);
+            return name.includes(shortUid) || name.startsWith(`backup_${shortUid}`);
+          })
+        : [];
+      setBackupFiles(userFiles);
       setShowFileList(true);
     } catch (e) {
       setBackupFiles([]);
       setShowFileList(true);
     }
-  }, []);
+  }, [cleanUid]);
 
   /* ── Restore File Handler ── */
   const handleRestore = async (fileName) => {
+    if (!cleanUid) return;
     if (!window.confirm(`⚠️ "${fileName}" restore කරන්නද? local data overwrite වේ!`)) return;
     setRestoring(true);
     try {
       const backupData = await readBackupFile(fileName);
+      
+      // Enforce active user UID across all tables
+      if (backupData && typeof backupData === 'object') {
+        for (const tbl of Object.keys(backupData)) {
+          if (Array.isArray(backupData[tbl])) {
+            backupData[tbl] = backupData[tbl].map(rec => ({ ...rec, uid: cleanUid }));
+          }
+        }
+      }
+
       if (await restoreFromBackup(backupData)) {
         alert('✅ Restore සාර්ථකයි!');
         window.location.reload();
@@ -252,7 +249,7 @@ export default function UserCloudBackup({ user: propUser }) {
   /* ── Restore Directly from Custom Local File Input ── */
   const handleDirectFileRestore = async (e) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !cleanUid) return;
 
     if (!window.confirm(`⚠️ "${file.name}" Backup file එකෙන් Data Restore කරන්නද?`)) return;
 
@@ -262,6 +259,16 @@ export default function UserCloudBackup({ user: propUser }) {
     try {
       const text = await file.text();
       const backupData = JSON.parse(text);
+
+      // Enforce active user UID
+      if (backupData && typeof backupData === 'object') {
+        for (const tbl of Object.keys(backupData)) {
+          if (Array.isArray(backupData[tbl])) {
+            backupData[tbl] = backupData[tbl].map(rec => ({ ...rec, uid: cleanUid }));
+          }
+        }
+      }
+
       if (await restoreFromBackup(backupData)) {
         alert('🎉 Direct Restore සාර්ථකයි!');
         window.location.reload();
@@ -292,7 +299,12 @@ export default function UserCloudBackup({ user: propUser }) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span style={{ fontSize: '24px' }}>☁️</span>
-          <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700' }}>Cloud & PC Hard Disc Backup Comparison</h2>
+          <div>
+            <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700' }}>Cloud & PC Hard Disc Backup Comparison</h2>
+            <div style={{ fontSize: '11px', color: '#93c5fd', marginTop: '2px' }}>
+              👤 User: <strong>{user?.email || cleanUid.slice(0, 8)}</strong> (Strict Isolation Active)
+            </div>
+          </div>
         </div>
         <button
           onClick={() => { loadStats(); loadFirebaseCounts(); }}
@@ -317,6 +329,7 @@ export default function UserCloudBackup({ user: propUser }) {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>📦 Items:</span><strong>{stats.items}</strong></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>🛒 Purchases:</span><strong>{stats.purchases}</strong></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>🏭 Suppliers:</span><strong>{stats.suppliers}</strong></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>💰 Customer Loans:</span><strong>{stats.customerLoans}</strong></div>
           </div>
         </div>
 
@@ -332,6 +345,7 @@ export default function UserCloudBackup({ user: propUser }) {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>📦 Items:</span><strong>{firebaseCounts?.items || 0}</strong></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>🛒 Purchases:</span><strong>{firebaseCounts?.purchases || 0}</strong></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>🏭 Suppliers:</span><strong>{firebaseCounts?.suppliers || 0}</strong></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>💰 Customer Loans:</span><strong>{firebaseCounts?.customerLoans || 0}</strong></div>
           </div>
         </div>
 
@@ -385,7 +399,9 @@ export default function UserCloudBackup({ user: propUser }) {
             <button onClick={() => setShowFileList(false)} style={{ background: 'none', border: 'none', color: '#fff', fontSize: '16px', cursor: 'pointer' }}>✕</button>
           </div>
           {backupFiles.length === 0 ? (
-            <div style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'center', padding: '10px' }}>කිසිදු Backup File එකක් සොයාගත නොහැක.</div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'center', padding: '10px' }}>
+              ඔබගේ ගිණුමට අදාළ Backup File එකක් සොයාගත නොහැක.
+            </div>
           ) : (
             backupFiles.map((file, idx) => (
               <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'rgba(255,255,255,0.05)', marginBottom: '6px', borderRadius: '6px', fontSize: '12px' }}>
